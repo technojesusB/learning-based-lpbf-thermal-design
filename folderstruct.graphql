@@ -1,0 +1,50 @@
+learning-based-lpbf-thermal-design/
+│
+├── README.md
+├── pyproject.toml        # oder requirements.txt
+├── .gitignore
+│
+├── utils/                # kleine, wiederverwendbare Helfer
+│   ├── __init__.py
+│   ├── grid.py           # make_xy_grid, padding helpers
+│   ├── math.py           # harmonic mean, smooth step, etc.
+│   ├── viz.py            # plotting heatmaps, scan paths
+│   └── io.py             # save/load npy, pt, json
+│
+├── physics/               # alles, was "physikalisch" ist
+│   ├── __init__.py
+│   ├── material.py        # k(T), cp(T), cp_eff(T)
+│   ├── operators.py       # div(k grad T), laplacian, BCs
+│   └── losses.py          # physics residuals (optional)
+│
+├── scan/                  # Scanstrategie & Heat Source
+│   ├── __init__.py
+│   ├── patterns.py        # hatchlines, zig-zag, chessboard
+│   ├── path.py            # r(t), serpentine order
+│   └── heat_source.py     # Q(x,y,t) definitions
+│
+├── data/                  # Datengeneratoren (kein statischer Datensatz!)
+│   ├── __init__.py
+│   ├── single_dot.py      # high-fidelity single-dot teacher
+│   ├── generator.py       # random scan → targets
+│   └── dataset.py         # optional PyTorch Dataset wrapper
+│
+├── models/                # ML-Modelle
+│   ├── __init__.py
+│   ├── surrogate.py       # CNN / U-Net / FNO
+│   └── distillation.py    # teacher → student logic
+│
+├── optimization/          # inverse Design
+│   ├── __init__.py
+│   ├── objectives.py      # peak map, cooling rate
+│   ├── constraints.py     # bounds, smoothness
+│   └── inverse.py         # optimization loop
+│
+├── experiments/           # Scripts, nicht importiert
+│   ├── train_surrogate.py
+│   ├── inverse_design.py
+│   └── distill_student.py
+│
+└── notebooks/             # optional
+    ├── 01_explore_teacher.ipynb
+    └── 02_inverse_design.ipynb
