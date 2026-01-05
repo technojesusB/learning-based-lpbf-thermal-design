@@ -16,6 +16,7 @@ from scan.dots import DotEvent, make_dot_Q_fn, make_zero_Q_fn
 
 from schemas.state import ThermalStates, FinalState, StateMeta
 
+
 def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
@@ -28,7 +29,7 @@ def main() -> None:
     dy = 1.0 / (H - 1)
 
     # ----------------------------
-    # Material (scaled toy values to keep explicit scheme stable)
+    # Material (toy-scaled)
     # ----------------------------
     mat = MaterialConfig(
         k_powder=0.0012,
@@ -42,20 +43,17 @@ def main() -> None:
         rho=1.0,
     )
 
-    # Ambient + simple losses
     T_ambient = 0.05
     loss_h = 0.2
-
-    # Global time step (must satisfy stability)
     dt = 6.0e-4
 
     # ----------------------------
-    # Grids
+    # Grid
     # ----------------------------
     X, Y = make_xy_grid(H, W, device=device, dtype=dtype)
 
     # ----------------------------
-    # Initial history field
+    # Initial temperature / history
     # ----------------------------
     T0 = make_smooth_preheat_field(
         H=H,
@@ -69,58 +67,77 @@ def main() -> None:
         clamp_min=T_ambient,
     )
 
-    # ----------------------------
-    # Initialize state maps
-    # ----------------------------
     state = init_state(H, W, device, dtype, T0=T0, t_since_init=1.0)
 
     # ----------------------------
-    # Define a simple dot sequence (placeholder for hatchlines later)
+    # Dot sequence (demo path)
     # ----------------------------
     xs = torch.linspace(0.35, 0.65, 10).tolist()
-    xs = xs + list(reversed(xs))  # go back over heated region
+    xs = xs + list(reversed(xs))
     ys = [0.5] * len(xs)
 
-    events: list[DotEvent] = []
-    for x, y in zip(xs, ys):
-        events.append(
-            DotEvent(
-                x=float(x),
-                y=float(y),
-                power=2.0,
-                dwell=0.04,     # laser ON duration
-                travel=0.01,    # laser OFF duration before next dot
-                sigma=0.02,
-                eta=1.0,
-            )
+    events: list[DotEvent] = [
+        DotEvent(
+            x=float(x),
+            y=float(y),
+            power=2.0,
+            dwell=0.04,
+            travel=0.01,
+            sigma=0.02,
+            eta=1.0,
         )
+        for x, y in zip(xs, ys)
+    ]
 
     # ----------------------------
-    # Recorder for visualization / animation
+    # Recorder (incl. cooling rate)
     # ----------------------------
-    rec = StateRecorder(keys=["T", "E_acc", "t_since"])
-    snapshot_every = 1  # store every event; increase for long runs
+    rec = StateRecorder(keys=["T", "E_acc", "t_since", "cooling_rate"])
+    snapshot_every = 1
 
-    # Track global peak over entire run
+    # ----------------------------
+    # Global trackers
+    # ----------------------------
     T_peak_global = state.T.clone()
 
-    # Global time
-    t_global = 0.0
+    cooling_delta_t = float(events[0].dwell)            # Option A
+    cooling_delta_steps = max(1, int(round(cooling_delta_t / dt)))
+    cooling_delta_t_eff = cooling_delta_steps * dt
 
-    # Zero heat source function for travel phases
+    t_peak_step = torch.zeros((1, 1, H, W), device=device, dtype=torch.long)
+    T_after_peak = torch.zeros((1, 1, H, W), device=device, dtype=dtype)
+    after_set = torch.zeros((1, 1, H, W), device=device, dtype=torch.bool)
+
+    cooling_rate_map = torch.full(
+        (1, 1, H, W), float("nan"), device=device, dtype=dtype
+    )
+
+    global_step = 0
+    t_global = 0.0
     Q0 = make_zero_Q_fn(state.T)
 
+    # ----------------------------
     # Initial snapshot
-    rec.add(t_global, -1, {"T": state.T, "E_acc": state.E_acc, "t_since": state.t_since})
+    # ----------------------------
+    rec.add(
+        t_global,
+        -1,
+        {
+            "T": state.T,
+            "E_acc": state.E_acc,
+            "t_since": state.t_since,
+            "cooling_rate": cooling_rate_map,
+        },
+    )
 
     # ----------------------------
     # Event loop
     # ----------------------------
     for i, ev in enumerate(events):
-        # (1) Laser ON: integrate for dwell time with constant dot heat source
+        # ---- Laser ON ----
         Q_fn, spot = make_dot_Q_fn(X, Y, ev)
 
-        state.T, T_peak_interval = advance_temperature(
+        state.T, T_peak_interval, global_step = advance_temperature(
             T=state.T,
             mat=mat,
             dx=dx,
@@ -131,25 +148,29 @@ def main() -> None:
             duration=ev.dwell,
             Q_fn=Q_fn,
             t0=t_global,
+            step0=global_step,
         )
         t_global += ev.dwell
 
-        # Update global peak map
-        T_peak_global = torch.maximum(T_peak_global, T_peak_interval)
+        # Peak update
+        better = T_peak_interval > T_peak_global
+        T_peak_global = torch.where(better, T_peak_interval, T_peak_global)
+        t_peak_step = torch.where(
+            better, torch.full_like(t_peak_step, global_step), t_peak_step
+        )
 
-        # Update history maps (optional, but useful conditioning later)
-        energy = ev.power * ev.dwell
+        # History maps
         state = update_history_maps(
             state,
             spot=spot,
             dt_event=ev.dwell,
-            energy=energy,
+            energy=ev.power * ev.dwell,
             reset_threshold=0.2,
         )
 
-        # (2) Laser OFF: travel time with Q=0
+        # ---- Laser OFF ----
         if ev.travel > 0.0:
-            state.T, _ = advance_temperature(
+            state.T, _, global_step = advance_temperature(
                 T=state.T,
                 mat=mat,
                 dx=dx,
@@ -160,15 +181,33 @@ def main() -> None:
                 duration=ev.travel,
                 Q_fn=Q0,
                 t0=t_global,
+                step0=global_step,
             )
             t_global += ev.travel
-            state.t_since += ev.travel  # no hits during travel
+            state.t_since += ev.travel
 
-        # Snapshot after completing dwell+travel for this event
+        # ---- Cooling-rate capture ----
+        due = (global_step >= (t_peak_step + cooling_delta_steps)) & (~after_set)
+
+        T_after_peak = torch.where(due, state.T, T_after_peak)
+        after_set = after_set | due
+
+        new_cr = (T_peak_global - state.T) / max(cooling_delta_t_eff, 1e-12)
+        cooling_rate_map = torch.where(due, new_cr, cooling_rate_map)
+
+        # ---- Snapshot ----
         if i % snapshot_every == 0:
-            rec.add(t_global, i, {"T": state.T, "E_acc": state.E_acc, "t_since": state.t_since})
+            rec.add(
+                t_global,
+                i,
+                {
+                    "T": state.T,
+                    "E_acc": state.E_acc,
+                    "t_since": state.t_since,
+                    "cooling_rate": cooling_rate_map,
+                },
+            )
 
-        # Console debug
         print(
             f"event {i:02d} | "
             f"T_final.max={float(state.T.max()):.4f} | "
@@ -178,7 +217,14 @@ def main() -> None:
         )
 
     # ----------------------------
-    # Pack into Pydantic state container + save
+    # Finalize cooling rate
+    # ----------------------------
+    nan_mask = torch.isnan(cooling_rate_map)
+    fallback_cr = (T_peak_global - state.T) / max(cooling_delta_t_eff, 1e-12)
+    cooling_rate_map = torch.where(nan_mask, fallback_cr, cooling_rate_map)
+
+    # ----------------------------
+    # Pack states
     # ----------------------------
     snapshot_state = rec.to_snapshot_state()
 
@@ -188,6 +234,7 @@ def main() -> None:
             E_acc=state.E_acc.detach().cpu(),
             t_since=state.t_since.detach().cpu(),
             T_peak_global=T_peak_global.detach().cpu(),
+            cooling_rate=cooling_rate_map.detach().cpu(),
         ),
         snapshots=snapshot_state,
         meta=StateMeta(
@@ -196,11 +243,14 @@ def main() -> None:
             dt=dt,
             loss_h=loss_h,
             T_ambient=T_ambient,
-            description="Time-resolved LPBF dot-by-dot thermal simulation (laser on/off with carried state)",
+            description="Time-resolved LPBF dot-by-dot simulation with online cooling-rate tracking",
+            cooling_delta_t=cooling_delta_t,
+            cooling_delta_t_eff=cooling_delta_t_eff,
+            cooling_delta_steps=cooling_delta_steps,
         ),
     )
 
-    out_path = "artifacts/runs/run_0001/states.pt"
+    out_path = "artifacts/runs/run_0002/states.pt"
     save_state(states, out_path)
     print(f"Saved states to {out_path}")
 

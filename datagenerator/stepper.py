@@ -23,6 +23,7 @@ def advance_temperature(
     duration: float,
     Q_fn: QFn,
     t0: float = 0.0,
+    step0: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Advance temperature from time t0 to t0+duration with explicit Euler + variable coefficients.
@@ -53,4 +54,4 @@ def advance_temperature(
 
         T_peak = torch.maximum(T_peak, T)
 
-    return T, T_peak
+    return T, T_peak, step0 + steps

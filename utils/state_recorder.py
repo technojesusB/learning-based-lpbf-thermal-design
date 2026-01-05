@@ -8,7 +8,7 @@ from schemas.state import SnapshotState
 
 @dataclass
 class StateRecorder:
-    keys: List[str] = field(default_factory=lambda: ["T", "E_acc", "t_since"])
+    keys: List[str] = field(default_factory=lambda: ["T", "E_acc", "t_since", "cooling_rate"])
     times: List[float] = field(default_factory=list)
     event_idxs: List[int] = field(default_factory=list)
     snaps: Dict[str, List[torch.Tensor]] = field(default_factory=dict)

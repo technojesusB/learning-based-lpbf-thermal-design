@@ -19,6 +19,8 @@ class FinalState(BaseModel):
     t_since: Tensor              # [1,1,H,W]
     T_peak_global: Tensor        # [1,1,H,W]
 
+    cooling_rate: Optional[Tensor] = None  # [1,1,H,W]  (Toy units: per toy-second)
+
 
 class SnapshotState(BaseModel):
     """
@@ -31,6 +33,8 @@ class SnapshotState(BaseModel):
     T: Tensor                    # [N,1,H,W]
     E_acc: Tensor                # [N,1,H,W]
     t_since: Tensor              # [N,1,H,W]
+
+    cooling_rate: Optional[Tensor] = None  # [N,1,H,W]
 
 
 class StateMeta(BaseModel):
@@ -45,6 +49,10 @@ class StateMeta(BaseModel):
     loss_h: float
     T_ambient: float
     description: Optional[str] = None
+
+    cooling_delta_t: Optional[float] = None       # requested Δt (toy)
+    cooling_delta_t_eff: Optional[float] = None   # actual used Δt (delta_steps*dt)
+    cooling_delta_steps: Optional[int] = None
 
 
 class ThermalStates(BaseModel):
