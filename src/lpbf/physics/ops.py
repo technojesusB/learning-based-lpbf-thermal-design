@@ -3,13 +3,49 @@ import torch
 import torch.nn.functional as F
 
 def harmonic_mean(a: torch.Tensor, b: torch.Tensor, eps: float=1e-12) -> torch.Tensor:
+    """
+    Compute the harmonic mean of two tensors.
+    
+    H(a, b) = 2 * a * b / (a + b)
+    
+    The harmonic mean is standard for computing effective thermal conductivity 
+    at the interface between two control volumes in Finite Volume / Difference schemes.
+    It ensures flux continuity.
+
+    Args:
+        a (torch.Tensor): First value.
+        b (torch.Tensor): Second value.
+        eps (float): Small epsilon to avoid division by zero.
+
+    Returns:
+        torch.Tensor: Harmonic mean.
+    """
     return (2.0 * a * b) / (a + b + eps)
 
 def div_k_grad(T: torch.Tensor, k: torch.Tensor, dx: float, dy: float, dz: float | None = None) -> torch.Tensor:
-    """
-    Compute div(k * grad(T)) using 2nd order central differences on a standard grid.
-    Supports 2D and 3D.
-    T, k shape: (B, C, [Z], Y, X)
+    r"""
+    Compute the divergence of the conductive heat flux: Div(k * Grad(T)) [W/m^3].
+    
+    Operator:
+        \nabla \cdot (k \nabla T) = \partial_x (k \partial_x T) + \partial_y (k \partial_y T) + \partial_z (k \partial_z T)
+    
+    Method:
+        Standard 2nd-order Central Finite Difference on a dense grid (5-point stencil in 2D, 7-point in 3D).
+        The conductivity k is averaged at cell faces using the harmonic mean.
+        
+    Boundary Conditions:
+        Applies Homogeneous Neumann Boundary Conditions (Zero Flux) at all domain boundaries.
+        Implemented via 'replicate' padding, effectively mirroring the temperature at the boundary.
+        
+    Args:
+        T (torch.Tensor): Temperature field [K]. Shape (B, C, [D], H, W).
+        k (torch.Tensor): Thermal conductivity field [W/(m K)]. Shape matches T.
+        dx (float): Grid spacing in X [m].
+        dy (float): Grid spacing in Y [m].
+        dz (float | None): Grid spacing in Z [m]. Required if T is 3D (5-dim).
+
+    Returns:
+        torch.Tensor: The Laplacian term values [W/m^3]. Shape matches T valid region (boundary padding removed).
     """
     dims = T.ndim
     is_3d = (dims == 5)
@@ -17,7 +53,7 @@ def div_k_grad(T: torch.Tensor, k: torch.Tensor, dx: float, dy: float, dz: float
     # Pad for Neumann (Reflect) boundary conditions
     # pad args are (left, right, top, bottom, front, back)
     if is_3d:
-        assert dz is not None
+        assert dz is not None, "dz must be provided for 3D tensors"
         pad = (1, 1, 1, 1, 1, 1)
         # T: B, C, D, H, W
         T_p = F.pad(T, pad, mode='replicate')

@@ -5,8 +5,16 @@ import plotly.graph_objects as go
 from lpbf.state import SimulationState
 import torch
 
-# Minimal scaffold
-def create_app():
+def create_app() -> dash.Dash:
+    """
+    Create and configure the Dash application instance.
+    
+    The dashboard currently serves as a scaffold for visualizing simulation results.
+    It includes a slider for time-stepping and a graph area for heatmaps.
+
+    Returns:
+        dash.Dash: Configured Dash application.
+    """
     app = dash.Dash(__name__)
     
     app.layout = html.Div([
@@ -33,7 +41,16 @@ def create_app():
         Output('heatmap-graph', 'figure'),
         Input('time-slider', 'value')
     )
-    def update_graph(step_idx):
+    def update_graph(step_idx: int) -> go.Figure:
+        """
+        Update the main graph based on the time slider.
+        
+        Args:
+            step_idx (int): The selected time step index.
+            
+        Returns:
+            go.Figure: The figure to display.
+        """
         # TODO: Load real data from artifacts
         fig = go.Figure()
         fig.update_layout(title=f"Placeholder Step {step_idx}")

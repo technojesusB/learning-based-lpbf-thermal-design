@@ -7,7 +7,13 @@ from lpbf.state import SimulationState
 
 def figure_temperature_field(state: SimulationState) -> go.Figure:
     """
-    Return a Plotly Figure for the temperature field.
+    Create an interactive Plotly Heatmap for the temperature field.
+
+    Args:
+        state (SimulationState): Current simulation state.
+
+    Returns:
+        go.Figure: Plotly figure object containing the heatmap.
     """
     T = state.T
     if T.ndim == 5:
@@ -31,7 +37,13 @@ def figure_temperature_field(state: SimulationState) -> go.Figure:
 
 def figure_cooling_rate(state: SimulationState) -> go.Figure:
     """
-    Return a Plotly Figure for Cooling Rate.
+    Create an interactive Plotly Heatmap for the captured cooling rate.
+
+    Args:
+        state (SimulationState): Current simulation state.
+
+    Returns:
+        go.Figure: Plotly figure object (empty if cooling rate is None).
     """
     if state.cooling_rate is None:
         return go.Figure()

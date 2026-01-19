@@ -7,39 +7,48 @@ import torch
 import math
 
 class ScanPattern(str, Enum):
+    """
+    Enumeration of supported scan patterns.
+    """
     LINE = "line"
     HATCH = "hatch"
     POINT = "point"
 
 class ScanEvent(BaseModel):
     """
-    A single continuous laser vector or point dwell.
+    Represents a single atomic event in the laser scan path.
+    Can be a continuous vector scan (Line) or a spot dwell (Point).
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
     
-    # Start and End positions (normalized 0..1 or meters?)
-    # Let's enforce meters to match the rest of the new strict SI design.
-    x_start: float
-    y_start: float
-    x_end: float
-    y_end: float
+    # Coordinates in meters [m]
+    x_start: float = Field(..., description="Start X coordinate [m]")
+    y_start: float = Field(..., description="Start Y coordinate [m]")
+    x_end: float = Field(..., description="End X coordinate [m]")
+    y_end: float = Field(..., description="End Y coordinate [m]")
     
-    power: float
-    speed: float # [m/s]. If 0, it's a spot dwell.
+    power: float = Field(..., description="Laser power during this event [W]")
+    speed: float = Field(..., description="Scan speed [m/s]. If 0, treated as dwell.")
     
     # For spot dwell
-    dwell_time: float = 0.0
+    dwell_time: float = Field(0.0, description="Dwell time [s] if speed is 0.")
     
     # Laser status
-    laser_on: bool = True
+    laser_on: bool = Field(True, description="Whether the laser is active emitting power.")
     
     @property
     def is_point(self) -> bool:
+        """Check if the event is a point dwell (zero distance)."""
         dist = math.sqrt((self.x_end - self.x_start)**2 + (self.y_end - self.y_start)**2)
         return dist < 1e-9
 
     @property
     def duration(self) -> float:
+        """
+        Calculate the duration of the event [s].
+        Returns:
+            float: dwell_time if point, else distance / speed.
+        """
         if self.is_point:
             return self.dwell_time
         elif self.speed > 0:
@@ -50,10 +59,22 @@ class ScanEvent(BaseModel):
 
 class ScanPathGenerator:
     """
-    Helper to generate lists of ScanEvents from high-level parameters.
+    Utility class to generate sequences of ScanEvents (scan paths) from high-level parameters.
     """
     @staticmethod
     def line(start: tuple[float, float], end: tuple[float, float], power: float, speed: float) -> List[ScanEvent]:
+        """
+        Generate a single linear scan vector.
+
+        Args:
+            start (tuple[float, float]): (x, y) start coordinates [m].
+            end (tuple[float, float]): (x, y) end coordinates [m].
+            power (float): Laser power [W].
+            speed (float): Scan speed [m/s].
+
+        Returns:
+            List[ScanEvent]: A list containing the single scan event.
+        """
         return [ScanEvent(
             x_start=start[0], y_start=start[1],
             x_end=end[0], y_end=end[1],
@@ -69,10 +90,24 @@ class ScanPathGenerator:
         power: float, 
         speed: float,
         angle_deg: float = 0.0,
-        skywriting: bool = False # TODO: Implement skywriting returns
+        skywriting: bool = False
     ) -> List[ScanEvent]:
         """
-        Generate a simple serpentine hatch pattern.
+        Generate a serpentine hatch pattern covering a rectangular area.
+        Includes "travel" (laser off) events between hatch lines.
+
+        Args:
+            corner_start (tuple[float, float]): Bottom-left corner (x, y) [m].
+            width (float): Width of rect in X [m].
+            height (float): Height of rect in Y [m].
+            spacing (float): Hatch spacing (hatch distance) [m].
+            power (float): Laser power [W].
+            speed (float): Scan speed [m/s].
+            angle_deg (float): Rotation angle in degrees (Not yet implemented).
+            skywriting (bool): Whether to add skywriting maneuvers (Not yet implemented).
+
+        Returns:
+            List[ScanEvent]: Sequence of laser-on and laser-off events.
         """
         # Simplification: Only 0 degree (horizontal) for now
         # TODO: Implement Rotation matrix for angle_deg
@@ -105,16 +140,11 @@ class ScanPathGenerator:
             next_y = y_current + spacing
             if next_y <= y_max:
                 # Travel event
-                # Assume separate travel speed? Or same speed?
-                # Usually travel speed is high. Let's use same speed for now or add param.
+                # Assume high travel speed (e.g. 5x scan speed)
                 travel_speed = speed * 5.0 
                 events.append(ScanEvent(
                     x_start=end[0], y_start=end[1],
-                    x_end=end[0] if direction == 1 else x_min, # pure vertical step?
-                    # Meander: end of line 1 -> start of line 2
-                    # Line 1: x_min -> x_max. End at x_max.
-                    # Line 2: x_max -> x_min. Start at x_max.
-                    # Vertical jump: (x_max, y) -> (x_max, y+dy)
+                    x_end=end[0] if direction == 1 else x_min, 
                     y_end=next_y,
                     power=0.0,
                     speed=travel_speed,

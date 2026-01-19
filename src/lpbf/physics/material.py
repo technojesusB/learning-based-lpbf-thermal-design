@@ -6,35 +6,43 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class MaterialConfig(BaseModel):
     """
-    Physical material properties.
-    All units SI (W, m, K, J, kg).
+    Physical material properties for the simulation.
+    All fields expects SI units (W, m, K, J, kg).
+    
+    The configuration defines the base properties for powder, solid, and liquid states,
+    as well as phase change parameters (Solidus/Liquidus/Latent Heat).
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Conductivity [W/(m K)]
-    k_powder: float = Field(..., gt=0.0)
-    k_solid: float = Field(..., gt=0.0)
-    k_liquid: float = Field(..., gt=0.0)
+    k_powder: float = Field(..., gt=0.0, description="Thermal conductivity of the powder bed [W/(m K)]")
+    k_solid: float = Field(..., gt=0.0, description="Thermal conductivity of the solid material [W/(m K)]")
+    k_liquid: float = Field(..., gt=0.0, description="Thermal conductivity of the liquid material [W/(m K)]")
 
     # Heat Capacity [J/(kg K)]
-    cp_base: float = Field(..., gt=0.0)
+    cp_base: float = Field(..., gt=0.0, description="Base specific heat capacity (sensible heat) [J/(kg K)]")
 
     # Density [kg/m^3]
-    rho: float = Field(..., gt=0.0)
+    rho: float = Field(..., gt=0.0, description="Material density [kg/m^3] (assumed constant)")
 
     # Phase Change Temperatures [K]
-    T_solidus: float = Field(..., gt=0.0)
-    T_liquidus: float = Field(..., gt=0.0)
+    T_solidus: float = Field(..., gt=0.0, description="Solidus temperature (start of melting) [K]")
+    T_liquidus: float = Field(..., gt=0.0, description="Liquidus temperature (end of melting) [K]")
 
     # Latent Heat [J/kg]
-    latent_heat_L: float = Field(..., ge=0.0)
+    latent_heat_L: float = Field(..., ge=0.0, description="Latent heat of fusion [J/kg]")
     
     # Numerical parameters
-    transition_sharpness: float = Field(default=5.0, gt=0.0, description="Sharpness of sigmoid transition")
+    transition_sharpness: float = Field(default=5.0, gt=0.0, description="Sharpness parameter for the sigmoid phase transition smoothing.")
 
     @property
     def latent_width(self) -> float:
-        """Effective width of melting range for Gaussian spread."""
+        """
+        Effective width of the melting temperature range [K].
+        
+        Returns:
+            float: T_liquidus - T_solidus. Returns 1.0 if gap is negligible to avoid division by zero.
+        """
         gap = self.T_liquidus - self.T_solidus
         if gap < 1e-6:
             return 1.0 # fallback to avoid div0, shouldn't happen with valid cfg
@@ -42,19 +50,41 @@ class MaterialConfig(BaseModel):
 
 
 def sigmoid_step(x: torch.Tensor, sharpness: float) -> torch.Tensor:
-    """Smooth step function 0->1."""
+    """
+    Compute a smooth step function traversing 0 -> 1.
+    
+    Formula:
+        y = sigmoid(sharpness * x) = 1 / (1 + exp(-sharpness * x))
+
+    Args:
+        x (torch.Tensor): Input tensor. 0 corresponds to the midpoint of the transition.
+        sharpness (float): Parameter controlling the steepness of the step.
+
+    Returns:
+        torch.Tensor: Values in range (0, 1).
+    """
     return torch.sigmoid(sharpness * x)
 
 def melt_fraction(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     """
-    Compute melt fraction phi (0=solid, 1=liquid).
-    smoothed via sigmoid based on Solidus/Liquidus.
+    Compute the liquid phase fraction (phi) for a temperature field.
+
+    The transition is modeled as a smooth sigmoid function centered between T_solidus and T_liquidus.
+    
+    phi = 0 implies completely solid (or powder).
+    phi = 1 implies completely liquid.
+
+    Args:
+        T (torch.Tensor): Temperature field [K].
+        cfg (MaterialConfig): Material configuration containing phase change parameters.
+
+    Returns:
+        torch.Tensor: Melt fraction field (0 to 1).
     """
     mid = 0.5 * (cfg.T_solidus + cfg.T_liquidus)
     half_width = 0.5 * (cfg.T_liquidus - cfg.T_solidus) + 1e-9
     
     # Normalized temperature coordinate: -1 at solidus, +1 at liquidus roughly
-    # We want sigmoid to traverse 0.1 to 0.9 roughly within the range
     s = (T - mid) / half_width
     
     # Using sharpness from config to tune how 'hard' the step is
@@ -62,43 +92,53 @@ def melt_fraction(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
 
 def k_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     """
-    Effective thermal conductivity.
-    Model:
-      - Below solidus: Mix of k_powder and k_solid (consolidation proxy). 
-        *Simplification*: For now, we assume if T < T_solidus, it could be powder OR solid. 
-        However, the legacy code used melt_fraction as a proxy for 'consolidated status'.
-        We will adopt a 'state-based' approach later, but for stateless k(T), 
-        we usually assume 'powder' properties are valid only until first melt, 
-        and 'solid' properties thereafter.
-        
-        Since this function is PURELY T-dependent (k(T)), it cannot know history.
-        We will assume the caller handles history-dependent 'state' (powder vs solid).
-        
-        BUT, to match the legacy 'toy' behavior first:
-        k = (1-f)*k_powder + f*k_liquid  <-- mixed with solid?
-        
-        Let's implement the standard k(T) = k_solid*(1-phi) + k_liquid*phi
-        AND allow an external 'consolidation' mask if needed.
-        
-        For this stateless function, we'll return the Phase-change dependent k.
-        
-        IF we strictly follow the user request "Distinct powder / solid / liquid regimes":
-        We need a 'state' tensor (is_powder).
+    Compute the effective thermal conductivity field k(T) [W/(m K)].
+
+    Physical Model:
+       The conductivity is a phase-weighted average of the solid and liquid conductivities:
+       k(T) = (1 - phi) * k_solid + phi * k_liquid
+
+    Assumptions:
+       - This function currently treats sub-solidus material as having `k_solid` properties,
+         blended with `k_liquid` during melting.
+       - Powder conductivity (`k_powder`) handling is currently deferred to the caller
+         or requires a separate state mask (consolidated vs powder).
+       - Future versions will accept a 'state' tensor to distinguish powder domains from solidified domains.
+
+    Args:
+        T (torch.Tensor): Temperature field [K].
+        cfg (MaterialConfig): Material configuration.
+
+    Returns:
+        torch.Tensor: Effective thermal conductivity field.
     """
     phi = melt_fraction(T, cfg)
     
     # Pure Phase Change k (Solid <-> Liquid)
     k_phase = (1.0 - phi) * cfg.k_solid + phi * cfg.k_liquid
     
-    # Note: Powder handling usually requires a history variable (has_melted).
-    # We will compute the 'material k' here. The simulation loop will mix in k_powder
-    # based on the history state. 
     return k_phase
 
 def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     """
-    Apparent Heat Capacity: cp_eff = cp_base + L * d(phi)/dT
-    We approximate d(phi)/dT with a Gaussian bump.
+    Compute the Apparent Heat Capacity cp_eff(T) [J/(kg K)].
+
+    Physical Model:
+       The Apparent Heat Capacity method incorporates the Latent Heat of fusion (L)
+       as a temperature-dependent bump in the specific heat capacity.
+       
+       cp_eff(T) = cp_base + L * (d(phi) / dT)
+       
+       We approximate d(phi)/dT using a Gaussian function centered in the melting range.
+       This ensures that the integral of cp_eff over the melting range approximately evaluates to:
+       Integral(cp_eff) dT ~ (cp_base * DeltaT) + L
+
+    Args:
+        T (torch.Tensor): Temperature field [K].
+        cfg (MaterialConfig): Material configuration.
+
+    Returns:
+        torch.Tensor: Effective specific heat capacity field.
     """
     cp = torch.full_like(T, cfg.cp_base)
     
@@ -110,13 +150,13 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     width = (cfg.T_liquidus - cfg.T_solidus)
     if width < 1e-6: width = 1.0 # safety
 
-    # Gaussian approximation for delta function
+    # Gaussian approximation for delta function (derivative of the step transition)
     # Integral of Gaussian = sqrt(2*pi)*sigma
-    # We want Integral = L
-    # So height * sqrt(2*pi)*sigma = L  => height = L / (sqrt(2*pi)*sigma)
+    # We want Integral = L * 1 (normalized phi step) -> No, d_phi/dT integrates to 1.
+    # So contribution to Enthalpy is L * Integral(d_phi/dT) = L.
     
-    # somewhat arbitrary sigma relative to width. 
-    # Let's say +/- 2 sigma covers the width? sigma = width / 4
+    # We choose sigma such that the Gaussian fits well within the melting range (width).
+    # Setting sigma = width / 4.0 ensures +/- 2 sigma covers 95% of the range.
     sigma = width / 4.0 
     
     arg = (T - mid) / (sigma)

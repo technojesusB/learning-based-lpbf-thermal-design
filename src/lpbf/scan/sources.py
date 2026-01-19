@@ -11,12 +11,15 @@ class HeatSourceConfig(BaseModel):
     """
     model_config = ConfigDict(frozen=True, extra="forbid")
     
-    power: float = Field(..., ge=0.0, description="Power in Watts [W]")
-    eta: float = Field(1.0, ge=0.0, le=1.0, description="Absorption efficiency")
+    power: float = Field(..., ge=0.0, description="Laser Power in Watts [W]")
+    eta: float = Field(1.0, ge=0.0, le=1.0, description="Absorption efficiency (0.0 to 1.0). Absorbed Power = Power * eta.")
 
 class GaussianSourceConfig(HeatSourceConfig):
-    sigma: float = Field(..., gt=0.0, description="Gaussian beam radius [m] (1/e^2 or similar definition)")
-    depth: float | None = Field(None, gt=0.0, description="Optical penetration depth [m] for volumetric source. If None, surface flux.")
+    """
+    Configuration for a Gaussian Beam Heat Source.
+    """
+    sigma: float = Field(..., gt=0.0, description="Gaussian standard deviation [m]. Related to D4sigma diameter by D4s = 4 * sigma.")
+    depth: float | None = Field(None, gt=0.0, description="Optical penetration depth [m] for volumetric source. If None, acts as a surface flux [W/m^2].")
 
 class HeatSource(ABC):
     """
@@ -29,12 +32,40 @@ class HeatSource(ABC):
     def intensity(self, X: torch.Tensor, Y: torch.Tensor, Z: torch.Tensor | None, 
                   x0: float, y0: float, z0: float | None = None) -> torch.Tensor:
         """
-        Compute spatial intensity distribution centered at (x0, y0, z0).
-        Returns Q [W/m^3] or q [W/m^2] depending on source type.
+        Compute the spatial intensity distribution of the heat source centered at (x0, y0, z0).
+
+        Args:
+            X (torch.Tensor): X-coordinates of the evaluation grid (shape: [..., H, W] or broadcastable).
+            Y (torch.Tensor): Y-coordinates of the evaluation grid.
+            Z (torch.Tensor | None): Z-coordinates of the evaluation grid. Required if the source is volumetric.
+            x0 (float): Current X-position of the beam center [m].
+            y0 (float): Current Y-position of the beam center [m].
+            z0 (float | None): Current Z-position of the beam center (surface Z) [m]. Defaults to 0 or None.
+
+        Returns:
+            torch.Tensor: Heat source intensity field.
+                          - If surface source: Flux [W/m^2].
+                          - If volumetric source: Volumetric Heat Generation [W/m^3].
         """
         pass
 
 class GaussianBeam(HeatSource):
+    """
+    Implementation of a Gaussian Laser Beam Heat Source.
+    
+    Supports both 2D (Surface Flux) and 3D (Volumetric) modes.
+    
+    Physical Model (Surface):
+        I(r) = A * exp(-r^2 / (2 * sigma^2))
+        Normalization: Integral(I) dA = P_absorbed
+        A = P_absorbed / (2 * pi * sigma^2)
+        
+    Physical Model (Volumetric):
+        Q(r, z) = I(r) * f(z)
+        where f(z) is an exponential decay into the material (Beer-Lambert law approximation).
+        f(z) = (1/d) * exp(-z_depth / d)
+        Normalization: Integral(f(z)) dz = 1
+    """
     def __init__(self, config: GaussianSourceConfig):
         super().__init__(config)
         self.config: GaussianSourceConfig = config
@@ -42,87 +73,69 @@ class GaussianBeam(HeatSource):
     def intensity(self, X: torch.Tensor, Y: torch.Tensor, Z: torch.Tensor | None, 
                   x0: float, y0: float, z0: float | None = None) -> torch.Tensor:
         """
-        Gaussian profile:
-        I(r) = (2P / (pi*sigma^2)) * exp(-2*r^2/sigma^2)  <-- Standard laser definition?
+        Compute the Gaussian beam intensity.
+
+        Args:
+            X (torch.Tensor): Grid X coordinates [m].
+            Y (torch.Tensor): Grid Y coordinates [m].
+            Z (torch.Tensor | None): Grid Z coordinates [m].
+            x0 (float): Beam center X [m].
+            y0 (float): Beam center Y [m].
+            z0 (float | None): Beam center Z (Surface) [m]. Unused for purely 2D surface flux.
+
+        Returns:
+            torch.Tensor: Source term field. [W/m^2] (2D) or [W/m^3] (3D).
         
-        Let's use the provided 'sigma' as standard deviation (simpler math):
-        Gaussian(r) ~ exp(-r^2 / (2*sigma^2))
-        Normalization must ensure Integral(I) dA = Power * eta.
-        
-        Surface Flux (2D or 3D Surface):
-          Integral(A * exp(-(x^2+y^2)/(2s^2))) = A * 2*pi*s^2
-          So A = (P*eta) / (2*pi*s^2)
-          
-        Volumetric (3D with depth):
-          Beer-Lambert decay in Z? or Gaussian in Z?
-          Let's assume Gaussian in Z as well for simplicity, or exponential decay.
-          Usually: I(z) = I0 * exp(-z/depth)
+        Raises:
+            NotImplementedError: If Z coordinates are provided (3D context) but the source is configured without a depth (Surface Flux),
+                                 as implementing surface flux in a 3D FDM volume requires setting Boundary Conditions rather than a volumetric source term.
         """
-        # Distances squared
+        # Distances squared from center
         r2 = (X - x0)**2 + (Y - y0)**2
         
-        # Base Gaussian (2D)
-        # using 1/(2*pi*sigma^2) normalization makes integral = 1
+        # Normalization factor for 2D Gaussian
+        # 1/(2*pi*sigma^2) ensures Integral of exp(...) is 2*pi*sigma^2, canceling to 1.
         norm_2d = 1.0 / (2.0 * 3.1415926535 * self.config.sigma**2)
+        
+        # Radial profile
         shape_2d = torch.exp(-r2 / (2.0 * self.config.sigma**2))
         
+        # Base Flux [W/m^2]
         flux = (self.config.power * self.config.eta) * norm_2d * shape_2d
         
         if Z is not None and self.config.depth is not None:
-            # Volumetric source
-            # Multiply by normalized Z profile
-            # Exponential decay into material (assume surface at z=0 or z=z0?)
-            # Let's assume z0 is the surface z coordinate.
-            # I(z) ~ exp(-(z_depth)/d)
-            # Integral_0^inf exp(-z/d) dz = d
+            # Volumetric source with exponential decay in Depth
+            # z0 is the surface z-coordinate.
+            # Depth d is positive into the material.
             
-            # If Z coordinate system: Z decreases into material? Or Increases?
-            # Standard: Z is height. Material <= Z_surface.
-            # Depth d means z in [Z_surface - d, Z_surface]? or exp decay?
-            
-            # Let's assume Exponential decay from Z_surface (z0) downwards.
-            # Z < z0. depth = z0 - Z.
+            # Assuming Z coordinate system: 
+            # If Z is height (increasing upwards), and material is at Z <= z0:
+            # depth_into_mat = z0 - Z
             
             d = self.config.depth
-            dz = (z0 - Z) if z0 is not None else -Z # assuming z0=0 if None
+            dz = (z0 - Z) if z0 is not None else -Z 
             
-            # Mask for above surface (no heat)
+            # Mask for strictly below surface (dz >= 0)
             mask = (dz >= 0.0) 
             
-            # Normalized z-profile: (1/d) * exp(-z/d)
+            # Normalized z-profile: (1/d) * exp(-z_depth / d)
+            # Integral from 0 to inf is 1.
             z_profile = (1.0 / d) * torch.exp(-dz / d)
             
             Q_vol = flux * z_profile
+            
+            # Zero out any contribution above the surface
             return torch.where(mask, Q_vol, torch.zeros_like(Q_vol))
         
         elif Z is not None and self.config.depth is None:
-            # Surface flux applied to top layer of 3D grid?
-            # This is tricky in FDM. Usually we apply specific Surface BC.
-            # Or we return a volumetric source that is only non-zero at the surface layer?
-            # For now, let's assume the caller expects Volume Source for 3D and "Surface Source" (implicit thickness) for 2D.
-            # If 3D and depth is None -> Error or Delta function?
-            # We'll return 0 in volume and assume Boundary Condition handles it?
-            # No, 'source term' Q is usually volumetric. 
-            # If strictly surface, it should be added to the boundary condition, NOT Q.
+            # 3D Grid but Surface Flux requested.
+            # This cannot be represented as a volumetric source term Q [W/m^3] easily without numerical delta functions.
+            # It should be handled by the Boundary Condition logic.
             raise NotImplementedError("Surface flux in 3D volume requires implementation via Boundary Conditions, not Source Term Q.")
             
         else:
             # 2D case (X, Y only).
-            # "Volumetric" in 2D means [W/m^3] assuming unit thickness?
-            # Or [W/m^2] if T is integrated?
-            # Our PDE: rho*cp*dT/dt = ... + Q
-            # If dimensions of T are K, then term is K/s.
-            # Q term must be [W/m^3] / [J/m^3 K] * [K] -> [W/m^3].
-            # So Q must be W/m^3.
-            # If 2D sim, we assume some thickness 'dz_2d'?
-            # Usually we treat it as "Average Q over thickness dz".
-            # Q_2d = Flux_surf / dz_eff?
-            # Or just Q is W/m^3.
-            
-            # Let's assume the user provides Q as Volumetric Energy Density Source 
-            # OR we assume the "Surface Flux" is absorbed in the first layer or distributed?
-            
-            # For 2D "Plate", Q is usually W/m^2 (source per unit area) / thickness.
-            # Let's assume we return Flux [W/m^2]. The integrator must divide by thickness if needed.
+            # Returns Flux [W/m^2].
+            # Note: The PDE integrator must interpret this correctly. 
+            # For a 2D simulation representing a thin slice or surface, this flux is usually applied as a source.
             return flux 
-
