@@ -59,12 +59,14 @@ def test_ops_laplacian_2d():
     dx = 0.1
     dy = 0.1
     
-    y = torch.arange(H) * dy
-    x = torch.arange(W) * dx
+    y = torch.arange(H, dtype=torch.float64) * dy
+    x = torch.arange(W, dtype=torch.float64) * dx
     Y, X = torch.meshgrid(y, x, indexing='ij') # [H, W]
     
     T = (X**2 + Y**2).unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
     k = torch.ones_like(T)
+    
+    print(f"DEBUG: dx={dx}, T[0,0,0,:5] = {T[0,0,0,:5]}")
     
     # For interior points, result should be close to 4.0
     lap = div_k_grad(T, k, dx, dy)
@@ -72,12 +74,9 @@ def test_ops_laplacian_2d():
     # check center region to avoid boundary effects
     lap_inner = lap[0, 0, 2:-2, 2:-2]
     
-    print(f"Laplacian stats: min={lap_inner.min()}, max={lap_inner.max()}, mean={lap_inner.mean()}")
-    print(f"Sample: {lap_inner[0,0]}")
-
     # Error should be small (finite difference error)
     # central difference of x^2 is exact, so error should be effectively 0
-    assert torch.allclose(lap_inner, torch.tensor(4.0), atol=1e-5)
+    assert torch.allclose(lap_inner, torch.tensor(4.0, dtype=torch.float64), atol=1e-5)
 
 def test_ops_conservation_2d():
     """
@@ -85,7 +84,7 @@ def test_ops_conservation_2d():
     Total heat change should be 0.
     """
     H, W = 30, 30
-    T = torch.rand(1, 1, H, W)
+    T = torch.rand(1, 1, H, W, dtype=torch.float64)
     k = torch.ones_like(T)
     dx = 0.1
     dy = 0.1
