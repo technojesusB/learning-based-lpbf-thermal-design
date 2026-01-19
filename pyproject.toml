@@ -5,12 +5,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "dash>=3.3.0",
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.8",
     "matplotlib>=3.10.6",
     "mlflow>=3.8.1",
     "numpy>=2.3.3",
     "pandas>=2.3.3",
+    "plotly>=6.5.2",
     "pydantic>=2.11.9",
     "torch>=2.8.0",
     "torchvision>=0.23.0",
@@ -21,5 +23,6 @@ dependencies = [
 dev = [
     "black>=25.12.0",
     "mypy>=1.19.1",
+    "pytest>=9.0.2",
     "ruff>=0.14.10",
 ]
