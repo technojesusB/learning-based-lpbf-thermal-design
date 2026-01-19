@@ -12,9 +12,9 @@
 ## Running a Simulation
 ```python
 import torch
-from lpbf.config import SimulationConfig, LengthUnit
+from lpbf.core.config import SimulationConfig, LengthUnit
 from lpbf.physics.material import MaterialConfig
-from lpbf.state import SimulationState
+from lpbf.core.state import SimulationState
 from lpbf.integrator.stepper import TimeStepper
 from lpbf.scan.sources import GaussianSourceConfig, GaussianBeam
 

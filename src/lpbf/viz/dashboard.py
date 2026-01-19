@@ -2,7 +2,7 @@
 import dash
 from dash import dcc, html, Input, Output
 import plotly.graph_objects as go
-from lpbf.state import SimulationState
+from lpbf.core.state import SimulationState
 import torch
 
 def create_app() -> dash.Dash:

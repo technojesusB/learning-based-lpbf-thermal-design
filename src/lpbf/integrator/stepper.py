@@ -2,10 +2,10 @@
 from __future__ import annotations
 from typing import List, Callable
 import torch
-from lpbf.config import SimulationConfig
+from lpbf.core.config import SimulationConfig
 from lpbf.physics.material import MaterialConfig, k_eff, cp_eff, melt_fraction
 from lpbf.physics.ops import div_k_grad
-from lpbf.state import SimulationState
+from lpbf.core.state import SimulationState
 from lpbf.scan.sources import HeatSource
 
 class TimeStepper:
@@ -95,10 +95,13 @@ class TimeStepper:
         
         # Heat Source
         Q = Q_ext if Q_ext is not None else torch.zeros_like(T)
+
+        # Loss term (linear cooling)
+        loss_term = -self.sim.loss_h * (T - self.sim.T_ambient)
         
-        # RHS = Div + Q
+        # RHS = Div + Q + Loss
         # Neumann BC is handled inside div_term (padding).
-        rhs = div_term + Q
+        rhs = div_term + Q + loss_term
         
         # Update Temperature
         dT = (dt / rho) * (rhs / (cp + 1e-9))

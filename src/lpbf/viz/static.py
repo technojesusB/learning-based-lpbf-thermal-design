@@ -3,8 +3,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
-from lpbf.state import SimulationState
-from lpbf.config import SimulationConfig
+from lpbf.core.state import SimulationState
+from lpbf.core.config import SimulationConfig
 
 def plot_temperature_field(state: SimulationState, sim: SimulationConfig, save_path: str | None = None):
     """

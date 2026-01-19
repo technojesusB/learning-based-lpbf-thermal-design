@@ -4,8 +4,8 @@ import torch
 import os
 import matplotlib
 matplotlib.use('Agg') # Non-interactive backend
-from lpbf.state import SimulationState
-from lpbf.config import SimulationConfig, LengthUnit
+from lpbf.core.state import SimulationState
+from lpbf.core.config import SimulationConfig, LengthUnit
 from lpbf.viz.static import plot_temperature_field, plot_cooling_rate
 from lpbf.viz.interactive import figure_temperature_field, figure_cooling_rate
 

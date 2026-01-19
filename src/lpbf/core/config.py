@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 import torch
-from .units import LengthUnit, to_meters
+from lpbf.utils.units import LengthUnit, to_meters
 
 class SimulationConfig(BaseModel):
     """
@@ -45,6 +45,7 @@ class SimulationConfig(BaseModel):
     # Time settings
     dt_base: float = Field(default=1e-5, gt=0.0, description="Base timestep [s]")
     T_ambient: float = Field(default=293.15, gt=0.0, description="Ambient temperature [K]")
+    loss_h: float = Field(default=0.0, ge=0.0, description="Linear cooling loss coefficient [1/s]")
 
     @property
     def is_3d(self) -> bool:

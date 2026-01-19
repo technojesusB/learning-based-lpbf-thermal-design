@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 import torch
 
-from schemas.state import SnapshotState
+from lpbf.schemas.state import SnapshotState
 
 
 @dataclass

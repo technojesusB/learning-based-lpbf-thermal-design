@@ -1,9 +1,9 @@
 # tests/lpbf/test_integrator.py
 import pytest
 import torch
-from lpbf.config import SimulationConfig, LengthUnit
+from lpbf.core.config import SimulationConfig, LengthUnit
 from lpbf.physics.material import MaterialConfig
-from lpbf.state import SimulationState
+from lpbf.core.state import SimulationState
 from lpbf.integrator.stepper import TimeStepper
 
 @pytest.fixture
