@@ -65,8 +65,26 @@ def load_state(
     model_type: type[T],
     map_location: str | torch.device | None = "cpu",
 ) -> T:
-    path = Path(str(path)).expanduser()
-    obj = torch.load(path, map_location=map_location, weights_only=False)
+    import sys
+    import neural_pbf.schemas
+
+    # Legacy patch: 'schemas' -> 'neural_pbf.schemas'
+    # This handles checkpoints saved when schemas was a top-level module
+    original_schemas = sys.modules.get("schemas")
+    sys.modules["schemas"] = neural_pbf.schemas
+    
+    try:
+        obj = torch.load(path, map_location=map_location, weights_only=False)
+    except ModuleNotFoundError as e:
+        # If it failed for another reason, re-raise
+        raise RuntimeError(f"Failed to load state from {path}: {e}") from e
+    finally:
+        # Restore sys.modules state
+        if original_schemas is None:
+            sys.modules.pop("schemas", None)
+        else:
+            sys.modules["schemas"] = original_schemas
+
     if not isinstance(obj, model_type):
         raise TypeError(
             f"Loaded object type {type(obj)} does not match expected {model_type}."
