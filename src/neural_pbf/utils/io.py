@@ -66,6 +66,7 @@ def load_state(
     map_location: str | torch.device | None = "cpu",
 ) -> T:
     import sys
+
     import neural_pbf.schemas
 
     # Legacy patch: 'schemas' -> 'neural_pbf.schemas'
