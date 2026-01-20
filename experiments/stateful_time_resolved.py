@@ -75,13 +75,17 @@ def update_history_maps(
     return E_acc, t_since
 
 
-def main() -> None:
+def run_experiment(
+    tracking_enabled: bool = True,
+    artifact_enabled: bool = True,
+    diagnostics_enabled: bool = True,
+) -> ThermalStates:
     # ----------------------------
     # 0. Configuration & Tracking Setup
     # ----------------------------
     # Parse from env or defaults
     tracking_cfg = TrackingConfig(
-        enabled=True,
+        enabled=tracking_enabled,
         backend=os.environ.get("TRACKING_BACKEND", "none"),  # type: ignore
         experiment_name="lpbf-thermal",
         run_name=f"run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -89,14 +93,14 @@ def main() -> None:
     )
 
     artifact_cfg = ArtifactConfig(
-        enabled=True,
+        enabled=artifact_enabled,
         png_every_n_steps=50,
         html_every_n_steps=250,  # Set to 0 if plotly slow/missing
         make_report=True,
     )
 
     diagnostics_cfg = DiagnosticsConfig(
-        enabled=True,
+        enabled=diagnostics_enabled,
         log_every_n_steps=10,  # frequent logging for metrics
         check_nan_inf=True,
         strict=False,
@@ -396,6 +400,8 @@ def main() -> None:
     # End Context
     ctx.end(state.T, meta={"final_steps": global_step})
 
+    return states
+
 
 if __name__ == "__main__":
-    main()
+    run_experiment()

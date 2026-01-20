@@ -61,6 +61,9 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         elif hasattr(T, "numpy"):
             T = T.numpy()
 
+        # Handle dimensions
+        T = np.squeeze(T)
+        
         # Handle 3D -> 2D (take surface max or mid-slice)
         if T.ndim == 3:
             # Assuming [X, Y, Z] or [Z, Y, X]?
@@ -159,9 +162,10 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
 
     def _write_report(self, path: Path, meta_dict: dict[str, Any]):
         """Generate a simple HTML report."""
-        # Relative paths for links
-        png_rel = [p.relative_to(path.parent) for p in self._png_paths]
-        html_rel = [p.relative_to(path.parent) for p in self._html_paths]
+        import os
+        # Relative paths for links using os.path.relpath to handle sibling directories
+        png_rel = [Path(os.path.relpath(p, path.parent)) for p in self._png_paths]
+        html_rel = [Path(os.path.relpath(p, path.parent)) for p in self._html_paths]
 
         # Sort by step (filename)
         png_rel = sorted(png_rel, key=lambda p: p.name)
