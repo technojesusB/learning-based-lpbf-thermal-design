@@ -59,7 +59,7 @@ class TimeStepper:
         """
         # Placeholder for high-level step that handles source evaluation internally.
         # Currently not fully implemented with source evaluation.
-        pass
+        raise NotImplementedError("Use step_adaptive instead.")
 
     def step_explicit_euler(
         self, state: SimulationState, dt: float, Q_ext: torch.Tensor | None = None

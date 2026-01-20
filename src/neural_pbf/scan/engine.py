@@ -98,6 +98,7 @@ class ScanPathGenerator:
                 y_end=end[1],
                 power=power,
                 speed=speed,
+                dwell_time=0.0,
                 laser_on=True,
             )
         ]
@@ -160,6 +161,7 @@ class ScanPathGenerator:
                     y_end=end[1],
                     power=power,
                     speed=speed,
+                    dwell_time=0.0,
                     laser_on=True,
                 )
             )
@@ -178,6 +180,7 @@ class ScanPathGenerator:
                         y_end=next_y,
                         power=0.0,
                         speed=travel_speed,
+                        dwell_time=0.0,
                         laser_on=False,
                     )
                 )

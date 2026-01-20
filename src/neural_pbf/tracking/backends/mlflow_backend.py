@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 import mlflow
 
-from .base import ExperimentTracker
+from ..base import ExperimentTracker
 
 logger = logging.getLogger(__name__)
 
