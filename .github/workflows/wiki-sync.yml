@@ -1,0 +1,46 @@
+name: "Sync to Wiki"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Checkout Wiki
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+      
+      - name: Sync Docs
+        run: |
+          # Clean wiki directory except .git
+          find wiki -maxdepth 1 ! -name .git ! -name . -exec rm -rf {} +
+          
+          # Copy docs contents to wiki
+          cp -r docs/* wiki/
+          
+          # Configure Git
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Commit and Push
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update Wiki from docs/ $(date +'%Y-%m-%d %H:%M:%S')"
+            git push
+          fi
