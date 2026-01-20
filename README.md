@@ -160,6 +160,52 @@ This enables rapid inverse design iterations without repeated expensive simulati
 
 ---
 
+## Development & CI
+
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management and task execution, ensuring parity between local development and CI.
+
+### Prerequisites
+
+- [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+### Setup
+
+```bash
+# Sync dependencies (creates .venv based on uv.lock)
+uv sync
+```
+
+### Running Checks
+
+The following commands are defined in `pyproject.toml` and mimic the CI pipeline:
+
+```bash
+# Linting (Ruff)
+uv run lint
+
+# Formatting Check (Ruff)
+uv run format
+
+# Type Checking (Pyright)
+uv run typecheck
+
+# Tests (Pytest)
+uv run test
+
+# Run tests with coverage
+uv run test -- --cov=lpbf
+```
+
+### Continuous Integration
+
+CI is hosted on GitHub Actions:
+- **Main Pipeline**: Runs on PRs and main push. Uses `uv` for speed and consistency.
+- **Packaging Check**: Verifies that the package can be installed via `pip` (ensures `uv` didn't produce something exotic).
+- **Release**: Automatically builds and creates a GitHub Release on `v*` tags with artifacts attached.
+
+---
+
+
 ## Extensions and Future Work
 - Multi-laser scan strategies
 - Separate lasers for melting vs. thermal conditioning

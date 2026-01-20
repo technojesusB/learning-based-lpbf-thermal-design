@@ -19,10 +19,55 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
+[project.scripts]
+lint = "lpbf.dev_scripts:lint"
+format = "lpbf.dev_scripts:format"
+typecheck = "lpbf.dev_scripts:typecheck"
+test = "lpbf.dev_scripts:test"
+
 [dependency-groups]
 dev = [
-    "black>=25.12.0",
-    "mypy>=1.19.1",
-    "pytest>=9.0.2",
-    "ruff>=0.14.10",
+    "black>=25.12.0",  # Keeping black if needed, but ruff format is preferred
+    "mypy>=1.19.1",    # Keeping mypy just in case, but pyright is primary
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "pyright>=1.1.300",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/node_modules", "**/__pycache__", "legacy", "experiments", "notebooks"]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
+[filterwarnings]
+ignore = [
+    "ignore::DeprecationWarning",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lpbf"]

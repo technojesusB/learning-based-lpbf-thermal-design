@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Type, TypeVar
-import torch
 import os
+from pathlib import Path
+from typing import TypeVar
+
+import torch
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
+
 
 def _ensure_parent_dir(path: Path) -> None:
     parent = path.parent.resolve()
@@ -23,7 +25,8 @@ def _ensure_parent_dir(path: Path) -> None:
     # Extra sanity: ensure we can write into that directory
     if not os.access(parent, os.W_OK):
         raise PermissionError(f"No write permission for directory: {parent}")
-    
+
+
 def save_state(state: BaseModel, path: str | Path) -> Path:
     """
     Save a Pydantic state object via torch.save (zipfile format).
@@ -57,9 +60,15 @@ def save_state(state: BaseModel, path: str | Path) -> Path:
             ) from e
 
 
-def load_state(path: str | Path, model_type: Type[T], map_location: str | torch.device | None = "cpu") -> T:
+def load_state(
+    path: str | Path,
+    model_type: type[T],
+    map_location: str | torch.device | None = "cpu",
+) -> T:
     path = Path(str(path)).expanduser()
     obj = torch.load(path, map_location=map_location, weights_only=False)
     if not isinstance(obj, model_type):
-        raise TypeError(f"Loaded object type {type(obj)} does not match expected {model_type}.")
+        raise TypeError(
+            f"Loaded object type {type(obj)} does not match expected {model_type}."
+        )
     return obj

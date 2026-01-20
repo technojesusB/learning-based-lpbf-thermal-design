@@ -1,14 +1,15 @@
 # src/lpbf/config.py
 from __future__ import annotations
-from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
-import torch
+
+from pydantic import BaseModel, ConfigDict, Field
+
 from lpbf.utils.units import LengthUnit, to_meters
+
 
 class SimulationConfig(BaseModel):
     """
     Global configuration for the LPBF thermal simulation.
-    
+
     This class handles the definition of the simulation domain size, grid resolution,
     and base time stepping parameters. It enforces strict SI units (meters, seconds, Kelvin)
     for all internal calculations, while allowing users to define the domain geometry
@@ -27,13 +28,16 @@ class SimulationConfig(BaseModel):
         dt_base (float): The base timestep for the integrator in seconds [s].
         T_ambient (float): The ambient (initial) temperature of the domain in Kelvin [K].
     """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Domain size (user units)
     Lx: float = Field(..., gt=0.0, description="Length in X (user units)")
     Ly: float = Field(..., gt=0.0, description="Length in Y (user units)")
-    Lz: float | None = Field(None, gt=0.0, description="Length in Z (user units). If None, 2D mode.")
-    
+    Lz: float | None = Field(
+        None, gt=0.0, description="Length in Z (user units). If None, 2D mode."
+    )
+
     # Grid resolution
     Nx: int = Field(..., gt=1)
     Ny: int = Field(..., gt=1)
@@ -44,8 +48,12 @@ class SimulationConfig(BaseModel):
 
     # Time settings
     dt_base: float = Field(default=1e-5, gt=0.0, description="Base timestep [s]")
-    T_ambient: float = Field(default=293.15, gt=0.0, description="Ambient temperature [K]")
-    loss_h: float = Field(default=0.0, ge=0.0, description="Linear cooling loss coefficient [1/s]")
+    T_ambient: float = Field(
+        default=293.15, gt=0.0, description="Ambient temperature [K]"
+    )
+    loss_h: float = Field(
+        default=0.0, ge=0.0, description="Linear cooling loss coefficient [1/s]"
+    )
 
     @property
     def is_3d(self) -> bool:
@@ -85,7 +93,8 @@ class SimulationConfig(BaseModel):
         Returns:
             float: Lz converted to [m]. Returns 0.0 if 2D.
         """
-        if self.Lz is None: return 0.0
+        if self.Lz is None:
+            return 0.0
         return to_meters(self.Lz, self.length_unit)
 
     @property
@@ -107,7 +116,7 @@ class SimulationConfig(BaseModel):
             float: dy = Ly_m / (Ny - 1) [m].
         """
         return self.Ly_m / (self.Ny - 1) if self.Ny > 1 else self.Ly_m
-    
+
     @property
     def dz(self) -> float:
         """
@@ -116,5 +125,6 @@ class SimulationConfig(BaseModel):
         Returns:
             float: dz = Lz_m / (Nz - 1) [m] if 3D, else 1.0 (arbitrary unit thickness).
         """
-        if not self.is_3d: return 1.0 # arbitrary for 2D
+        if not self.is_3d:
+            return 1.0  # arbitrary for 2D
         return self.Lz_m / (self.Nz - 1) if self.Nz > 1 else self.Lz_m

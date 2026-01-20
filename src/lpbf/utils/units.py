@@ -1,13 +1,16 @@
 # src/lpbf/units.py
 from enum import Enum
 
+
 class LengthUnit(str, Enum):
     """
     Enumeration of supported length units for simulation input.
     Internally, the simulation always operates in SI units (meters).
     """
+
     METERS = "m"
     MILLIMETERS = "mm"
+
 
 def to_meters(value: float, unit: LengthUnit) -> float:
     """
@@ -29,6 +32,7 @@ def to_meters(value: float, unit: LengthUnit) -> float:
         return value * 1e-3
     else:
         raise ValueError(f"Unknown unit: {unit}")
+
 
 def from_meters(value: float, unit: LengthUnit) -> float:
     """

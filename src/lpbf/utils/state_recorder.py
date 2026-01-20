@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List
+
 import torch
 
 from lpbf.schemas.state import SnapshotState
@@ -8,17 +9,19 @@ from lpbf.schemas.state import SnapshotState
 
 @dataclass
 class StateRecorder:
-    keys: List[str] = field(default_factory=lambda: ["T", "E_acc", "t_since", "cooling_rate"])
-    times: List[float] = field(default_factory=list)
-    event_idxs: List[int] = field(default_factory=list)
-    snaps: Dict[str, List[torch.Tensor]] = field(default_factory=dict)
+    keys: list[str] = field(
+        default_factory=lambda: ["T", "E_acc", "t_since", "cooling_rate"]
+    )
+    times: list[float] = field(default_factory=list)
+    event_idxs: list[int] = field(default_factory=list)
+    snaps: dict[str, list[torch.Tensor]] = field(default_factory=dict)
 
     def __post_init__(self):
         for k in self.keys:
             self.snaps[k] = []
 
     @torch.no_grad()
-    def add(self, t: float, event_idx: int, maps: Dict[str, torch.Tensor]):
+    def add(self, t: float, event_idx: int, maps: dict[str, torch.Tensor]):
         self.times.append(float(t))
         self.event_idxs.append(int(event_idx))
         for k in self.keys:

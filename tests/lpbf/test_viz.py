@@ -1,13 +1,15 @@
 # tests/lpbf/test_viz.py
+
+import matplotlib
 import pytest
 import torch
-import os
-import matplotlib
-matplotlib.use('Agg') # Non-interactive backend
+
+matplotlib.use("Agg")  # Non-interactive backend
+from lpbf.core.config import LengthUnit, SimulationConfig
 from lpbf.core.state import SimulationState
-from lpbf.core.config import SimulationConfig, LengthUnit
-from lpbf.viz.static import plot_temperature_field, plot_cooling_rate
-from lpbf.viz.interactive import figure_temperature_field, figure_cooling_rate
+from lpbf.viz.interactive import figure_cooling_rate, figure_temperature_field
+from lpbf.viz.static import plot_cooling_rate, plot_temperature_field
+
 
 @pytest.fixture
 def dummy_state():
@@ -15,19 +17,24 @@ def dummy_state():
     CR = torch.rand((1, 1, 10, 10)) * 50.0
     return SimulationState(T=T, t=0.1, cooling_rate=CR)
 
+
 @pytest.fixture
 def sim_config():
-    return SimulationConfig(Lx=0.01, Ly=0.01, Nx=10, Ny=10, length_unit=LengthUnit.METERS)
+    return SimulationConfig(
+        Lx=0.01, Ly=0.01, Nx=10, Ny=10, length_unit=LengthUnit.METERS
+    )
+
 
 def test_static_plots(dummy_state, sim_config, tmp_path):
     # Smoke test: check if they run and save file
     bg_path = tmp_path / "temp.png"
     plot_temperature_field(dummy_state, sim_config, save_path=str(bg_path))
     assert bg_path.exists()
-    
+
     bg_path2 = tmp_path / "cr.png"
     plot_cooling_rate(dummy_state, save_path=str(bg_path2))
     assert bg_path2.exists()
+
 
 def test_interactive_plots(dummy_state):
     # Smoke test for Plotly

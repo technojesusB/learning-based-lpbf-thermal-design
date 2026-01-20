@@ -1,45 +1,53 @@
 # src/lpbf/scan/engine.py
 from __future__ import annotations
-from enum import Enum
-from typing import List
-from pydantic import BaseModel, Field, ConfigDict
-import torch
+
 import math
+from enum import Enum
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class ScanPattern(str, Enum):
     """
     Enumeration of supported scan patterns.
     """
+
     LINE = "line"
     HATCH = "hatch"
     POINT = "point"
+
 
 class ScanEvent(BaseModel):
     """
     Represents a single atomic event in the laser scan path.
     Can be a continuous vector scan (Line) or a spot dwell (Point).
     """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
-    
+
     # Coordinates in meters [m]
     x_start: float = Field(..., description="Start X coordinate [m]")
     y_start: float = Field(..., description="Start Y coordinate [m]")
     x_end: float = Field(..., description="End X coordinate [m]")
     y_end: float = Field(..., description="End Y coordinate [m]")
-    
+
     power: float = Field(..., description="Laser power during this event [W]")
     speed: float = Field(..., description="Scan speed [m/s]. If 0, treated as dwell.")
-    
+
     # For spot dwell
     dwell_time: float = Field(0.0, description="Dwell time [s] if speed is 0.")
-    
+
     # Laser status
-    laser_on: bool = Field(True, description="Whether the laser is active emitting power.")
-    
+    laser_on: bool = Field(
+        True, description="Whether the laser is active emitting power."
+    )
+
     @property
     def is_point(self) -> bool:
         """Check if the event is a point dwell (zero distance)."""
-        dist = math.sqrt((self.x_end - self.x_start)**2 + (self.y_end - self.y_start)**2)
+        dist = math.sqrt(
+            (self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2
+        )
         return dist < 1e-9
 
     @property
@@ -52,17 +60,23 @@ class ScanEvent(BaseModel):
         if self.is_point:
             return self.dwell_time
         elif self.speed > 0:
-            dist = math.sqrt((self.x_end - self.x_start)**2 + (self.y_end - self.y_start)**2)
+            dist = math.sqrt(
+                (self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2
+            )
             return dist / self.speed
         else:
             return 0.0
+
 
 class ScanPathGenerator:
     """
     Utility class to generate sequences of ScanEvents (scan paths) from high-level parameters.
     """
+
     @staticmethod
-    def line(start: tuple[float, float], end: tuple[float, float], power: float, speed: float) -> List[ScanEvent]:
+    def line(
+        start: tuple[float, float], end: tuple[float, float], power: float, speed: float
+    ) -> list[ScanEvent]:
         """
         Generate a single linear scan vector.
 
@@ -75,23 +89,29 @@ class ScanPathGenerator:
         Returns:
             List[ScanEvent]: A list containing the single scan event.
         """
-        return [ScanEvent(
-            x_start=start[0], y_start=start[1],
-            x_end=end[0], y_end=end[1],
-            power=power, speed=speed, laser_on=True
-        )]
-        
+        return [
+            ScanEvent(
+                x_start=start[0],
+                y_start=start[1],
+                x_end=end[0],
+                y_end=end[1],
+                power=power,
+                speed=speed,
+                laser_on=True,
+            )
+        ]
+
     @staticmethod
     def hatch(
-        corner_start: tuple[float, float], 
-        width: float, 
-        height: float, 
-        spacing: float, 
-        power: float, 
+        corner_start: tuple[float, float],
+        width: float,
+        height: float,
+        spacing: float,
+        power: float,
         speed: float,
         angle_deg: float = 0.0,
-        skywriting: bool = False
-    ) -> List[ScanEvent]:
+        skywriting: bool = False,
+    ) -> list[ScanEvent]:
         """
         Generate a serpentine hatch pattern covering a rectangular area.
         Includes "travel" (laser off) events between hatch lines.
@@ -111,16 +131,16 @@ class ScanPathGenerator:
         """
         # Simplification: Only 0 degree (horizontal) for now
         # TODO: Implement Rotation matrix for angle_deg
-        
+
         events = []
-        
+
         y_current = corner_start[1]
         y_max = corner_start[1] + height
         x_min = corner_start[0]
         x_max = corner_start[0] + width
-        
-        direction = 1 # 1 = right, -1 = left
-        
+
+        direction = 1  # 1 = right, -1 = left
+
         while y_current <= y_max:
             if direction == 1:
                 start = (x_min, y_current)
@@ -128,30 +148,39 @@ class ScanPathGenerator:
             else:
                 start = (x_max, y_current)
                 end = (x_min, y_current)
-            
+
             # Scan line
-            events.append(ScanEvent(
-                x_start=start[0], y_start=start[1],
-                x_end=end[0], y_end=end[1],
-                power=power, speed=speed, laser_on=True
-            ))
-            
+            events.append(
+                ScanEvent(
+                    x_start=start[0],
+                    y_start=start[1],
+                    x_end=end[0],
+                    y_end=end[1],
+                    power=power,
+                    speed=speed,
+                    laser_on=True,
+                )
+            )
+
             # Jump to next line (Laser OFF)
             next_y = y_current + spacing
             if next_y <= y_max:
                 # Travel event
                 # Assume high travel speed (e.g. 5x scan speed)
-                travel_speed = speed * 5.0 
-                events.append(ScanEvent(
-                    x_start=end[0], y_start=end[1],
-                    x_end=end[0] if direction == 1 else x_min, 
-                    y_end=next_y,
-                    power=0.0,
-                    speed=travel_speed,
-                    laser_on=False
-                ))
-            
+                travel_speed = speed * 5.0
+                events.append(
+                    ScanEvent(
+                        x_start=end[0],
+                        y_start=end[1],
+                        x_end=end[0] if direction == 1 else x_min,
+                        y_end=next_y,
+                        power=0.0,
+                        speed=travel_speed,
+                        laser_on=False,
+                    )
+                )
+
             y_current = next_y
             direction *= -1
-            
+
         return events

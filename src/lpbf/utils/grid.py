@@ -1,8 +1,11 @@
 from __future__ import annotations
-import torch
-from typing import Tuple
 
-def make_xy_grid(H: int, W: int, device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
+import torch
+
+
+def make_xy_grid(
+    H: int, W: int, device: torch.device, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Returns X, Y with shape [1,1,H,W] in [0,1].
     """
