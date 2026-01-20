@@ -175,13 +175,31 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
 uv sync
 ```
 
+### Running Experiments
+
+You can run the main simulation experiment either via the command line or using the provided notebook.
+
+**Command Line:**
+```bash
+# Run the stateful time-resolved experiment
+uv run python experiments/stateful_time_resolved.py
+```
+This will generate artifacts in `artifacts/run_<timestamp>/`.
+
+**Notebook:**
+Open `notebooks/01_view_states.ipynb` to run the experiment interactively and visualize the thermal states (Temperature, Cooling Rate, etc.) directly in the notebook.
+
+
 ### Running Checks
 
 The following commands are defined in `pyproject.toml` and mimic the CI pipeline:
 
 ```bash
-# Linting (Ruff)
+# Linting (Ruff) - check only
 uv run lint
+
+# Linting (Ruff) - auto-fix issues
+uv run ruff check --fix .
 
 # Formatting Check (Ruff)
 uv run format

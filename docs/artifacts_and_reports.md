@@ -12,7 +12,18 @@ Static heatmaps generated using Matplotlib.
 Interactive 3D/Heatmap visualizations using Plotly.
 - Location: `plots/interactive/`
 - Cadence: Controlled by `html_every_n_steps` (default 250).
+- **Usage**: Open these `.html` files directly in your web browser.
 - **Note**: Requires `plotly` installed. If missing, this feature degrades gracefully.
+
+## MLflow Tracking
+If enabled, metrics and artifacts are logged to MLflow.
+- **Backend**: Defined by `TRACKING_BACKEND` env var (default `none` or `mlflow`).
+- **URI**: Defined by `MLFLOW_TRACKING_URI`.
+- **Viewing**:
+  ```bash
+  uv run mlflow ui
+  ```
+  Then open http://127.0.0.1:5000 in your browser.
 
 ## Reports
 A summary HTML report is generated at the end of the run.
