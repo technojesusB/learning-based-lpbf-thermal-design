@@ -2,10 +2,10 @@
 import pytest
 import torch
 
-from lpbf.core.config import LengthUnit, SimulationConfig
-from lpbf.core.state import SimulationState
-from lpbf.integrator.stepper import TimeStepper
-from lpbf.physics.material import MaterialConfig
+from neural_pbf.core.config import LengthUnit, SimulationConfig
+from neural_pbf.core.state import SimulationState
+from neural_pbf.integrator.stepper import TimeStepper
+from neural_pbf.physics.material import MaterialConfig
 
 
 @pytest.fixture

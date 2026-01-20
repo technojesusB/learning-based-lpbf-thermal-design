@@ -1,5 +1,5 @@
 [project]
-name = "learning-based-lpbf-thermal-design"
+name = "neural-pbf"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -20,10 +20,10 @@ dependencies = [
 ]
 
 [project.scripts]
-lint = "lpbf.dev_scripts:lint"
-format = "lpbf.dev_scripts:format"
-typecheck = "lpbf.dev_scripts:typecheck"
-test = "lpbf.dev_scripts:test"
+lint = "neural_pbf.dev_scripts:lint"
+format = "neural_pbf.dev_scripts:format"
+typecheck = "neural_pbf.dev_scripts:typecheck"
+test = "neural_pbf.dev_scripts:test"
 
 [dependency-groups]
 dev = [
@@ -70,4 +70,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lpbf"]
+packages = ["src/neural_pbf"]

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
-from lpbf.core.config import SimulationConfig
-from lpbf.core.state import SimulationState
+from neural_pbf.core.config import SimulationConfig
+from neural_pbf.core.state import SimulationState
 
 
 def plot_temperature_field(

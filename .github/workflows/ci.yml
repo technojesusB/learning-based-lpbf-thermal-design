@@ -77,4 +77,4 @@ jobs:
           python -m venv .venv-test
           source .venv-test/bin/activate
           pip install dist/*.whl
-          python -c "import lpbf; print('Package lpbf imported successfully')"
+          python -c "import neural_pbf; print('Package neural_pbf imported successfully')"

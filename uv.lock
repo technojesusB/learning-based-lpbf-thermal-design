@@ -1189,61 +1189,6 @@ wheels = [
 ]
 
 [[package]]
-name = "learning-based-lpbf-thermal-design"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "dash" },
-    { name = "ipykernel" },
-    { name = "ipywidgets" },
-    { name = "matplotlib" },
-    { name = "mlflow" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "plotly" },
-    { name = "pydantic" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "black" },
-    { name = "mypy" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dash", specifier = ">=3.3.0" },
-    { name = "ipykernel", specifier = ">=7.1.0" },
-    { name = "ipywidgets", specifier = ">=8.1.8" },
-    { name = "matplotlib", specifier = ">=3.10.6" },
-    { name = "mlflow", specifier = ">=3.8.1" },
-    { name = "numpy", specifier = ">=2.3.3" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "plotly", specifier = ">=6.5.2" },
-    { name = "pydantic", specifier = ">=2.11.9" },
-    { name = "torch", specifier = ">=2.8.0" },
-    { name = "torchvision", specifier = ">=0.23.0" },
-    { name = "tqdm", specifier = ">=4.67.1" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "black", specifier = ">=25.12.0" },
-    { name = "mypy", specifier = ">=1.19.1" },
-    { name = "pyright", specifier = ">=1.1.300" },
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-cov", specifier = ">=4.1.0" },
-    { name = "ruff", specifier = ">=0.1.0" },
-]
-
-[[package]]
 name = "librt"
 version = "0.7.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1602,6 +1547,61 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4f/ccdb8ad3a38e583f214547fd2f7ff1fc160c43a75af88e6aec213404b96a/networkx-3.5.tar.gz", hash = "sha256:d4c6f9cf81f52d69230866796b82afbccdec3db7ae4fbd1b65ea750feed50037", size = 2471065, upload-time = "2025-05-29T11:35:07.804Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/8d/776adee7bbf76365fdd7f2552710282c79a4ead5d2a46408c9043a2b70ba/networkx-3.5-py3-none-any.whl", hash = "sha256:0030d386a9a06dee3565298b4a734b68589749a544acbb6c412dc9e2489ec6ec", size = 2034406, upload-time = "2025-05-29T11:35:04.961Z" },
+]
+
+[[package]]
+name = "neural-pbf"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "dash" },
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "matplotlib" },
+    { name = "mlflow" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "plotly" },
+    { name = "pydantic" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "black" },
+    { name = "mypy" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dash", specifier = ">=3.3.0" },
+    { name = "ipykernel", specifier = ">=7.1.0" },
+    { name = "ipywidgets", specifier = ">=8.1.8" },
+    { name = "matplotlib", specifier = ">=3.10.6" },
+    { name = "mlflow", specifier = ">=3.8.1" },
+    { name = "numpy", specifier = ">=2.3.3" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "plotly", specifier = ">=6.5.2" },
+    { name = "pydantic", specifier = ">=2.11.9" },
+    { name = "torch", specifier = ">=2.8.0" },
+    { name = "torchvision", specifier = ">=0.23.0" },
+    { name = "tqdm", specifier = ">=4.67.1" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=25.12.0" },
+    { name = "mypy", specifier = ">=1.19.1" },
+    { name = "pyright", specifier = ">=1.1.300" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-cov", specifier = ">=4.1.0" },
+    { name = "ruff", specifier = ">=0.1.0" },
 ]
 
 [[package]]

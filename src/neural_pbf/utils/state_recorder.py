@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from lpbf.schemas.state import SnapshotState
+from neural_pbf.schemas.state import SnapshotState
 
 
 @dataclass

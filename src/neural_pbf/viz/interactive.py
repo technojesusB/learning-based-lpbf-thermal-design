@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
-from lpbf.core.state import SimulationState
+from neural_pbf.core.state import SimulationState
 
 
 def figure_temperature_field(state: SimulationState) -> go.Figure:

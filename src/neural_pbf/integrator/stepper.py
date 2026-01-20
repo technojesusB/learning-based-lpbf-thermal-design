@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import torch
 
-from lpbf.core.config import SimulationConfig
-from lpbf.core.state import SimulationState
-from lpbf.physics.material import MaterialConfig, cp_eff, k_eff
-from lpbf.physics.ops import div_k_grad
-from lpbf.scan.sources import HeatSource
+from neural_pbf.core.config import SimulationConfig
+from neural_pbf.core.state import SimulationState
+from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff
+from neural_pbf.physics.ops import div_k_grad
+from neural_pbf.scan.sources import HeatSource
 
 
 class TimeStepper:

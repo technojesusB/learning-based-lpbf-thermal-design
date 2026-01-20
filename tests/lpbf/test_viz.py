@@ -5,10 +5,10 @@ import pytest
 import torch
 
 matplotlib.use("Agg")  # Non-interactive backend
-from lpbf.core.config import LengthUnit, SimulationConfig
-from lpbf.core.state import SimulationState
-from lpbf.viz.interactive import figure_cooling_rate, figure_temperature_field
-from lpbf.viz.static import plot_cooling_rate, plot_temperature_field
+from neural_pbf.core.config import LengthUnit, SimulationConfig
+from neural_pbf.core.state import SimulationState
+from neural_pbf.viz.interactive import figure_cooling_rate, figure_temperature_field
+from neural_pbf.viz.static import plot_cooling_rate, plot_temperature_field
 
 
 @pytest.fixture

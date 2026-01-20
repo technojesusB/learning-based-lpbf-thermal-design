@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lpbf.utils.units import LengthUnit, to_meters
+from neural_pbf.utils.units import LengthUnit, to_meters
 
 
 class SimulationConfig(BaseModel):

@@ -1,8 +1,8 @@
 # tests/lpbf/test_scan.py
 import torch
 
-from lpbf.scan.engine import ScanPathGenerator
-from lpbf.scan.sources import GaussianBeam, GaussianSourceConfig
+from neural_pbf.scan.engine import ScanPathGenerator
+from neural_pbf.scan.sources import GaussianBeam, GaussianSourceConfig
 
 
 def test_gaussian_source_integral_2d():

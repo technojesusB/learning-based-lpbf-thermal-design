@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from lpbf.physics.material import MaterialConfig, cp_eff, melt_fraction
-from lpbf.physics.ops import div_k_grad
+from neural_pbf.physics.material import MaterialConfig, cp_eff, melt_fraction
+from neural_pbf.physics.ops import div_k_grad
 
 
 @pytest.fixture

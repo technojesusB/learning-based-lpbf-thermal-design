@@ -193,7 +193,7 @@ uv run typecheck
 uv run test
 
 # Run tests with coverage
-uv run test -- --cov=lpbf
+uv run test -- --cov=neural_pbf
 ```
 
 ### Continuous Integration

@@ -5,16 +5,16 @@ from dataclasses import dataclass
 
 import torch
 
-from lpbf.core.config import SimulationConfig
-from lpbf.core.state import SimulationState
-from lpbf.integrator.stepper import TimeStepper
-from lpbf.physics.material import MaterialConfig
-from lpbf.scan.sources import GaussianBeam, GaussianSourceConfig
-from lpbf.schemas.state import FinalState, StateMeta, ThermalStates
-from lpbf.utils.grid import make_xy_grid
-from lpbf.utils.history import make_smooth_preheat_field
-from lpbf.utils.io import save_state
-from lpbf.utils.state_recorder import StateRecorder
+from neural_pbf.core.config import SimulationConfig
+from neural_pbf.core.state import SimulationState
+from neural_pbf.integrator.stepper import TimeStepper
+from neural_pbf.physics.material import MaterialConfig
+from neural_pbf.scan.sources import GaussianBeam, GaussianSourceConfig
+from neural_pbf.schemas.state import FinalState, StateMeta, ThermalStates
+from neural_pbf.utils.grid import make_xy_grid
+from neural_pbf.utils.history import make_smooth_preheat_field
+from neural_pbf.utils.io import save_state
+from neural_pbf.utils.state_recorder import StateRecorder
 
 
 # We keep DotEvent locally as a simple experiment parameter implementation
