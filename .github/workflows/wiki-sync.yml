@@ -28,7 +28,7 @@ jobs:
       - name: Sync Docs
         run: |
           # Clean wiki directory except .git
-          find wiki -maxdepth 1 ! -name .git ! -name . -exec rm -rf {} +
+          find wiki -mindepth 1 -maxdepth 1 ! -name .git ! -name . -exec rm -rf {} +
           
           # Copy docs contents to wiki
           cp -r docs/* wiki/
