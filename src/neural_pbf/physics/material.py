@@ -67,7 +67,8 @@ class MaterialConfig(BaseModel):
         Effective width of the melting temperature range [K].
 
         Returns:
-            float: T_liquidus - T_solidus. Returns 1.0 if gap is negligible to avoid division by zero.
+            float: T_liquidus - T_solidus. Returns 1.0 if gap is negligible to
+                avoid division by zero.
         """
         gap = self.T_liquidus - self.T_solidus
         if gap < 1e-6:
@@ -95,8 +96,8 @@ def sigmoid_step(x: torch.Tensor, sharpness: float) -> torch.Tensor:
 def melt_fraction(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     """
     Compute the liquid phase fraction (phi) for a temperature field.
-
-    The transition is modeled as a smooth sigmoid function centered between T_solidus and T_liquidus.
+    The transition is modeled as a smooth sigmoid function centered between
+    T_solidus and T_liquidus.
 
     phi = 0 implies completely solid (or powder).
     phi = 1 implies completely liquid.
@@ -123,15 +124,17 @@ def k_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     Compute the effective thermal conductivity field k(T) [W/(m K)].
 
     Physical Model:
-       The conductivity is a phase-weighted average of the solid and liquid conductivities:
+       The conductivity is a phase-weighted average of the solid and liquid
+       conductivities:
        k(T) = (1 - phi) * k_solid + phi * k_liquid
 
     Assumptions:
-       - This function currently treats sub-solidus material as having `k_solid` properties,
-         blended with `k_liquid` during melting.
-       - Powder conductivity (`k_powder`) handling is currently deferred to the caller
-         or requires a separate state mask (consolidated vs powder).
-       - Future versions will accept a 'state' tensor to distinguish powder domains from solidified domains.
+       - This function currently treats sub-solidus material as having `k_solid`
+         properties, blended with `k_liquid` during melting.
+       - Powder conductivity (`k_powder`) handling is currently deferred to the
+         caller or requires a separate state mask (consolidated vs powder).
+       - Future versions will accept a 'state' tensor to distinguish powder
+         domains from solidified domains.
 
     Args:
         T (torch.Tensor): Temperature field [K].
@@ -158,8 +161,9 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
 
        cp_eff(T) = cp_base + L * (d(phi) / dT)
 
-       We approximate d(phi)/dT using a Gaussian function centered in the melting range.
-       This ensures that the integral of cp_eff over the melting range approximately evaluates to:
+       We approximate d(phi)/dT using a Gaussian function centered in the
+       melting range. This ensures that the integral of cp_eff over the melting
+       range approximately evaluates to:
        Integral(cp_eff) dT ~ (cp_base * DeltaT) + L
 
     Args:

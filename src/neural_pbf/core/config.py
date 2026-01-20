@@ -11,9 +11,9 @@ class SimulationConfig(BaseModel):
     Global configuration for the LPBF thermal simulation.
 
     This class handles the definition of the simulation domain size, grid resolution,
-    and base time stepping parameters. It enforces strict SI units (meters, seconds, Kelvin)
-    for all internal calculations, while allowing users to define the domain geometry
-    in more convenient units (e.g., millimeters) via the `length_unit` field.
+    and base time stepping parameters. It enforces strict SI units (meters, seconds,
+    Kelvin)for all internal calculations, while allowing users to define the domain
+    geometry n more convenient units (e.g., millimeters) via the `length_unit` field.
 
     Attributes:
         Lx (float): Length of the domain in the X-direction (in `length_unit`).
@@ -26,7 +26,8 @@ class SimulationConfig(BaseModel):
         length_unit (LengthUnit): The unit system used for input lengths (Lx, Ly, Lz).
                                   Defaults to MILLIMETERS.
         dt_base (float): The base timestep for the integrator in seconds [s].
-        T_ambient (float): The ambient (initial) temperature of the domain in Kelvin [K].
+        T_ambient (float): The ambient (initial) temperature of the domain in
+            Kelvin [K].
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

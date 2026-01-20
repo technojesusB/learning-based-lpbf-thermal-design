@@ -38,7 +38,7 @@ class TimeStepper:
         self,
         state: SimulationState,
         dt: float,
-        heat_sources: list[HeatSource] = [],
+        heat_sources: list[HeatSource] | None = None,
         XY_grid: tuple[torch.Tensor, torch.Tensor] | None = None,
         Z_grid: torch.Tensor | None = None,
     ) -> SimulationState:
@@ -77,9 +77,11 @@ class TimeStepper:
             - Stores state.T_prev.
 
         Args:
-            state (SimulationState): Current simulation state (mutated in place, but returned).
+            state (SimulationState): Current simulation state (mutated in place,
+                but returned).
             dt (float): Timestep size [s]. MUST satisfy stability criterion.
-            Q_ext (torch.Tensor | None): External volumetric heat source field [W/m^3].
+            Q_ext (torch.Tensor | None): External volumetric heat source field
+                [W/m^3].
                                          Assumed constant over the timestep.
 
         Returns:
@@ -133,8 +135,8 @@ class TimeStepper:
             cr_inst = (state.T_prev - T_new) / dt
 
             # Update cooling rate map only at crossing pixels.
-            # If a pixel remelts and solidifies again, this overrides the previous value.
-            # This captures the *last* solidification event.
+            # If a pixel remelts and solidifies again, this overrides the
+            # previous value. This captures the *last* solidification event.
             state.cooling_rate = torch.where(crossing_mask, cr_inst, state.cooling_rate)
 
         return state
@@ -151,7 +153,8 @@ class TimeStepper:
             alpha_max: Maximum thermal diffusivity = max(k) / (rho * min(cp)).
 
         Args:
-            state (SimulationState): Current state (unused here, but possibly needed for local alpha).
+            state (SimulationState): Current state (unused here, but possibly
+                needed for local alpha).
 
         Returns:
             float: Recommended maximum timestep [s] (including safety factor 0.9).
@@ -187,7 +190,8 @@ class TimeStepper:
         """
         Advance the simulation by `dt_target` using adaptive sub-stepping.
 
-        If `dt_target` exceeds the stability limit, it is broken down into `n` smaller steps.
+        If `dt_target` exceeds the stability limit, it is broken down into `n`
+            smaller steps.
 
         Args:
             state (SimulationState): Current state.

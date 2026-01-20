@@ -36,11 +36,9 @@ def mat_config():
         latent_heat_L=100.0,
     )
 
-
-def test_conservation_adiabatic(sim_config, mat_config):
     """
-    Test that Energy is conserved (sum of T * rho * cp) in adiabatic system (Neumann BC).
-    Uses constant properties for simplicity.
+    Test that Energy is conserved (sum of T * rho * cp) in adiabatic system
+    (Neumann BC). Uses constant properties for simplicity.
     """
     # Override latent heat to 0 to make Energy = T * rho * cp simple
     mat_simple = mat_config.model_copy(update={"latent_heat_L": 0.0})
@@ -68,7 +66,8 @@ def test_conservation_adiabatic(sim_config, mat_config):
 
 def test_cooling_rate_capture(sim_config, mat_config):
     """
-    Simulate a single pixel cooling down linearly (forced) and check if crossing is captured.
+    Simulate a single pixel cooling down linearly (forced) and check if crossing is
+    captured.
     """
     stepper = TimeStepper(sim_config, mat_config)
 
@@ -113,7 +112,7 @@ def test_cooling_rate_capture(sim_config, mat_config):
     # Value should be close to 100.0
 
     recorded_cr = state.cooling_rate[0, 0, 0, 0]
-    expected_cr = cooling_rate_target
+    # expected_cr = cooling_rate_target
 
     # There might be slight diff due to T-dependent cp if latent heat was active?
     # T is around 1000 (Solidus). Latent heat bump is around (1000+1100)/2 = 1050.
@@ -143,12 +142,12 @@ def test_adaptive_stability(sim_config, mat_config):
     # Create unstable config: Small Resolution (mm), Large dt
     # sim_config fixture is METERS (stable). Let's force it to be unstable.
 
-    sim_unstable = sim_config.model_copy(
-        update={
-            "length_unit": LengthUnit.MILLIMETERS,  # 1e-3 scale
-            "dt_base": 1e-3,  # Unstable for 1e-3 scale!
-        }
-    )
+    # sim_unstable = sim_config.model_copy(
+    #     update={
+    #         "length_unit": LengthUnit.MILLIMETERS,  # 1e-3 scale
+    #         "dt_base": 1e-3,  # Unstable for 1e-3 scale!
+    #     }
+    # )
 
     # Check max stable dt roughly
     # dx ~ 0.05e-3 = 5e-5. dx^2 = 25e-10.

@@ -1,8 +1,14 @@
 # experiments/stateful_time_resolved.py
 from __future__ import annotations
 
+import datetime
+import logging
+import os
+import random
 from dataclasses import dataclass
+from pathlib import Path
 
+import numpy as np
 import torch
 
 from neural_pbf.core.config import SimulationConfig
@@ -10,11 +16,23 @@ from neural_pbf.core.state import SimulationState
 from neural_pbf.integrator.stepper import TimeStepper
 from neural_pbf.physics.material import MaterialConfig
 from neural_pbf.scan.sources import GaussianBeam, GaussianSourceConfig
+from neural_pbf.schemas.artifacts import ArtifactConfig
+from neural_pbf.schemas.diagnostics import DiagnosticsConfig
+from neural_pbf.schemas.run_meta import RunMeta
 from neural_pbf.schemas.state import FinalState, StateMeta, ThermalStates
+
+# Tracking & Diagnostics
+from neural_pbf.schemas.tracking import TrackingConfig
+from neural_pbf.tracking.run_context import RunContext
 from neural_pbf.utils.grid import make_xy_grid
 from neural_pbf.utils.history import make_smooth_preheat_field
 from neural_pbf.utils.io import save_state
 from neural_pbf.utils.state_recorder import StateRecorder
+from neural_pbf.viz.temperature_artifacts import TemperatureArtifactBuilder
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # We keep DotEvent locally as a simple experiment parameter implementation
@@ -49,12 +67,6 @@ def update_history_maps(
     hit_mask = spot > (spot.max() * reset_threshold)
 
     # 3. Accumulate energy
-    # E_acc += spot * (energy / spot.sum()) ?
-    # Legacy logic: "energy" is total Joules. spot is intensity shape.
-    # If we assume spot is normalized such that sum(spot)*dt = energy...
-    # For now, let's just assume simple accumulation of the source field integrated over time:
-    # E_acc += Q * dt
-    # But here we just want a qualitative proxy.
     E_acc = torch.where(hit_mask, E_acc + energy, E_acc)
 
     # 4. Reset t_since where hit
@@ -64,14 +76,46 @@ def update_history_maps(
 
 
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # ----------------------------
+    # 0. Configuration & Tracking Setup
+    # ----------------------------
+    # Parse from env or defaults
+    tracking_cfg = TrackingConfig(
+        enabled=True,
+        backend=os.environ.get("TRACKING_BACKEND", "none"),  # type: ignore
+        experiment_name="lpbf-thermal",
+        run_name=f"run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        mlflow_tracking_uri=os.environ.get("MLFLOW_TRACKING_URI"),
+    )
+
+    artifact_cfg = ArtifactConfig(
+        enabled=True,
+        png_every_n_steps=50,
+        html_every_n_steps=250,  # Set to 0 if plotly slow/missing
+        make_report=True,
+    )
+
+    diagnostics_cfg = DiagnosticsConfig(
+        enabled=True,
+        log_every_n_steps=10,  # frequent logging for metrics
+        check_nan_inf=True,
+        strict=False,
+    )
+
+    device_str = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device_str)
     dtype = torch.float32
+
+    # Run Metadata
+    seed = 42
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
 
     # ----------------------------
     # Domain & Config
     # ----------------------------
     H = W = 128
-    # Domain size 1.0 x 1.0 mm (arbitrary)
     Lx = 1.0
     Ly = 1.0
 
@@ -80,20 +124,17 @@ def main() -> None:
         Ly=Ly,
         Nx=W,
         Ny=H,
-        length_unit="m",  # Interpretation depends on usage, but code below uses normalized 0-1 coords mostly
-        dt_base=6.0e-4,  # Will be overridden by stepping loop
+        length_unit="m",
+        dt_base=6.0e-4,
         T_ambient=0.05,
         loss_h=0.2,
     )
-
-    # Explicit dx, dy for manual grid creation (legacy Grid was 0..1 normalized?)
-    # In legacy: dx = 1.0 / (W - 1). This implies Lx=1.0 (unitless or normalized).
-    # We'll stick to that interpretation.
+    dt = 6.0e-4
     dx = 1.0 / (W - 1)
     dy = 1.0 / (H - 1)
 
     # ----------------------------
-    # Material (toy-scaled)
+    # Material
     # ----------------------------
     mat = MaterialConfig(
         k_powder=0.0012,
@@ -106,17 +147,50 @@ def main() -> None:
         rho=1.0,
     )
 
-    dt = 6.0e-4
+    # ----------------------------
+    # Initialize RunContext
+    # ----------------------------
+    run_meta = RunMeta(
+        seed=seed,
+        device=device_str,
+        dtype=str(dtype),
+        started_at=datetime.datetime.now().isoformat(),
+        dx=dx,
+        dy=dy,
+        dz=0.0,
+        dt=dt,
+        grid_shape=[H, W],
+        material_summary=mat.__dict__,  # assuming dataclass can simple dict
+        notes="Integration test run",
+    )
+
+    out_dir = (
+        Path("artifacts") / tracking_cfg.run_name
+        if tracking_cfg.run_name
+        else Path("artifacts/latest")
+    )
+
+    # Artifact Bundle
+    artifact_builder = (
+        TemperatureArtifactBuilder(artifact_cfg) if artifact_cfg.enabled else None
+    )
+
+    ctx = RunContext(
+        tracking_cfg=tracking_cfg,
+        artifact_cfg=artifact_cfg,
+        diagnostics_cfg=diagnostics_cfg,
+        run_meta=run_meta,
+        out_dir=out_dir,
+        artifact_builder=artifact_builder,
+    )
+
+    ctx.start()
 
     # ----------------------------
-    # Grid
+    # Grid & Init State
     # ----------------------------
-    # make_xy_grid returns tuple(X, Y)
     X, Y = make_xy_grid(H, W, device=device, dtype=dtype)
 
-    # ----------------------------
-    # Initial temperature
-    # ----------------------------
     T0 = make_smooth_preheat_field(
         H=H,
         W=W,
@@ -128,58 +202,31 @@ def main() -> None:
         sigma=12.0,
         clamp_min=sim_config.T_ambient,
     )
-    # T0 = torch.full((1, 1, H, W), sim_config.T_ambient, device=device, dtype=dtype)
 
-    # ----------------------------
-    # State Init
-    # ----------------------------
-    state = SimulationState(
-        T=T0,
-        t=0.0,
-        step=0,
-        # max_T will be auto-init
-    )
+    state = SimulationState(T=T0, t=0.0, step=0)
 
-    # Auxiliary fields (not in SimulationState)
     E_acc = torch.zeros_like(T0)
-    t_since = torch.full_like(T0, 1.0)  # t_since_init=1.0
-
-    # Stepper
+    t_since = torch.full_like(T0, 1.0)
     stepper = TimeStepper(sim_config, mat)
-    # We need to monkey-patch or ensure stepper uses our manual dx/dy if config doesn't match?
-    # Config has Lx=1, Nx=128 => dx = 1/127 approx 0.0078
-    # Legacy dx = 1/127. So it matches.
-    # Note: sim_config.dx is calculated property.
 
     # ----------------------------
-    # Dot sequence (demo path)
+    # Dot Schedule
     # ----------------------------
     xs = torch.linspace(0.35, 0.65, 10).tolist()
-    # xs = xs + list(reversed(xs)) # Legacy logic
+    # xs = xs + list(reversed(xs))
     xs = xs + list(reversed(xs))
     ys = [0.5] * len(xs)
 
     events: list[DotEvent] = [
-        DotEvent(
-            x=float(x),
-            y=float(y),
-            power=2.0,
-            dwell=0.04,
-            travel=0.01,
-            sigma=0.02,
-            eta=1.0,
-        )
-        for x, y in zip(xs, ys)
+        DotEvent(x=float(x), y=float(y), power=2.0, dwell=0.04, travel=0.01, sigma=0.02)
+        for x, y in zip(xs, ys, strict=True)
     ]
 
-    # ----------------------------
-    # Recorder & Trackers
-    # ----------------------------
+    # Legacy Recorders
     rec = StateRecorder(keys=["T", "E_acc", "t_since", "cooling_rate"])
-    snapshot_every = 1
+    snapshot_every = 1  # Keep high freq for legacy recorder?
 
     T_peak_global = state.T.clone()
-
     cooling_delta_t = float(events[0].dwell)
     cooling_delta_steps = max(1, int(round(cooling_delta_t / dt)))
     cooling_delta_t_eff = cooling_delta_steps * dt
@@ -190,7 +237,6 @@ def main() -> None:
         (1, 1, H, W), float("nan"), device=device, dtype=dtype
     )
 
-    # Initial snapshot
     rec.add(
         state.t,
         -1,
@@ -203,113 +249,110 @@ def main() -> None:
     )
 
     # ----------------------------
-    # Event loop
+    # Simulation Loop
     # ----------------------------
-    for i, ev in enumerate(events):
-        # 1. Setup Heat Source
-        # Q field is effectively constant during the dwell of a stationary dot
-        source_config = GaussianSourceConfig(power=ev.power, eta=ev.eta, sigma=ev.sigma)
-        source = GaussianBeam(source_config)
+    global_step = 0
+    total_steps_est = sum(
+        [max(1, int(ev.dwell / dt)) + max(1, int(ev.travel / dt)) for ev in events]
+    )
+    logger.info(
+        f"Starting simulation: {len(events)} events, approx {total_steps_est} steps."
+    )
 
-        # Compute Intensity Field Q [W/m^3 or W/m^2 depending on dim]
-        # Our sim is 2D, physics assumes surface source is added as source term
-        spot = source.intensity(X, Y, None, x0=ev.x, y0=ev.y)
+    current_scan_pos = None
 
-        # ---- Laser ON (Dwell) ----
-        steps_dwell = max(1, int(ev.dwell / dt))
-        dt_eff = ev.dwell / steps_dwell
+    try:
+        for i, ev in enumerate(events):
+            source_config = GaussianSourceConfig(
+                power=ev.power, eta=ev.eta, sigma=ev.sigma
+            )
+            source = GaussianBeam(source_config)
+            spot = source.intensity(X, Y, None, x0=ev.x, y0=ev.y)
+            current_scan_pos = (ev.x, ev.y)
 
-        for _ in range(steps_dwell):
-            state = stepper.step_explicit_euler(state, dt_eff, Q_ext=spot)
+            # --- Dwell ---
+            steps_dwell = max(1, int(ev.dwell / dt))
+            dt_eff = ev.dwell / steps_dwell
 
-            # Peak tracking (Manual b/c we need timing)
-            # state.max_T is updated by stepper, but we need t_peak_step for cooling calc
-            # Note: stepper updates state.max_T to be max(prev, current)
-            # We need to check if current > old_global_peak
-            curr_T = state.T
-            new_peak_mask = curr_T > T_peak_global
+            for _ in range(steps_dwell):
+                global_step += 1
+                ctx.on_step_start(global_step, state.T)
 
-            if new_peak_mask.any():
-                T_peak_global = torch.where(new_peak_mask, curr_T, T_peak_global)
-                t_peak_step = torch.where(
-                    new_peak_mask, torch.full_like(t_peak_step, state.step), t_peak_step
-                )
-                # Reset cooling rate logic for these pixels?
-                # The logic: cooling rate is measured dt_cool AFTER peak.
-                # If we have a new peak, we reset the timer.
+                state = stepper.step_explicit_euler(state, dt_eff, Q_ext=spot)
 
-        # History Map Update (Active zone)
-        # Use the spot field we computed
-        E_acc, t_since = update_history_maps(
-            E_acc,
-            t_since,
-            spot,
-            ev.dwell,
-            ev.power * ev.dwell,  # approx energy
-        )
+                # Peak logic
+                curr_T = state.T
+                new_peak_mask = curr_T > T_peak_global
+                if new_peak_mask.any():
+                    T_peak_global = torch.where(new_peak_mask, curr_T, T_peak_global)
+                    t_peak_step = torch.where(
+                        new_peak_mask,
+                        torch.full_like(t_peak_step, state.step),
+                        t_peak_step,
+                    )
 
-        # ---- Laser OFF (Travel) ----
-        if ev.travel > 0.0:
-            steps_travel = max(1, int(ev.travel / dt))
-            dt_travel = ev.travel / steps_travel
+                # Tracking logs
+                step_meta = {
+                    "scan_power": ev.power,
+                    "scan_pos": current_scan_pos,
+                    "event_idx": i,
+                }
+                ctx.log_step(global_step, state.T, meta=step_meta)
+                ctx.maybe_snapshot(global_step, state.T, meta=step_meta)
 
-            for _ in range(steps_travel):
-                state = stepper.step_explicit_euler(state, dt_travel, Q_ext=None)
-
-                # Update t_since
-                t_since += dt_travel
-
-                # Check for cooling rate capture
-                # Current step vs t_peak_step
-                steps_since_peak = state.step - t_peak_step
-
-                # Check pixels that are due for measurement AND haven't been set yet for this peak
-                # "after_set" logic from legacy was a bit complex to handle "set once per peak".
-                # Simplified:
-                due = (steps_since_peak >= cooling_delta_steps) & (~after_set)
-
-                # However, "after_set" needs to be reset when a new peak happens.
-                # Let's check legacy logic:
-                # better = T_peak_interval > T_peak_global
-                # t_peak_step = ...
-                # IMPLICITLY, if we update t_peak_step, we should probably clear after_set?
-                # Legacy didn't explicitly clear after_set?
-                # Ah, legacy tracked "T_after_peak" and "after_set" per interval?
-
-                # Re-implementing simplified cooling rate logic:
-                # CR = (T_peak - T(t_peak + delta)) / delta_t
-                if due.any():
-                    new_cr = (T_peak_global - state.T) / max(cooling_delta_t_eff, 1e-12)
-                    cooling_rate_map = torch.where(due, new_cr, cooling_rate_map)
-                    after_set = after_set | due
-
-            # Reset after_set only where new peaks happened?
-            # This logic is tricky to replicate perfectly without the full block.
-            # But the Stepper now captures instantaneous cooling rate at solidification!
-            # state.cooling_rate (from Stepper) = dT/dt at solidification.
-            # The experiment wants "Cooling rate over Delta T" (CR_delta).
-            # We'll stick to the "due" logic.
-            pass
-
-        # ---- Snapshot ----
-        if i % snapshot_every == 0:
-            rec.add(
-                state.t,
-                i,
-                {
-                    "T": state.T,
-                    "E_acc": E_acc,  # state.E_acc is not in SimulationState
-                    "t_since": t_since,
-                    "cooling_rate": cooling_rate_map,
-                },
+            # --- Map Update ---
+            E_acc, t_since = update_history_maps(
+                E_acc, t_since, spot, ev.dwell, ev.power * ev.dwell
             )
 
-        print(
-            f"event {i:02d} | "
-            f"T.max={float(state.T.max()):.4f} | "
-            f"E_acc.max={float(E_acc.max()):.4f} | "
-            f"t={state.t:.3f}"
-        )
+            # --- Travel ---
+            current_scan_pos = None  # Laser off
+            if ev.travel > 0.0:
+                steps_travel = max(1, int(ev.travel / dt))
+                dt_travel = ev.travel / steps_travel
+
+                for _ in range(steps_travel):
+                    global_step += 1
+                    ctx.on_step_start(global_step, state.T)
+
+                    state = stepper.step_explicit_euler(state, dt_travel, Q_ext=None)
+                    t_since += dt_travel
+
+                    # Cooling rate logic...
+                    steps_since_peak = state.step - t_peak_step
+                    due = (steps_since_peak >= cooling_delta_steps) & (~after_set)
+                    if due.any():
+                        new_cr = (T_peak_global - state.T) / max(
+                            cooling_delta_t_eff, 1e-12
+                        )
+                        cooling_rate_map = torch.where(due, new_cr, cooling_rate_map)
+                        after_set = after_set | due
+
+                    # Tracking logs
+                    step_meta = {"scan_power": 0.0, "scan_pos": None, "event_idx": i}
+                    ctx.log_step(global_step, state.T, meta=step_meta)
+                    ctx.maybe_snapshot(global_step, state.T, meta=step_meta)
+
+            # Legacy snapshot
+            if i % snapshot_every == 0:
+                rec.add(
+                    state.t,
+                    i,
+                    {
+                        "T": state.T,
+                        "E_acc": E_acc,
+                        "t_since": t_since,
+                        "cooling_rate": cooling_rate_map,
+                    },
+                )
+
+        # End loop
+        logger.info("Simulation loop finished.")
+
+    except Exception as e:
+        logger.error(f"Simulation failed: {e}")
+        ctx.end(state.T, status="FAILED")
+        raise e
 
     # ----------------------------
     # Finalize
@@ -318,9 +361,8 @@ def main() -> None:
     fallback_cr = (T_peak_global - state.T) / max(cooling_delta_t_eff, 1e-12)
     cooling_rate_map = torch.where(nan_mask, fallback_cr, cooling_rate_map)
 
-    # Pack states
+    # Legacy save
     snapshot_state = rec.to_snapshot_state()
-
     states = ThermalStates(
         final=FinalState(
             T=state.T.detach().cpu(),
@@ -343,9 +385,16 @@ def main() -> None:
         ),
     )
 
-    out_path = "artifacts/runs/run_0002/states.pt"
-    save_state(states, out_path)
-    print(f"Saved states to {out_path}")
+    legacy_out_path = (
+        ctx.dirs.get("states", Path(".")) / "states.pt"
+        if hasattr(ctx, "dirs")
+        else Path("states.pt")
+    )
+    save_state(states, legacy_out_path)
+    logger.info(f"Saved states to {legacy_out_path}")
+
+    # End Context
+    ctx.end(state.T, meta={"final_steps": global_step})
 
 
 if __name__ == "__main__":

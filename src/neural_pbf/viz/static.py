@@ -13,12 +13,14 @@ def plot_temperature_field(
     """
     Plot the 2D temperature field using Matplotlib.
 
-    If the simulation is 3D, this function extracts the top-most layer (Z=0 index usually).
+    If the simulation is 3D, this function extracts the top-most layer
+    (Z=0 index usually).
 
     Args:
         state (SimulationState): The current simulation state containing the T field.
         sim (SimulationConfig): Configuration object (used for checking dimensionality).
-        save_path (str | None): If provided, saves the figure to this path instead of showing it.
+        save_path (str | None): If provided, saves the figure to this path instead
+            of showing it.
     """
     # Extract T
     T = state.T

@@ -31,16 +31,18 @@ def div_k_grad(
     Compute the divergence of the conductive heat flux: Div(k * Grad(T)) [W/m^3].
 
     Operator:
-        \nabla \cdot (k \nabla T) = \partial_x (k \partial_x T) + \partial_y (k \partial_y T) + \partial_z (k \partial_z T)
+        \nabla \cdot (k \nabla T) = \partial_x (k \partial_x T) + \partial_y
+        (k \partial_y T) + \partial_z (k \partial_z T)
 
     Method:
-        Standard 2nd-order Central Finite Difference on a dense grid (5-point stencil in 2D, 7-point in 3D).
+        Standard 2nd-order Central Finite Difference on a dense grid (5-point
+        stencil in 2D, 7-point in 3D).
         The conductivity k is averaged at cell faces using the harmonic mean.
 
     Boundary Conditions:
-        Applies Homogeneous Neumann Boundary Conditions (Zero Flux) at all domain boundaries.
-        Implemented via 'replicate' padding, effectively mirroring the temperature at the boundary.
-
+        Applies Homogeneous Neumann Boundary Conditions (Zero Flux) at all domain
+        boundaries. Implemented via 'replicate' padding, effectively mirroring
+        the temperature at the boundary.
     Args:
         T (torch.Tensor): Temperature field [K]. Shape (B, C, [D], H, W).
         k (torch.Tensor): Thermal conductivity field [W/(m K)]. Shape matches T.
@@ -49,7 +51,8 @@ def div_k_grad(
         dz (float | None): Grid spacing in Z [m]. Required if T is 3D (5-dim).
 
     Returns:
-        torch.Tensor: The Laplacian term values [W/m^3]. Shape matches T valid region (boundary padding removed).
+        torch.Tensor: The Laplacian term values [W/m^3]. Shape matches T valid
+            region (boundary padding removed).
     """
     dims = T.ndim
     is_3d = dims == 5

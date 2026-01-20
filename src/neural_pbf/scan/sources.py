@@ -31,12 +31,14 @@ class GaussianSourceConfig(HeatSourceConfig):
     sigma: float = Field(
         ...,
         gt=0.0,
-        description="Gaussian standard deviation [m]. Related to D4sigma diameter by D4s = 4 * sigma.",
+        description="Gaussian standard deviation [m]. Related to D4sigma "
+        "diameter by D4s = 4 * sigma.",
     )
     depth: float | None = Field(
         None,
         gt=0.0,
-        description="Optical penetration depth [m] for volumetric source. If None, acts as a surface flux [W/m^2].",
+        description="Optical penetration depth [m] for volumetric source. If "
+        "None, acts as a surface flux [W/m^2].",
     )
 
 
@@ -59,15 +61,19 @@ class HeatSource(ABC):
         z0: float | None = None,
     ) -> torch.Tensor:
         """
-        Compute the spatial intensity distribution of the heat source centered at (x0, y0, z0).
+        Compute the spatial intensity distribution of the heat source centered at
+        (x0, y0, z0).
 
         Args:
-            X (torch.Tensor): X-coordinates of the evaluation grid (shape: [..., H, W] or broadcastable).
+            X (torch.Tensor): X-coordinates of the evaluation grid (shape:
+                [..., H, W] or broadcastable).
             Y (torch.Tensor): Y-coordinates of the evaluation grid.
-            Z (torch.Tensor | None): Z-coordinates of the evaluation grid. Required if the source is volumetric.
+            Z (torch.Tensor | None): Z-coordinates of the evaluation grid.
+                Required if the source is volumetric.
             x0 (float): Current X-position of the beam center [m].
             y0 (float): Current Y-position of the beam center [m].
-            z0 (float | None): Current Z-position of the beam center (surface Z) [m]. Defaults to 0 or None.
+            z0 (float | None): Current Z-position of the beam center (surface Z)
+                [m]. Defaults to 0 or None.
 
         Returns:
             torch.Tensor: Heat source intensity field.
@@ -90,7 +96,8 @@ class GaussianBeam(HeatSource):
 
     Physical Model (Volumetric):
         Q(r, z) = I(r) * f(z)
-        where f(z) is an exponential decay into the material (Beer-Lambert law approximation).
+        where f(z) is an exponential decay into the material (Beer-Lambert
+        law approximation).
         f(z) = (1/d) * exp(-z_depth / d)
         Normalization: Integral(f(z)) dz = 1
     """
@@ -117,14 +124,17 @@ class GaussianBeam(HeatSource):
             Z (torch.Tensor | None): Grid Z coordinates [m].
             x0 (float): Beam center X [m].
             y0 (float): Beam center Y [m].
-            z0 (float | None): Beam center Z (Surface) [m]. Unused for purely 2D surface flux.
+            z0 (float | None): Beam center Z (Surface) [m]. Unused for purely 2D
+                surface flux.
 
         Returns:
             torch.Tensor: Source term field. [W/m^2] (2D) or [W/m^3] (3D).
 
         Raises:
-            NotImplementedError: If Z coordinates are provided (3D context) but the source is configured without a depth (Surface Flux),
-                                 as implementing surface flux in a 3D FDM volume requires setting Boundary Conditions rather than a volumetric source term.
+            NotImplementedError: If Z coordinates are provided (3D context) but
+                the source is configured without a depth (Surface Flux), as
+                implementing surface flux in a 3D FDM volume requires setting
+                Boundary Conditions rather than a volumetric source term.
         """
         # Distances squared from center
         r2 = (X - x0) ** 2 + (Y - y0) ** 2
@@ -165,15 +175,18 @@ class GaussianBeam(HeatSource):
 
         elif Z is not None and self.config.depth is None:
             # 3D Grid but Surface Flux requested.
-            # This cannot be represented as a volumetric source term Q [W/m^3] easily without numerical delta functions.
+            # This cannot be represented as a volumetric source term Q [W/m^3]
+            # easily without numerical delta functions.
             # It should be handled by the Boundary Condition logic.
             raise NotImplementedError(
-                "Surface flux in 3D volume requires implementation via Boundary Conditions, not Source Term Q."
+                "Surface flux in 3D volume requires implementation via "
+                "Boundary Conditions, not Source Term Q."
             )
 
         else:
             # 2D case (X, Y only).
             # Returns Flux [W/m^2].
             # Note: The PDE integrator must interpret this correctly.
-            # For a 2D simulation representing a thin slice or surface, this flux is usually applied as a source.
+            # For a 2D simulation representing a thin slice or surface, this flux
+            # is usually applied as a source.
             return flux

@@ -16,8 +16,8 @@ def _ensure_parent_dir(path: Path) -> None:
     # If parent exists but is a file -> hard error with clear message
     if parent.exists() and not parent.is_dir():
         raise RuntimeError(
-            f"Cannot save to {path}: parent path {parent} exists but is not a directory "
-            f"(it might be a file named '{parent.name}')."
+            f"Cannot save to {path}: parent path {parent} exists but is not a "
+            f"directory (it might be a file named '{parent.name}')."
         )
 
     parent.mkdir(parents=True, exist_ok=True)

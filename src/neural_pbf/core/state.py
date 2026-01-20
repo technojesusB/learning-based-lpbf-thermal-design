@@ -24,10 +24,11 @@ class SimulationState:
         max_T (torch.Tensor | None): Field tracking the maximum temperature reached
                                      at each voxel throughout history [K].
                                      Initialized to T on creation if None.
-        cooling_rate (torch.Tensor | None): Field capturing the instantaneous cooling rate [K/s]
-                                            at the moment of solidification (crossing T_solidus).
-        T_prev (torch.Tensor | None): Temperature field from the previous time step.
-                                      Used for finite difference time derivatives (cooling rate).
+        cooling_rate (torch.Tensor | None): Field capturing the instantaneous
+            cooling rate [K/s] at the moment of solidification (crossing
+            T_solidus).
+        T_prev (torch.Tensor | None): Temperature field from the previous time
+            step. Used for finite difference time derivatives (cooling rate).
     """
 
     # Primary fields

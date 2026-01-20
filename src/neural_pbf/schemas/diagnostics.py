@@ -1,8 +1,11 @@
-from typing import Literal, Dict
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
 
 class DiagnosticsConfig(BaseModel):
     """Configuration for simulation diagnostics and health checks."""
+
     enabled: bool = True
     level: Literal["off", "basic", "verbose"] = "basic"
     log_every_n_steps: int = 50
@@ -12,4 +15,4 @@ class DiagnosticsConfig(BaseModel):
     perf_profile: bool = True
     memory_profile: bool = True
     strict: bool = False
-    thresholds: Dict[str, float] = Field(default_factory=dict)
+    thresholds: dict[str, float] = Field(default_factory=dict)

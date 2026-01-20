@@ -70,7 +70,8 @@ class ScanEvent(BaseModel):
 
 class ScanPathGenerator:
     """
-    Utility class to generate sequences of ScanEvents (scan paths) from high-level parameters.
+    Utility class to generate sequences of ScanEvents (scan paths) from high-level
+    parameters.
     """
 
     @staticmethod
@@ -124,7 +125,8 @@ class ScanPathGenerator:
             power (float): Laser power [W].
             speed (float): Scan speed [m/s].
             angle_deg (float): Rotation angle in degrees (Not yet implemented).
-            skywriting (bool): Whether to add skywriting maneuvers (Not yet implemented).
+            skywriting (bool): Whether to add skywriting maneuvers (Not yet
+                implemented).
 
         Returns:
             List[ScanEvent]: Sequence of laser-on and laser-off events.
