@@ -44,7 +44,7 @@ class DiagnosticsRecorder:
             prev_state_T: Tensor of temperature from previous step (for dT calcs)
             meta: Metadata dict (e.g. scan_power)
         """
-        metrics = {}
+        metrics: dict[str, float | int | None] = {}
 
         if not self.cfg.enabled:
             return metrics

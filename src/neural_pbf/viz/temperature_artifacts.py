@@ -82,7 +82,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
     def on_snapshot(
         self, step_idx: int, state: Any, meta: dict[str, Any]
     ) -> list[Path]:
-        generated = []
+        generated: list[Path] = []
 
         if not self.cfg.enabled:
             return generated
