@@ -38,6 +38,12 @@ class SimulationConfig(BaseModel):
     Lz: float | None = Field(
         None, gt=0.0, description="Length in Z (user units). If None, 2D mode."
     )
+    # Layer thickness for 2D mode consistency (user units)
+    default_dz: float = Field(
+        default=0.05,
+        gt=0.0,
+        description="Assumed thickness in Z for 2D mode [user units]. Defaults to 0.05 (50um if units=mm).",
+    )
 
     # Grid resolution
     Nx: int = Field(..., gt=1)
@@ -127,5 +133,6 @@ class SimulationConfig(BaseModel):
             float: dz = Lz_m / (Nz - 1) [m] if 3D, else 1.0 (arbitrary unit thickness).
         """
         if not self.is_3d:
-            return 1.0  # arbitrary for 2D
+            # For 2D, we return the physical thickness of the layer
+            return to_meters(self.default_dz, self.length_unit)
         return self.Lz_m / (self.Nz - 1) if self.Nz > 1 else self.Lz_m

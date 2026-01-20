@@ -1,8 +1,6 @@
 # src/lpbf/physics/material.py
 from __future__ import annotations
 
-import math
-
 import torch
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -179,24 +177,23 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
         return cp
 
     mid = 0.5 * (cfg.T_solidus + cfg.T_liquidus)
-    # The width of the physical melting range
     width = cfg.T_liquidus - cfg.T_solidus
     if width < 1e-6:
-        width = 1.0  # safety
+        width = 1.0
 
-    # Gaussian approximation for delta function (derivative of the step transition)
-    # Integral of Gaussian = sqrt(2*pi)*sigma
-    # We want Integral = L * 1 (normalized phi step) -> No, d_phi/dT integrates to 1.
-    # So contribution to Enthalpy is L * Integral(d_phi/dT) = L.
-
-    # We choose sigma such that the Gaussian fits well within the melting range (width).
-    # Setting sigma = width / 4.0 ensures +/- 2 sigma covers 95% of the range.
-    sigma = width / 4.0
-
-    arg = (T - mid) / (sigma)
-    gauss = torch.exp(-0.5 * arg**2)
-    norm = 1.0 / (sigma * math.sqrt(2.0 * math.pi))
-
-    d_phi_dT = norm * gauss
+    # Consistent Derivative of the Sigmoid used in melt_fraction
+    # phi = sigmoid( s * sharpness ) where s = (T - mid)/half_width
+    # d_phi/dT = d_phi/ds * ds/dT
+    # ds/dT = 1 / half_width = 2 / width
+    # d_phi/ds = sharpness * phi * (1 - phi)
+    
+    half_width = 0.5 * width
+    s = (T - mid) / half_width
+    phi = sigmoid_step(s, cfg.transition_sharpness)
+    
+    ds_dT = 1.0 / half_width
+    d_phi_ds = cfg.transition_sharpness * phi * (1.0 - phi)
+    
+    d_phi_dT = d_phi_ds * ds_dT
 
     return cp + cfg.latent_heat_L * d_phi_dT

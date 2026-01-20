@@ -85,8 +85,14 @@ def test_cooling_rate_capture(sim_config, mat_config):
     cooling_rate_target = 100.0  # K/s
     rho = mat_config.rho
     cp = mat_config.cp_base
-    Q_cool = -cooling_rate_target * rho * cp
-    Q_tensor = torch.full_like(T, Q_cool)
+    Q_vol = -cooling_rate_target * rho * cp
+    
+    # NEW Convention: Stepper assumes 2D input is Flux [W/m^2] and divides by dz.
+    # So we must provide Flux = Q_vol * dz.
+    dz = sim_config.dz
+    Q_flux = Q_vol * dz
+    
+    Q_tensor = torch.full_like(T, Q_flux)
 
     # Solidus is 1000.0
     # Steps: 1200 -> 1100 -> 1000 ...

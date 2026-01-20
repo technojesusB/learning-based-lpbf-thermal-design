@@ -123,12 +123,16 @@ def run_experiment(
     Lx = 1.0
     Ly = 1.0
 
+    from neural_pbf.utils.units import LengthUnit
+
     sim_config = SimulationConfig(
         Lx=Lx,
         Ly=Ly,
+        Lz=None,
         Nx=W,
         Ny=H,
-        length_unit="m",
+        Nz=1,
+        length_unit=LengthUnit.METERS,
         dt_base=6.0e-4,
         T_ambient=0.05,
         loss_h=0.2,
@@ -268,7 +272,7 @@ def run_experiment(
     try:
         for i, ev in enumerate(events):
             source_config = GaussianSourceConfig(
-                power=ev.power, eta=ev.eta, sigma=ev.sigma
+                power=ev.power, eta=ev.eta, sigma=ev.sigma, depth=None
             )
             source = GaussianBeam(source_config)
             spot = source.intensity(X, Y, None, x0=ev.x, y0=ev.y)

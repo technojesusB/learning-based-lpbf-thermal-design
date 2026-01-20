@@ -26,6 +26,31 @@ laser scan strategies under simplified thermal assumptions.
 - [Teacher–Student and Knowledge Distillation](#teacher–student-and-knowledge-distillation)
 - [Extensions and Future Work](#extensions-and-future-work)
 - [Intended Outcome](#intended-outcome)
+- [Documentation](#documentation)
+  - [Usage Guide](#usage-guide)
+  - [Physics Model & Numerics](#physics-model-numerics)
+- [Development](#development)
+  - [Testing](#testing)
+
+---
+
+## Documentation
+
+- [Usage Guide](docs/usage.md)
+- [Physics Model & Numerics](docs/physics.md)
+
+## Development
+
+### Testing
+This project uses `pytest`. To run the unit and integration tests:
+```bash
+uv run pytest
+```
+Tests cover:
+- Unit correctness (mm vs m conversion)
+- Energy conservation checks
+- Physics gradient operators
+- Simulation pipeline stability
 
 ---
 

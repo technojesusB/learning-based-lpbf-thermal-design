@@ -102,6 +102,15 @@ class TimeStepper:
         # Heat Source
         Q = Q_ext if Q_ext is not None else torch.zeros_like(T)
 
+        # CRITICAL FIX: Unit Consistency for 2D
+        # In 2D, Q_ext is often a surface flux [W/m^2] from GaussianBeam.
+        # The PDE expects volumetric source [W/m^3].
+        # We must divide by the effective layer thickness dz.
+        # In 3D, Q_ext is already [W/m^3] (handled by source.intensity).
+        if not self.sim.is_3d and Q_ext is not None:
+             # dz is now the physical thickness from config
+            Q = Q / self.sim.dz
+
         # Loss term (linear cooling)
         loss_term = -self.sim.loss_h * (T - self.sim.T_ambient)
 
