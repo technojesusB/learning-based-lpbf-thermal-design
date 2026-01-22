@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +18,6 @@ class RunMeta(BaseModel):
     dz: float
     dt: float
     grid_shape: list[int]
-    material_summary: dict[str, float | str] = Field(default_factory=dict)
-    scan_summary: dict[str, float | str] = Field(default_factory=dict)
+    material_summary: dict[str, Any] = Field(default_factory=dict)
+    scan_summary: dict[str, Any] = Field(default_factory=dict)
     notes: str | None = None
