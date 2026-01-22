@@ -1,8 +1,11 @@
+
 import logging
 from pathlib import Path
 from typing import Any
+import glob
 
 import numpy as np
+import torch
 
 try:
     import matplotlib.pyplot as plt
@@ -13,10 +16,16 @@ try:
     import plotly.graph_objects as go
 except ImportError:
     go = None
+    
+try:
+    import imageio.v3 as imageio
+except ImportError:
+    imageio = None
 
 
 from ..schemas.artifacts import ArtifactConfig
 from .artifacts_base import ArtifactBuilder
+from . import plots
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +34,9 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
     """Artifact builder for thermal simulation.
 
     Generates:
-    - PNG heatmaps
-    - Plotly interactive HTMLs (if available)
+    - PNG heatmaps (Top Surface)
+    - 3D Block Visualizations (GIF animated)
+    - Plotly interactive HTMLs
     - Report HTML linking all assets
     """
 
@@ -35,47 +45,65 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         self.cfg = cfg
         self._png_paths: list[Path] = []
         self._html_paths: list[Path] = []
+        self._block_paths: list[Path] = [] # Store paths for GIF
+        self._comp_paths: list[Path] = [] # Store composite paths for GIF
+        
+        self._xt_buffer: list[np.ndarray] = []
+        self._xt_times: list[float] = []
+        
+        self._dx: float = 1.0
+        self._dy: float = 1.0
+        self._dz: float = 1.0 # Need dz now
+        self._length_unit: str = "m"
+        
+        # Determine global vmin/vmax? Hard to do online. 
+        # We'll use per-frame or fixed if user provided (not in config yet).
+        # Dynamic is fine for now.
 
-    def _extract_temperature(self, state: Any) -> np.ndarray:
-        """Extract temperature field from state, return as numpy array 2D/3D."""
-        # Heuristic to find temperature in state
-        # Supports dict with 'T', 'temperature', or just tensor
+    def on_run_start(self, run_meta: Any, out_dir: Path):
+        super().on_run_start(run_meta, out_dir)
+        if hasattr(run_meta, "dx"):
+            self._dx = float(run_meta.dx)
+        if hasattr(run_meta, "dy"):
+            self._dy = float(run_meta.dy)
+        if hasattr(run_meta, "dz"): # Ensure dz is captured
+            self._dz = float(run_meta.dz)
+            if self._dz == 0.0: self._dz = 1.0 # Avoid div0 or bad plots
+        if hasattr(run_meta, "length_unit"):
+            self._length_unit = str(run_meta.length_unit)
+
+    def _extract_temperature(self, state: Any, reduce_3d: bool = True) -> np.ndarray:
+        # (Same extraction logic as before)
         T = None
         if isinstance(state, dict):
-            if "T" in state:
-                T = state["T"]
-            elif "temperature" in state:
-                T = state["temperature"]
-            else:
-                # Try first value?
-                pass
-        elif hasattr(state, "shape"):  # Tensor-like
+            if "T" in state: T = state["T"]
+            elif "temperature" in state: T = state["temperature"]
+        elif isinstance(state, torch.Tensor):
+            T = state
+        elif hasattr(state, "T") and not callable(getattr(state, "T")): 
+            T = state.T
+        elif hasattr(state, "shape"):
             T = state
 
         if T is None:
-            logger.warning("Could not extract temperature from state.")
-            return np.zeros((10, 10))  # fallback
+            return np.zeros((10, 10))
 
         if hasattr(T, "cpu"):
             T = T.detach().cpu().numpy()
         elif hasattr(T, "numpy"):
             T = T.numpy()
 
-        # Handle dimensions
         T = np.squeeze(T)
         
-        # Handle 3D -> 2D (take surface max or mid-slice)
-        if T.ndim == 3:
-            # Assuming [X, Y, Z] or [Z, Y, X]?
-            # Usually simulation is [X, Y, Z]. Let's take max over Z for top-down view
-            # or last slice. Let's assume standard [X, Y, Z] and Z is depth.
-            # Taking max profile is safer for melt pool visualization.
-            T = np.max(T, axis=-1)
+        # 3D handling logic
+        if reduce_3d and T.ndim == 3:
+             # Take surface max
+             T = np.max(T, axis=-1)
 
-        # Downsample if requested
         if self.cfg.downsample and self.cfg.downsample > 1:
             d = self.cfg.downsample
-            T = T[::d, ::d]
+            if T.ndim == 2: T = T[::d, ::d]
+            elif T.ndim == 3: T = T[::d, ::d, ::d]
 
         return T
 
@@ -87,120 +115,247 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         if not self.cfg.enabled:
             return generated
 
-        # Check cadences
-        # Check cadences
-        do_png = (self.cfg.png_every_n_steps > 0) and (
-            step_idx % self.cfg.png_every_n_steps == 0
-        )
-        do_html = (self.cfg.html_every_n_steps > 0) and (
-            step_idx % self.cfg.html_every_n_steps == 0
-        )
+        do_png = (self.cfg.png_every_n_steps > 0) and (step_idx % self.cfg.png_every_n_steps == 0)
+        do_html = (self.cfg.html_every_n_steps > 0) and (step_idx % self.cfg.html_every_n_steps == 0)
 
         if not (do_png or do_html):
             return generated
 
-        T = self._extract_temperature(state)
+        # Full Data
+        T_full = self._extract_temperature(state, reduce_3d=False)
+        T_surf = self._extract_temperature(state, reduce_3d=True)
 
-        # Scan overlay data
-        scan_pos = meta.get("scan_pos")
+        # 1. 3D Block Png (if 3D)
+        if T_full.ndim == 3 and do_png:
+             p_block = self.dirs["plots_png"] / f"step_{step_idx:06d}_block.png"
+             self._save_3d_block(T_full, p_block, step_idx)
+             self._block_paths.append(p_block)
+             generated.append(p_block)
 
+        # 2. Surface Png
         if do_png and plt:
-            p = self.dirs["plots_png"] / f"step_{step_idx:06d}.png"
-            self._save_png(T, p, step_idx, scan_pos)
-            self._png_paths.append(p)
-            generated.append(p)
+            p_surf = self.dirs["plots_png"] / f"step_{step_idx:06d}_surf.png"
+            self._save_surface(T_surf, p_surf, step_idx)
+            self._png_paths.append(p_surf)
+            generated.append(p_surf)
+            
+            # New: Cross-sections (if 3D)
+            if T_full.ndim == 3:
+                p_cross = self.dirs["plots_png"] / f"step_{step_idx:06d}_cross.png"
+                self._save_cross_sections(T_full, p_cross, step_idx)
+                generated.append(p_cross)
+                
+                # Option: Also save composite view
+                p_comp = self.dirs["plots_png"] / f"step_{step_idx:06d}_composite.png"
+                self._save_composite(T_full, p_comp, step_idx)
+                self._comp_paths.append(p_comp)
+                generated.append(p_comp)
+                
+                # New: Interactive Composite
+                p_html_comp = self.dirs["plots_interactive"] / f"step_{step_idx:06d}_composite.html"
+                self._save_plotly_composite(T_full, p_html_comp, step_idx)
+                generated.append(p_html_comp)
 
+        # 3. Interactive Plotly
         if do_html and go:
-            p = self.dirs["plots_interactive"] / f"step_{step_idx:06d}.html"
-            self._save_plotly(T, p, step_idx)
-            self._html_paths.append(p)
-            generated.append(p)
+            p_html = self.dirs["plots_interactive"] / f"step_{step_idx:06d}.html"
+            self._save_plotly(T_full, p_html, step_idx)
+            # self._html_paths.append(p_html) # Optional: Don't flood report with htmls if many
+            generated.append(p_html)
+            
+        # 4. XT Buffer
+        if T_surf.ndim == 2:
+            Ny = T_surf.shape[1]
+            profile = T_surf[:, Ny // 2]
+            self._xt_buffer.append(profile)
+            # Time heuristic
+            t_val = float(step_idx)
+            if isinstance(state, (dict, object)) and not isinstance(state, torch.Tensor):
+                 if hasattr(state, "t") and not callable(getattr(state, "t")): t_val = float(state.t)
+            self._xt_times.append(t_val)
 
         return generated
 
-    def _save_png(self, T: np.ndarray, path: Path, step: int, scan_pos: Any | None):
-        if plt is None:
-            return
+    def _save_surface(self, T, path, step):
+        if plt is None: return
         fig, ax = plt.subplots(figsize=(6, 5))
-        im = ax.imshow(
-            T.T, origin="lower", cmap="inferno"
-        )  # .T to align with usual physics coords
-        plt.colorbar(im, ax=ax, label="Temperature (K)")
-        ax.set_title(f"Step {step}")
-
-        if scan_pos is not None and self.cfg.include_scan_overlay:
-            # Assumes scan_pos is iterable (x, y)
-            try:
-                # scale scan pos to grid if needed?
-                # Assuming scan_pos is in grid units for simplicity here,
-                # or real units. If real units, we need dx.
-                # Let's just plot it if likely grid units.
-                # Implementation dependent, keeping simple for now.
-                if self.cfg.include_scan_overlay:
-                    pass
-            except Exception:
-                pass
-
+        plots.plot_surface_heatmap_mpl(
+            ax, T, self._dx, self._dy, 
+            title=f"Surface T - Step {step}", 
+            unit='mm' if self._length_unit in ['m','mm'] else self._length_unit
+        )
         plt.tight_layout()
         plt.savefig(path)
         plt.close(fig)
 
-    def _save_plotly(self, T: np.ndarray, path: Path, step: int):
-        if go is None:
+    def save_material_overlay(self, T: np.ndarray, mask: np.ndarray, path: Path, step: int):
+        """Save a composite plot of Temperature and Material Mask with discrete legend."""
+        if plt is None:
             return
-        fig = go.Figure(data=go.Heatmap(z=T.T, colorscale="Inferno"))
-        fig.update_layout(title=f"Temperature Field - Step {step}")
+            
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # --- Mask Plot ---
+        # Phases: 0=Powder, 1=Liquid, 2=Solid
+        # We need to ensure the mask reflects these values. 
+        # The mask usually stores: 0=Powder, 1=Solid (Irreversible).
+        # We might need to compute 'Liquid' dynamically from T > T_liquidus.
+        # But 'mask' passed here is usually just the historical state.
+        # Let's derive a display_mask:
+        #   0: Powder (Mask=0 and T < T_liq) -- Actually Phase 0
+        #   1: Liquid (T > T_liq) -- Phase 1
+        #   2: Solid (Mask=1 and T < T_liq) -- Phase 2
+        
+        # Assuming T is already reduced to 2D
+        T_screen = T.T
+        M_screen = mask.T
+        
+        # Simple heuristic for liquidus (hardcoded or from meta? Config doesn't have it here easily)
+        # We'll rely on the input 'mask' being just the irreversible state (0 or 1).
+        # If we want to show Liquid, we need to know T_liquidus.
+        # Ideally, we should pass phase field directly. 
+        # For now, let's plot the binary mask (Powder/Solid) clearly.
+        
+        from matplotlib.colors import ListedColormap, BoundaryNorm
+        
+        # Define 3 phases just in case we can discern them, strictly sticking to inputs:
+        # 0: Powder (Blue-ish or Grey)
+        # 1: Solid (Orange/Red)
+        cmap_mask = ListedColormap(['#cccccc', '#ff7f0e']) # Grey, Orange
+        bounds = [-0.5, 0.5, 1.5]
+        norm = BoundaryNorm(bounds, cmap_mask.N)
+        
+        im_mask = axes[0].imshow(M_screen, origin="lower", cmap=cmap_mask, norm=norm)
+        axes[0].set_title(f"Material State (Step {step})")
+        
+        # Legend
+        cbar = plt.colorbar(im_mask, ax=axes[0], ticks=[0, 1])
+        cbar.ax.set_yticklabels(['Powder', 'Solid'])
+        
+        # --- Temperature Plot ---
+        im_t = axes[1].imshow(T_screen, origin="lower", cmap="jet")
+        plt.colorbar(im_t, ax=axes[1], label="T (K)")
+        axes[1].set_title("Temperature Field")
+        
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close(fig)
+
+    def _save_3d_block(self, T, path, step):
+        if plt is None: return
+        fig = plt.figure(figsize=(8, 6))
+        plots.plot_3d_block_mpl_ax(
+            fig.add_subplot(111, projection='3d'), 
+            T, self._dx, self._dy, self._dz,
+            title=f"3D Block - Step {step}",
+            unit='mm'
+        )
+        plt.savefig(path, bbox_inches='tight', dpi=150) # Increased DPI for sharpness
+        plt.close(fig)
+
+    def _save_cross_sections(self, T, path, step):
+        if plt is None: return
+        fig = plt.figure(figsize=(15, 5))
+        plots.plot_cross_sections(
+            fig, T, self._dx, self._dy, self._dz,
+            unit='mm',
+            cmap='jet'
+        )
+        plt.savefig(path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+
+    def _save_composite(self, T, path, step):
+        if plt is None: return
+        fig = plt.figure(figsize=(12, 10))
+        plots.plot_composite_thermal_view(
+            fig, T, self._dx, self._dy, self._dz, step, unit='mm'
+        )
+        plt.savefig(path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
+
+    def _save_plotly(self, T, path, step):
+        if go is None: return
+        if T.ndim == 3:
+            fig = plots.plot_interactive_volume(T, self._dx, self._dy, self._dz, step)
+        else:
+            fig = plots.plot_interactive_heatmap(T, self._dx, self._dy, step)
         fig.write_html(str(path), include_plotlyjs="cdn")
 
+    def _save_plotly_composite(self, T, path, step):
+        if go is None or T.ndim != 3: return
+        fig = plots.plot_interactive_composite(T, self._dx, self._dy, self._dz, step)
+        fig.write_html(str(path), include_plotlyjs="cdn")
+    
     def on_run_end(self, final_state: Any, meta: dict[str, Any]) -> list[Path]:
-        if not self.cfg.make_report:
-            return []
+        generated = []
+        
+        # XT Diagram
+        if self.cfg.enabled and self._xt_buffer:
+             # Reuse buffer logic (could move to plots.py too but keeping here for simplicity)
+             xt_path = self.dirs["plots_png"] / "xt_diagram.png"
+             self._save_xt_diagram(xt_path)
+             generated.append(xt_path)
+        
+        # Generate GIF from Block Plots
+        if self._block_paths and imageio:
+            gif_path = self.dirs["plots_png"] / "animation_3d.gif"
+            self._create_gif(self._block_paths, gif_path)
+            generated.append(gif_path)
+            
+        # Generate GIF from Composite Plots
+        if self._comp_paths and imageio:
+            gif_comp_path = self.dirs["plots_png"] / "animation_composite.gif"
+            self._create_gif(self._comp_paths, gif_comp_path)
+            generated.append(gif_comp_path)
+            
+        if self.cfg.make_report:
+             report_path = self.dirs["report"] / "index.html"
+             self._write_report(report_path, meta, gif_path if self._block_paths else None)
+             generated.append(report_path)
+             
+        return generated
 
-        report_path = self.dirs["report"] / "index.html"
-        self._write_report(report_path, meta)
-        return [report_path]
+    def _save_xt_diagram(self, path: Path):
+        # Legacy XT code logic, minimally adapted
+        if plt is None or not self._xt_buffer: return
+        XT = np.stack(self._xt_buffer, axis=0)
+        times = np.array(self._xt_times)
+        width_m = XT.shape[1] * self._dx
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Use plot_api? simpler to just imshow here for XT specific extent
+        # Extent logic
+        scale = 1000.0 if self._length_unit == 'm' else 1.0 # assume m
+        extent = [0, width_m * scale, times[0], times[-1]]
+        
+        im = ax.imshow(XT, origin="lower", aspect="auto", cmap="jet", extent=extent)
+        plt.colorbar(im, ax=ax, label="T (K)")
+        ax.set_xlabel("x [mm]")
+        ax.set_ylabel("t [s]")
+        ax.set_title("XT Diagram")
+        
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close(fig)
 
-    def _write_report(self, path: Path, meta_dict: dict[str, Any]):
-        """Generate a simple HTML report."""
-        import os
-        # Relative paths for links using os.path.relpath to handle sibling directories
-        png_rel = [Path(os.path.relpath(p, path.parent)) for p in self._png_paths]
-        html_rel = [Path(os.path.relpath(p, path.parent)) for p in self._html_paths]
+    def _create_gif(self, image_paths: list[Path], out_path: Path):
+        """Stitch images into GIF."""
+        # Sort paths
+        safe_paths = sorted(image_paths, key=lambda p: p.name)
+        images = []
+        for p in safe_paths:
+            images.append(imageio.imread(p))
+        
+        # 10 fps default
+        imageio.imwrite(out_path, images, duration=100, loop=0)
+        logger.info(f"Saved GIF to {out_path}")
 
-        # Sort by step (filename)
-        png_rel = sorted(png_rel, key=lambda p: p.name)
-        html_rel = sorted(html_rel, key=lambda p: p.name)
-
-        content = [
-            "<html><head><title>Simulation Report</title>",
-            "<style>body{font-family:sans-serif; max_width:1000px; "
-            "margin:auto; padding:20px;}",
-            "img{max_width:100%; border:1px solid #ddd; margin:5px;}",
-            ".gallery{display:grid; grid-template-columns:"
-            "repeat(auto-fill, minmax(300px, 1fr)); gap:10px;}",
-            "</style></head><body>",
-            "<h1>Simulation Report</h1>",
-            "<h2>Metadata</h2>",
-            "<pre>" + str(meta_dict) + "</pre>",
-            "<h2>Snapshots (PNG)</h2>",
-            "<div class='gallery'>",
-        ]
-
-        for p in png_rel:
-            # assuming relative path works if report is in artifact/report/
-            # and images in artifact/plots/
-            # actually relative_to(path.parent) gives ../plots/...
-            content.append(f"<div><p>{p.name}</p><img src='{p}' loading='lazy'/></div>")
-
-        content.append("</div>")
-
-        if html_rel:
-            content.append("<h2>Interactive (Plotly)</h2><ul>")
-            for p in html_rel:
-                content.append(f"<li><a href='{p}'>{p.name}</a></li>")
-            content.append("</ul>")
-
+    def _write_report(self, path: Path, meta: dict, gif_path: Path | None):
+        # Simple report
+        content = ["<html><body><h1>Simulation Report</h1>"]
+        if gif_path:
+             content.append(f"<h2>3D Animation</h2><img src='../plots/png/{gif_path.name}' />")
         content.append("</body></html>")
-
         with open(path, "w") as f:
-            f.write("\n".join(content))
+            f.write("".join(content))
