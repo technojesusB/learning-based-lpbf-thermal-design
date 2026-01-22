@@ -39,6 +39,10 @@ class SimulationState:
     # Auxiliary / History fields for analysis
     max_T: torch.Tensor | None = None
     cooling_rate: torch.Tensor | None = None
+    
+    # Material Phase Mask: 0 = Powder, 1 = Solid / Liquid
+    # Used for irreversible transitions (once melted, powder becomes solid).
+    material_mask: torch.Tensor | None = None
 
     # Internal state for integrators (e.g. previous step T for dT/dt)
     T_prev: torch.Tensor | None = None
@@ -49,6 +53,9 @@ class SimulationState:
             self.max_T = self.T.clone()
         if self.cooling_rate is None:
             self.cooling_rate = torch.zeros_like(self.T)
+        if self.material_mask is None:
+            # Default to Powder (0) everywhere
+            self.material_mask = torch.zeros_like(self.T, dtype=torch.uint8)
 
     @property
     def device(self) -> torch.device:
@@ -74,6 +81,9 @@ class SimulationState:
             max_T=self.max_T.clone() if self.max_T is not None else None,
             cooling_rate=self.cooling_rate.clone()
             if self.cooling_rate is not None
+            else None,
+            material_mask=self.material_mask.clone()
+            if self.material_mask is not None
             else None,
             T_prev=self.T_prev.clone() if self.T_prev is not None else None,
         )

@@ -61,6 +61,8 @@ class TimeStepper:
         # Currently not fully implemented with source evaluation.
         raise NotImplementedError("Use step_adaptive instead.")
 
+
+
     def step_explicit_euler(
         self, state: SimulationState, dt: float, Q_ext: torch.Tensor | None = None
     ) -> SimulationState:
@@ -74,6 +76,7 @@ class TimeStepper:
             - Updates state.T, state.t, state.step.
             - Updates state.max_T.
             - Updates state.cooling_rate if solidification occurs.
+            - Updates state.material_mask (Power -> Solid).
             - Stores state.T_prev.
 
         Args:
@@ -90,7 +93,9 @@ class TimeStepper:
         T = state.T
 
         # Material props
-        k = k_eff(T, self.mat)
+        # Use material mask if available
+        mask = state.material_mask
+        k = k_eff(T, self.mat, mask)
         cp = cp_eff(T, self.mat)
         rho = self.mat.rho  # constant density for now
 
@@ -121,6 +126,14 @@ class TimeStepper:
         # Update Temperature
         dT = (dt / rho) * (rhs / (cp + 1e-9))
         T_new = T + dT
+
+        # Update Material Mask (Irreversible Powder -> Solid)
+        # If T > T_solidus, assume it has melted/sintered and becomes Solid (1).
+        if mask is not None:
+             # Identify newly consolidated regions
+             newly_solid = T_new > self.mat.T_solidus
+             # Update mask: Old Mask OR New Solid
+             state.material_mask = mask | newly_solid.to(torch.uint8)
 
         # Update State
         state.T_prev = T  # store for cooling rate calculation
@@ -195,6 +208,7 @@ class TimeStepper:
         state: SimulationState,
         dt_target: float,
         Q_ext: torch.Tensor | None = None,
+        safety_factor: float = 0.9,
     ) -> SimulationState:
         """
         Advance the simulation by `dt_target` using adaptive sub-stepping.
@@ -205,22 +219,37 @@ class TimeStepper:
         Args:
             state (SimulationState): Current state.
             dt_target (float): Desired macro timestep [s].
-            Q_ext (torch.Tensor | None): External heat source field [W/m^3].
+            Q_ext (torch.Tensor | None): External heat source field [W/m^3] (or Flux in 2D).
                                          Assumed constant across all sub-steps.
+            safety_factor (float): Multiplier for CFL limit (default 0.9).
 
         Returns:
             SimulationState: Updated state after dt_target.
         """
-        dt_crit = self.estimate_stability_dt(state)
-
         import math
 
-        n_sub = math.ceil(dt_target / dt_crit)
+        # 1. Estimate effective max diffusivity for current state?
+        # For strict safety, use theoretical max of the material.
+        # `estimate_stability_dt` uses conservative max(k)/min(cp).
+        
+        # Note: estimate_stability_dt generally assumes static properties.
+        # The spike in cp REDUCES diffusivity (alpha = k/rho*cp), so it is SAFER.
+        # The dangerous regime is high k, low cp.
+        
+        dt_crit = self.estimate_stability_dt(state) * safety_factor
 
+        # 2. Determine number of sub-steps
+        if dt_crit < 1e-12:
+            # Fallback to avoid infinite loop if properties are broken
+            dt_crit = 1e-6
+            
+        n_sub = math.ceil(dt_target / dt_crit)
         dt_sub = dt_target / n_sub
 
+        # 3. Sub-step loop
         for _ in range(n_sub):
             # Apply identical Q_ext at each sub-step
+            # Note: explicit Euler handles the Q unit normalization internally now.
             state = self.step_explicit_euler(state, dt_sub, Q_ext)
 
         return state

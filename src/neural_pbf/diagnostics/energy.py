@@ -122,59 +122,32 @@ class EnergyMonitor:
         # We need the integral over volume.
         T_diff = state.T - self.sim.T_ambient
         # Only count positive losses (cooling) or negative (heating from ambient)
-        loss_density_rate = (
-            self.sim.loss_h * T_diff * self.mat.rho * self.mat.cp_base
-        )
-        # Solver implementation: loss_term = -self.sim.loss_h * (T - self.sim.T_ambient)
-        # And dT = ... (rhs / cp).
-        # This implies loss_term has units of [W/m^3] / [rho*cp]? No.
-        # Let's check stepper again.
-        # rhs = div + Q + loss.  Dimensions of rhs must be [W/m^3].
-        # So loss_term is [W/m^3].
-        # loss_h * (T - T_amb). So loss_h is [W/(m^3 K)].
-        # BUT config says loss_h is "Linear cooling loss coefficient [1/s]".
-        # If unit is [1/s], then it acts like a time constant decay?
-        # Re-reading stepper: loss_term = -self.sim.loss_h * (T - self.sim.T_ambient).
-        # if loss_h is 1/s, then T is K. Result is K/s.
-        # Then dT = ... (rhs / cp).
-        # If rhs is K/s, then dT should be rhs * dt.
-        # BUT code: dT = (dt / rho) * (rhs / cp). 
-        # If rhs is K/s, then rhs/cp is (K kg K) / (s J). Unlikely.
-        # 
-        # Standard Heat Eq: rho*cp*dT/dt = ... [W/m^3]
-        # So RHS terms are [W/m^3].
-        # If loss_h is [1/s], then loss term likely intended as
-        # rho*cp*loss_h*(T-T_amb) ?
-        #
-        # Let's look exactly at stepper line 106:
-        # loss_term = -self.sim.loss_h * (T - self.sim.T_ambient)
-        # line 113: dT = (dt / rho) * (rhs / (cp + 1e-9))
-        #
-        # Dimensional analysis:
-        # dT [K], dt [s], rho [kg/m^3], cp [J/(kg K)].
-        # (dt/rho)/cp = s / (kg/m^3 * J/kg*K) = s / (J/m^3*K) = s * m^3 * K / J.
-        # rhs must be [W/m^3] = [J/(s m^3)].
-        # Then: (s m^3 K / J) * (J / s m^3) = K.  Correct.
-        #
-        # So rhs MUST be [W/m^3].
-        # If loss_term is part of rhs, it must be [W/m^3].
-        # If code calculates loss_term = loss_h * dT, and loss_h is [1/s],
-        # then [1/s] * [K] = [K/s].  This is NOT [W/m^3].
-        #
-        # BUG SUSPICION: The current loss term implementation might be dimensionally wrong
-        # unless loss_h is interpreted as [W/(m^3 K)].
-        # But config says [1/s]. 
-        # If it is simple Newtonian cooling dT/dt = -k(T-Tamb), then k is 1/s.
-        # Then term in eq should be rho*cp * (-k(T-amb)).
+
+        # ENERGY BALANCE CHECK:
+        # self.sim.loss_h is [1/s].
+        # Heat Equation term: -loss_h * (T - T_inf)   (Temperature rate of change [K/s])
+        # To get Power [W], we need to integrate:
+        # Integral_V { rho * cp * (loss_h * (T - T_inf)) } dV
+        # Units: [kg/m^3] * [J/kg K] * [1/s] * [K] * [m^3] = [J/s] = [W]. Correct.
+
+        # However, earlier code treated loss_h as [W/(m^3 K)]?
+        # If config says [1/s], then above is correct.
+        # If we just sum loss term from stepper: -loss_h*(T-T_amb) is added to dT/dt.
+        # So it is explicitly [K/s].
+        # So Power Loss Density = rho * cp * loss_h * (T - T_amb) [W/m^3].
         
-        # For the monitor, we must integrate whatever the solver did.
-        # Solver did: loss_flux_vol = -loss_h * (T - T_amb). 
-        # Wait, if stepper adds it to rhs, it treats it as W/m^3.
-        # So we treat it as W/m^3 here too for consistency, regardless of whether 
-        # the physical value of 'loss_h' makes sense for the user.
+        # Calculate loss power [W]
+        # Approximation: Use current T (implicit explicit Euler lag)
+        # We need volume integral.
+        # sum() * dx * dy * dz
         
-        loss_vol_rate = self.sim.loss_h * T_diff # [W/m^3] assuming solver logic
-        loss_rate_J = loss_vol_rate.sum().item() * self.cell_vol
+        # NOTE: This assumes cp is constant or using cp_base. 
+        # Ideally should use cp_eff(T) but that includes latent heat. 
+        # Sensible heat loss uses specific heat.
         
-        # Loss is negative current, so we subtract
-        self.stats.total_loss_J -= loss_rate_J * dt
+        loss_power_W = (
+             self.sim.loss_h * T_diff * self.mat.rho * self.mat.cp_base
+        ).sum() * (self.sim.dx * self.sim.dy * self.sim.dz)
+        
+        self.stats.total_loss_J += float(loss_power_W * dt)
+

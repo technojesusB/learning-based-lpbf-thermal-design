@@ -42,7 +42,7 @@ class SimulationConfig(BaseModel):
     default_dz: float = Field(
         default=0.05,
         gt=0.0,
-        description="Assumed thickness in Z for 2D mode [user units]. Defaults to 0.05 (50um if units=mm).",
+        description="Assumed Z thickness for 2D [user units]. Default 0.05 (50um).",
     )
 
     # Grid resolution

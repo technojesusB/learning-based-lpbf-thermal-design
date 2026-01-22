@@ -31,7 +31,7 @@ class GaussianSourceConfig(HeatSourceConfig):
     sigma: float = Field(
         ...,
         gt=0.0,
-        description="Gaussian standard deviation [m]. Related to D4sigma "
+        description="Gaussian standard deviation (radius) [m]. Related to D4sigma "
         "diameter by D4s = 4 * sigma.",
     )
     depth: float | None = Field(

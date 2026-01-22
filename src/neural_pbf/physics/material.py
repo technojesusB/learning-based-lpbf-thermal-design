@@ -8,10 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 class MaterialConfig(BaseModel):
     """
     Physical material properties for the simulation.
-    All fields expects SI units (W, m, K, J, kg).
+    All fields expect SI units:
+    - Temperature: Kelvin [K]
+    - Length: Meters [m]
+    - Mass: Kilograms [kg]
+    - Energy: Joules [J]
+    - Power: Watts [W]
+    - Time: Seconds [s]
 
     The configuration defines the base properties for powder, solid, and liquid states,
-    as well as phase change parameters (Solidus/Liquidus/Latent Heat).
+    as well as phase change parameters.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -56,7 +62,7 @@ class MaterialConfig(BaseModel):
     transition_sharpness: float = Field(
         default=5.0,
         gt=0.0,
-        description="Sharpness parameter for the sigmoid phase transition smoothing.",
+        description="Sharpness parameter for the sigmoid phase transition smoothing [dimensionless].",
     )
 
     @property
@@ -117,26 +123,29 @@ def melt_fraction(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     return sigmoid_step(s, cfg.transition_sharpness)
 
 
-def k_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
+def k_eff(
+    T: torch.Tensor,
+    cfg: MaterialConfig,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
     """
     Compute the effective thermal conductivity field k(T) [W/(m K)].
 
     Physical Model:
        The conductivity is a phase-weighted average of the solid and liquid
        conductivities:
-       k(T) = (1 - phi) * k_solid + phi * k_liquid
+       k_phase = (1 - phi) * k_solid + phi * k_liquid
 
-    Assumptions:
-       - This function currently treats sub-solidus material as having `k_solid`
-         properties, blended with `k_liquid` during melting.
-       - Powder conductivity (`k_powder`) handling is currently deferred to the
-         caller or requires a separate state mask (consolidated vs powder).
-       - Future versions will accept a 'state' tensor to distinguish powder
-         domains from solidified domains.
+       If a `mask` is provided (0=Powder, 1=Solid), we further blend:
+       k_eff = (1 - mask) * k_powder + mask * k_phase
+
+       This allows modeling the irreversible transition from Powder -> Solid.
 
     Args:
         T (torch.Tensor): Temperature field [K].
         cfg (MaterialConfig): Material configuration.
+        mask (torch.Tensor | None): Phase mask (0=Powder, 1=Solid).
+                                    If None, assumes Solid state everywhere.
 
     Returns:
         torch.Tensor: Effective thermal conductivity field.
@@ -145,6 +154,16 @@ def k_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
 
     # Pure Phase Change k (Solid <-> Liquid)
     k_phase = (1.0 - phi) * cfg.k_solid + phi * cfg.k_liquid
+    
+    if mask is not None:
+        # mask is 0 or 1.
+        # k = (1 - mask)*k_powder + mask*k_phase
+        # Use simple interpolation
+        # logical_or mask with phi>0? No, mask is historical state.
+        
+        # Ensure mask is float for math
+        m = mask.to(T.dtype)
+        return (1.0 - m) * cfg.k_powder + m * k_phase
 
     return k_phase
 
