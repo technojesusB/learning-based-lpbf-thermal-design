@@ -1,15 +1,15 @@
 import sys
 from pathlib import Path
 
+from experiments.run_3d import run_3d_experiment
+from src.neural_pbf.core.config import LengthUnit, SimulationConfig
+from src.neural_pbf.physics.material import MaterialConfig
+
 # Ensure project root is in python path
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
-
-from experiments.run_3d import run_3d_experiment
-from src.neural_pbf.core.config import LengthUnit, SimulationConfig
-from src.neural_pbf.physics.material import MaterialConfig
 
 
 def run_compare():

@@ -3,17 +3,17 @@ from pathlib import Path
 
 import torch
 
-# Ensure project root is in python path
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
 from src.neural_pbf.core.config import LengthUnit, SimulationConfig
 from src.neural_pbf.core.state import SimulationState
 from src.neural_pbf.integrator.stepper import TimeStepper
 from src.neural_pbf.physics.material import MaterialConfig
 from src.neural_pbf.utils.profiling import PerformanceTracker
+
+# Ensure project root is in python path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 
 def run_benchmark(
@@ -22,7 +22,8 @@ def run_benchmark(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
         print(
-            "WARNING: CUDA not available. Benchmarking on CPU is not representative for GPU kernels."
+            "WARNING: CUDA not available. Benchmarking on CPU "
+            "is not representative for GPU kernels."
         )
 
     # 1. Config
@@ -126,13 +127,16 @@ if __name__ == "__main__":
     print("\n" + "=" * 40)
     print(f"SUMMARY ({NX}x{NY}x{NZ} Grid)")
     print(
-        f"PyTorch (Const):   {res_base.elapsed_ms / STEPS:.2f} ms/step, {res_base.max_vram_mb:.1f} MB"
+        f"PyTorch (Const):  {res_base.elapsed_ms / STEPS:.2f} ms/step, "
+        f"{res_base.max_vram_mb:.1f} MB"
     )
     print(
-        f"PyTorch (SS316L): {res_tdep.elapsed_ms / STEPS:.2f} ms/step, {res_tdep.max_vram_mb:.1f} MB"
+        f"PyTorch (SS316L): {res_tdep.elapsed_ms / STEPS:.2f} ms/step, "
+        f"{res_tdep.max_vram_mb:.1f} MB"
     )
     print(
-        f"Triton  (SS316L): {res_triton.elapsed_ms / STEPS:.2f} ms/step, {res_triton.max_vram_mb:.1f} MB"
+        f"Triton  (SS316L): {res_triton.elapsed_ms / STEPS:.2f} ms/step, "
+        f"{res_triton.max_vram_mb:.1f} MB"
     )
 
     speedup = res_tdep.elapsed_ms / res_triton.elapsed_ms

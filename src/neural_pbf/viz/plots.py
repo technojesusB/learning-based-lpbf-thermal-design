@@ -1,8 +1,10 @@
-# Optional imports handled by caller or try/except, but this module assumes availability for now
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 from matplotlib import cm
+from matplotlib.axes import Axes
+from matplotlib.colors import Normalize
+from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from plotly.subplots import make_subplots
 
@@ -126,7 +128,7 @@ def plot_interactive_heatmap(T: np.ndarray, dx: float, dy: float, step: int):
 
 
 def plot_surface_heatmap_mpl(
-    ax: plt.Axes,
+    ax: Axes,
     T: np.ndarray,
     dx: float,
     dy: float,
@@ -160,7 +162,7 @@ def plot_surface_heatmap_mpl(
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
-        extent=[0, lx, 0, ly],
+        extent=(0, lx, 0, ly),
         aspect="auto",
     )
     ax.set_xlabel(f"X [{unit}]")
@@ -172,7 +174,7 @@ def plot_surface_heatmap_mpl(
 
 
 def plot_3d_block_mpl(
-    fig: plt.Figure,
+    fig: Figure,
     T: np.ndarray,
     dx: float,
     dy: float,
@@ -200,7 +202,7 @@ def plot_3d_block_mpl(
 
     # Faces data
     # Top: Z = max, XY plane
-    T[..., -1].T  # [Y, X]
+    # T[..., -1].T  # [Y, X] (Removed useless access)
     # Side: Y = mid?, actually user wants 'exterior' faces usually
     # Figure 12c shows: Top, Side (XZ plane at Y=0 or Y=Ly?), Front (YZ plane at X=Lx?)
     # Let's plot the bounding box faces.
@@ -217,7 +219,7 @@ def plot_3d_block_mpl(
     # Use plot_surface
 
     # Normalizing colormap
-    norm = plt.Normalize(vmin=vmin, vmax=vmax)
+    norm = Normalize(vmin=vmin, vmax=vmax)
     m = cm.ScalarMappable(cmap=cmap, norm=norm)
 
     # Top
@@ -232,8 +234,8 @@ def plot_3d_block_mpl(
         X_side, Y_side, Z_side, facecolors=m.to_rgba(T[:, 0, :].T), shade=False
     )
 
-    # Front (X = Lx) - YZ plane? Or X=0?
-    # Usually we want to see the cut. If we show the block, we usually show Top, Right, Front.
+    # Usually we want to see the cut. If we show the block,
+    # we usually show Top, Right, Front.
     # Let's show X=Lx (Right) and Y=0 (Front) and Z=Lz (Top).
 
     # Right (X = Lx)
@@ -258,7 +260,7 @@ def plot_3d_block_mpl(
 
 
 def plot_cross_sections(
-    fig: plt.Figure,
+    fig: Figure,
     T: np.ndarray,
     dx: float,
     dy: float,
@@ -279,9 +281,10 @@ def plot_cross_sections(
     if slice_indices is None:
         # Use location of Max T as interesting point
         idx = np.unravel_index(np.argmax(T, axis=None), T.shape)
-        slice_indices = idx
-
-    xi, yi, zi = slice_indices
+        # Ensure it's a 3-tuple
+        xi, yi, zi = int(idx[0]), int(idx[1]), int(idx[2])
+    else:
+        xi, yi, zi = slice_indices
     nx, ny, nz = T.shape
     scale = 1000.0 if unit == "mm" else 1.0
 
@@ -339,7 +342,7 @@ def plot_cross_sections(
 
 
 def plot_composite_thermal_view(
-    fig: plt.Figure,
+    fig: Figure,
     T: np.ndarray,
     dx: float,
     dy: float,
@@ -383,11 +386,12 @@ def plot_3d_block_mpl_ax(
     scale = 1000.0 if unit == "mm" else 1.0
     Lx, Ly, Lz = nx * dx * scale, ny * dy * scale, nz * dz * scale
 
-    norm = plt.Normalize(vmin=vmin if vmin else T.min(), vmax=vmax if vmax else T.max())
+    norm = Normalize(vmin=vmin if vmin else T.min(), vmax=vmax if vmax else T.max())
     m = cm.ScalarMappable(cmap=cmap, norm=norm)
 
     # Increase resolution of surfaces by not skipping points
-    # (Matplotlib can be slow if we plot every point of 512x256, so maybe rstride/cstride)
+    # (Matplotlib can be slow if we plot every point of 512x256,
+    # so maybe rstride/cstride)
     # But usually user wants it sharp.
     stride = 1  # Keep it 1 for resolution
     if nx > 200 or ny > 200:

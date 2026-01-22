@@ -33,7 +33,7 @@ class PerformanceTracker:
         self.result: ProfileResult | None = None
 
     def __enter__(self) -> PerformanceTracker:
-        if self.device == "cuda":
+        if self.device == "cuda" and self.start_event is not None:
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
             self.start_event.record()
@@ -42,7 +42,11 @@ class PerformanceTracker:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.device == "cuda":
+        if (
+            self.device == "cuda"
+            and self.start_event is not None
+            and self.end_event is not None
+        ):
             self.end_event.record()
             torch.cuda.synchronize()
             elapsed_ms = self.start_event.elapsed_time(self.end_event)

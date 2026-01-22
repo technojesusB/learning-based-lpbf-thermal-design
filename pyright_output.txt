@@ -1,0 +1,21 @@
+/home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/diagnostics/recorder.py
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/diagnostics/recorder.py:50:20 - error: Type "dict[str, float | int | None]" is not assignable to return type "dict[str, float]"
+    "dict[str, float | int | None]" is not assignable to "dict[str, float]"
+      Type parameter "_VT@dict" is invariant, but "float | int | None" is not the same as "float"
+      Consider switching from "dict" to "Mapping" which is covariant in the value type (reportReturnType)
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/diagnostics/recorder.py:59:20 - error: Type "dict[str, float | int | None]" is not assignable to return type "dict[str, float]"
+    "dict[str, float | int | None]" is not assignable to "dict[str, float]"
+      Type parameter "_VT@dict" is invariant, but "float | int | None" is not the same as "float"
+      Consider switching from "dict" to "Mapping" which is covariant in the value type (reportReturnType)
+/home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py:364:17 - error: Argument of type "bool" cannot be assigned to parameter "use_lut" of type "constexpr" in function "_thermal_step_3d_kernel"
+    "bool" is not assignable to "constexpr" (reportArgumentType)
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py:368:15 - error: Argument of type "int" cannot be assigned to parameter "n_lut" of type "constexpr" in function "_thermal_step_3d_kernel"
+    "int" is not assignable to "constexpr" (reportArgumentType)
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py:369:22 - error: Argument of type "Literal[8]" cannot be assigned to parameter "BLOCK_SIZE_X" of type "constexpr" in function "_thermal_step_3d_kernel"
+    "Literal[8]" is not assignable to "constexpr" (reportArgumentType)
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py:370:22 - error: Argument of type "Literal[8]" cannot be assigned to parameter "BLOCK_SIZE_Y" of type "constexpr" in function "_thermal_step_3d_kernel"
+    "Literal[8]" is not assignable to "constexpr" (reportArgumentType)
+  /home/technojesus/Projekte/learning-based-lpbf-thermal-design/src/neural_pbf/physics/triton_ops.py:371:22 - error: Argument of type "Literal[4]" cannot be assigned to parameter "BLOCK_SIZE_Z" of type "constexpr" in function "_thermal_step_3d_kernel"
+    "Literal[4]" is not assignable to "constexpr" (reportArgumentType)
+7 errors, 0 warnings, 0 informations

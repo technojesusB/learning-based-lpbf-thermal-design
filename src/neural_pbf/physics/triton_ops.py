@@ -329,6 +329,7 @@ def run_thermal_step_3d_triton(T, mask, Q, sim_cfg, mat_cfg, dt):
         n_lut = 1
         use_lut = False
 
+    kwargs = {"num_warps": 4}
     _thermal_step_3d_kernel[grid](
         T,
         mask,
@@ -360,14 +361,14 @@ def run_thermal_step_3d_triton(T, mask, Q, sim_cfg, mat_cfg, dt):
         ks_coeff=mat_cfg.k_solid_T_coeff,
         kl_coeff=mat_cfg.k_liquid_T_coeff,
         cp_coeff=mat_cfg.cp_T_coeff,
-        use_lut=use_lut,
+        use_lut=use_lut,  # type: ignore
         T_lut_ptr=T_lut,
         k_lut_ptr=k_lut,
         cp_lut_ptr=cp_lut,
-        n_lut=n_lut,
-        BLOCK_SIZE_X=BLOCK_X,
-        BLOCK_SIZE_Y=BLOCK_Y,
-        BLOCK_SIZE_Z=BLOCK_Z,
-        num_warps=4,
-    )
+        n_lut=n_lut,  # type: ignore
+        BLOCK_SIZE_X=BLOCK_X,  # type: ignore
+        BLOCK_SIZE_Y=BLOCK_Y,  # type: ignore
+        BLOCK_SIZE_Z=BLOCK_Z,  # type: ignore
+        **kwargs,
+    )  # type: ignore
     return T_new

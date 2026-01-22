@@ -96,5 +96,8 @@ uv run ruff check . --fix
 uv run pyright
 ```
 
+> [!NOTE]
+> You may notice `# type: ignore` comments in high-performance GPU kernels (e.g., `triton_ops.py`). These are necessary because static type checkers like Pyright do not yet fully support Triton's Domain-Specific Language (DSL), such as `tl.constexpr` and dynamic kernel launchers. These ignores are intentional to maintain both high-performance and strict compile-time optimization.
+
 **Continuous Integration (CI):**
 The CI pipeline automatically runs `ruff check` and `pytest` on every push. ensure these commands pass locally before committing.

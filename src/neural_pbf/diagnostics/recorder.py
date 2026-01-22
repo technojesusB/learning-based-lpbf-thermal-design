@@ -47,7 +47,7 @@ class DiagnosticsRecorder:
         metrics: dict[str, float | int | None] = {}
 
         if not self.cfg.enabled:
-            return metrics
+            return {}
 
         # Extract T
         if isinstance(state, dict):
@@ -56,7 +56,7 @@ class DiagnosticsRecorder:
             T = state
 
         if T is None:
-            return metrics
+            return {}
 
         # Basic stats
         metrics["sim/temperature_min"] = float(T.min())
@@ -130,6 +130,7 @@ class DiagnosticsRecorder:
                         f"Metric {name} exceeded threshold: {val} > {limit}"
                     )
 
-        metrics["stability/warn_flag"] = warn_flag
+        metrics["stability/warn_flag"] = float(warn_flag)
 
-        return metrics
+        # Ensure all returned values are floats and filter out any None
+        return {k: float(v) for k, v in metrics.items() if v is not None}

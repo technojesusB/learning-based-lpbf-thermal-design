@@ -5,13 +5,6 @@ from pathlib import Path
 
 import torch
 
-# Ensure project root is in python path
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
-
 from src.neural_pbf.core.config import LengthUnit, SimulationConfig
 from src.neural_pbf.core.state import SimulationState
 from src.neural_pbf.integrator.stepper import TimeStepper
@@ -23,6 +16,12 @@ from src.neural_pbf.schemas.run_meta import RunMeta
 from src.neural_pbf.schemas.tracking import TrackingConfig
 from src.neural_pbf.tracking.run_context import RunContext
 from src.neural_pbf.viz.temperature_artifacts import TemperatureArtifactBuilder
+
+# Ensure project root is in python path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 
 def run_2d_experiment(
@@ -86,7 +85,8 @@ def run_2d_experiment(
     out_dir = base_dir / run_name
 
     # Only clear if it's a fresh run we generated the name for,
-    # OR if the user deliberately re-uses a name, we might want to warn or just overwrite.
+    # OR if the user deliberately re-uses a name, we might want
+    # to warn or just overwrite.
     # For safety, let's only wipe if it exists.
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -124,7 +124,8 @@ def run_2d_experiment(
 
     # The error was missing out_dir. RunContext(..., run_meta, out_dir, ...)
     # Wait, looking at signature:
-    # __init__(self, tracking_cfg, artifact_cfg, diagnostics_cfg, run_meta, out_dir, artifact_builder=None)
+    # __init__(self, tracking_cfg, artifact_cfg, diagnostics_cfg,
+    #           run_meta, out_dir, artifact_builder=None)
     # My previous code was: ctx = RunContext(track_cfg, diag_cfg, art_cfg, viz)
     # This is completely wrong order and missing args.
 

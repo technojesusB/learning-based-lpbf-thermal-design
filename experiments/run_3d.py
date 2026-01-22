@@ -5,13 +5,6 @@ from pathlib import Path
 
 import torch
 
-# Ensure project root is in python path
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
-
 from src.neural_pbf.core.config import LengthUnit, SimulationConfig  # noqa: E402
 from src.neural_pbf.core.state import SimulationState  # noqa: E402
 from src.neural_pbf.integrator.stepper import TimeStepper  # noqa: E402
@@ -24,7 +17,13 @@ from src.neural_pbf.schemas.tracking import TrackingConfig  # noqa: E402
 from src.neural_pbf.tracking.run_context import RunContext  # noqa: E402
 from src.neural_pbf.viz.temperature_artifacts import (
     TemperatureArtifactBuilder,
-)  # noqa: E402
+)
+
+# Ensure project root is in python path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 
 def run_3d_experiment(

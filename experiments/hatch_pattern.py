@@ -5,12 +5,6 @@ from pathlib import Path
 
 import torch
 
-# Ensure project root is in python path
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
 from src.neural_pbf.core.config import LengthUnit, SimulationConfig
 from src.neural_pbf.core.state import SimulationState
 from src.neural_pbf.integrator.stepper import TimeStepper
@@ -22,6 +16,12 @@ from src.neural_pbf.schemas.run_meta import RunMeta
 from src.neural_pbf.schemas.tracking import TrackingConfig
 from src.neural_pbf.tracking.run_context import RunContext
 from src.neural_pbf.viz.temperature_artifacts import TemperatureArtifactBuilder
+
+# Ensure project root is in python path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 
 def run_hatch_experiment():
@@ -155,7 +155,8 @@ def run_hatch_experiment():
             ctx.maybe_snapshot(i, state, meta={"t": state.t, "hatch": 1})
             if i % 50 == 0:
                 print(
-                    f"Hatch 1 | Step {i}/{steps_hatch} | T_max={state.T.max().item():.1f} K"
+                    f"Hatch 1 | Step {i}/{steps_hatch} | "
+                    f"T_max={state.T.max().item():.1f} K"
                 )
 
         # HATCH 2 (Backward)
@@ -176,7 +177,8 @@ def run_hatch_experiment():
             ctx.maybe_snapshot(offset + i, state, meta={"t": state.t, "hatch": 2})
             if i % 50 == 0:
                 print(
-                    f"Hatch 2 | Step {i}/{steps_hatch} | T_max={state.T.max().item():.1f} K"
+                    f"Hatch 2 | Step {i}/{steps_hatch} | "
+                    f"T_max={state.T.max().item():.1f} K"
                 )
 
     except KeyboardInterrupt:

@@ -109,9 +109,13 @@ class TimeStepper:
 
             # The kernel currently expects [Nx, Ny, Nz] or [1,1,Nx,Ny,Nz]
             # We pass contiguous views
+            mask = state.material_mask
+            if mask is None:
+                mask = torch.zeros_like(T, dtype=torch.uint8)
+
             T_new = run_thermal_step_3d_triton(
                 T.squeeze(),
-                state.material_mask.squeeze(),
+                mask.squeeze(),
                 Q.squeeze(),
                 self.sim,
                 self.mat,
@@ -266,7 +270,8 @@ class TimeStepper:
         Args:
             state (SimulationState): Current state.
             dt_target (float): Desired macro timestep [s].
-            Q_ext (torch.Tensor | None): External heat source field [W/m^3] (or Flux in 2D).
+            Q_ext (torch.Tensor | None): External heat source field [W/m^3]
+                                         (or Flux in 2D).
                                          Assumed constant across all sub-steps.
             safety_factor (float): Multiplier for CFL limit (default 0.9).
 
