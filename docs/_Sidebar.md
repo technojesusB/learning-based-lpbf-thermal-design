@@ -5,3 +5,4 @@
 - [MLflow Backend](mlflow_backend)
 - [Diagnostics & Metrics](diagnostics_metrics)
 - [Artifacts & Reports](artifacts_and_reports)
+- [Benchmarks](benchmarks)

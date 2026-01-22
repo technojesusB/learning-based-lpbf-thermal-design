@@ -1580,6 +1580,7 @@ dependencies = [
     { name = "torch" },
     { name = "torchvision" },
     { name = "tqdm" },
+    { name = "triton" },
 ]
 
 [package.dev-dependencies]
@@ -1607,6 +1608,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.8.0" },
     { name = "torchvision", specifier = ">=0.23.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
+    { name = "triton", specifier = ">=3.4.0" },
 ]
 
 [package.metadata.requires-dev]

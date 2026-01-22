@@ -65,6 +65,29 @@ class MaterialConfig(BaseModel):
         description="Sharpness parameter for the sigmoid phase transition smoothing [dimensionless].",
     )
 
+    # --- Phase 3: Temperature Dependency (Optional) ---
+    use_T_dep: bool = Field(
+        default=False,
+        description="Toggle temperature-dependent material properties (k, cp).",
+    )
+    T_ref: float = Field(
+        default=293.15,
+        gt=0.0,
+        description="Reference temperature for temperature-dependent properties [K].",
+    )
+    k_solid_T_coeff: float = Field(
+        default=0.0,
+        description="Linear temperature coefficient for solid conductivity [1/K]. k = k_solid * (1 + coeff * (T - T_ref))",
+    )
+    k_liquid_T_coeff: float = Field(
+        default=0.0,
+        description="Linear temperature coefficient for liquid conductivity [1/K].",
+    )
+    cp_T_coeff: float = Field(
+        default=0.0,
+        description="Linear temperature coefficient for heat capacity [1/K].",
+    )
+
     @property
     def latent_width(self) -> float:
         """
@@ -152,16 +175,21 @@ def k_eff(
     """
     phi = melt_fraction(T, cfg)
 
-    # Pure Phase Change k (Solid <-> Liquid)
-    k_phase = (1.0 - phi) * cfg.k_solid + phi * cfg.k_liquid
+    # Conductivity [W/(m K)]
+    k_s = cfg.k_solid
+    k_l = cfg.k_liquid
+    
+    if cfg.use_T_dep:
+        dT = T - cfg.T_ref
+        k_s = k_s * (1.0 + cfg.k_solid_T_coeff * dT)
+        k_l = k_l * (1.0 + cfg.k_liquid_T_coeff * dT)
+        
+    # Phase-weighted average
+    k_phase = (1.0 - phi) * k_s + phi * k_l
     
     if mask is not None:
         # mask is 0 or 1.
         # k = (1 - mask)*k_powder + mask*k_phase
-        # Use simple interpolation
-        # logical_or mask with phi>0? No, mask is historical state.
-        
-        # Ensure mask is float for math
         m = mask.to(T.dtype)
         return (1.0 - m) * cfg.k_powder + m * k_phase
 
@@ -190,7 +218,13 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     Returns:
         torch.Tensor: Effective specific heat capacity field.
     """
-    cp = torch.full_like(T, cfg.cp_base)
+    cp_base = cfg.cp_base
+    if cfg.use_T_dep:
+        dT = T - cfg.T_ref
+        cp_base = cp_base * (1.0 + cfg.cp_T_coeff * dT)
+        
+    cp = torch.full_like(T, 0.0) # allocation, but easier to combine
+    cp = cp + cp_base
 
     if cfg.latent_heat_L <= 1e-9:
         return cp

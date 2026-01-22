@@ -9,6 +9,12 @@ from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff
 from neural_pbf.physics.ops import div_k_grad
 from neural_pbf.scan.sources import HeatSource
 
+try:
+    from neural_pbf.physics.triton_ops import run_thermal_step_3d_triton
+    HAS_TRITON = True
+except ImportError:
+    HAS_TRITON = False
+
 
 class TimeStepper:
     """
@@ -64,7 +70,7 @@ class TimeStepper:
 
 
     def step_explicit_euler(
-        self, state: SimulationState, dt: float, Q_ext: torch.Tensor | None = None
+        self, state: SimulationState, dt: float, Q_ext: torch.Tensor | None = None, use_triton: bool = False
     ) -> SimulationState:
         """
         Perform a single Explicit Euler integration step.
@@ -92,7 +98,42 @@ class TimeStepper:
         """
         T = state.T
 
-        # Material props
+        if use_triton and HAS_TRITON and self.sim.is_3d:
+            # FUSED TRITON PATH
+            # Note: Triton kernel handles unit consistency internally for 3D.
+            # Q_ext is [W/m^3] for 3D.
+            Q = Q_ext if Q_ext is not None else torch.zeros_like(T)
+            
+            # The kernel currently expects [Nx, Ny, Nz] or [1,1,Nx,Ny,Nz]
+            # We pass contiguous views
+            T_new = run_thermal_step_3d_triton(
+                T.squeeze(), 
+                state.material_mask.squeeze(), 
+                Q.squeeze(), 
+                self.sim, self.mat, dt
+            )
+            
+            # Reshape back to (B, C, Nx, Ny, Nz)
+            T_new = T_new.view_as(T)
+            
+            # Identify newly consolidated regions (for mask update)
+            if state.material_mask is not None:
+                newly_solid = T_new > self.mat.T_solidus
+                state.material_mask = state.material_mask | newly_solid.to(torch.uint8)
+            
+            state.T_prev = T
+            state.T = T_new
+            state.t += dt
+            state.step += 1
+            
+            # (Analysis and Cooling rate logic simplified for bench, 
+            # should ideally be in kernel but for now we do it here if needed)
+            if state.max_T is not None:
+                state.max_T = torch.maximum(state.max_T, T_new)
+            
+            return state
+
+        # STANDARD PYTORCH PATH
         # Use material mask if available
         mask = state.material_mask
         k = k_eff(T, self.mat, mask)
@@ -209,6 +250,7 @@ class TimeStepper:
         dt_target: float,
         Q_ext: torch.Tensor | None = None,
         safety_factor: float = 0.9,
+        use_triton: bool = False,
     ) -> SimulationState:
         """
         Advance the simulation by `dt_target` using adaptive sub-stepping.
@@ -250,6 +292,6 @@ class TimeStepper:
         for _ in range(n_sub):
             # Apply identical Q_ext at each sub-step
             # Note: explicit Euler handles the Q unit normalization internally now.
-            state = self.step_explicit_euler(state, dt_sub, Q_ext)
+            state = self.step_explicit_euler(state, dt_sub, Q_ext, use_triton=use_triton)
 
         return state
