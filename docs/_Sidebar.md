@@ -6,3 +6,4 @@
 - [Diagnostics & Metrics](diagnostics_metrics)
 - [Artifacts & Reports](artifacts_and_reports)
 - [Benchmarks](benchmarks)
+- [Materials Gallery](materials/index)
