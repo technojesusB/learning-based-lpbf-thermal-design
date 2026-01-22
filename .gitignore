@@ -8,3 +8,4 @@ mlflow.db
 mlruns/
 notebook_artifacts/
 *.ipynb_checkpoints/
+scripts/

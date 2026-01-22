@@ -38,6 +38,7 @@ laser scan strategies under simplified thermal assumptions.
 
 - [Usage Guide](docs/usage.md)
 - [Physics Model & Numerics](docs/physics.md)
+- [Project Wiki](https://github.com/technojesusB/learning-based-lpbf-thermal-design/wiki) (Synced with `docs/`)
 
 ## Development
 
@@ -66,11 +67,11 @@ and inverse design** can be combined to optimize LPBF-inspired scan strategies.
 ---
 
 ## Scope and Assumptions
-- 2D powder bed layer (single-layer abstraction)
+- 2D & 3D thermal domains
 - Transient heat conduction as governing physics
-- Synthetic / toy data only
-- No melt pool fluid flow, free surface, or keyholing
-- Focus on methodology rather than predictive accuracy
+- Physical material models (Powder, Solid, Liquid phases)
+- No melt pool fluid flow, free surface, or keyholing (standard thermal assumption)
+- Focus on differentiable methodology for inverse design
 
 ---
 
@@ -205,39 +206,69 @@ uv sync
 You can run the main simulation experiment either via the command line or using the provided notebook.
 
 **Command Line:**
-```bash
-# Run the stateful time-resolved experiment
-uv run python experiments/stateful_time_resolved.py
-```
-This will generate artifacts in `artifacts/run_<timestamp>/`.
-
-**Notebook:**
-Open `notebooks/01_view_states.ipynb` to run the experiment interactively and visualize the thermal states (Temperature, Cooling Rate, etc.) directly in the notebook.
-
-
-### Running Checks
-
-The following commands are defined in `pyproject.toml` and mimic the CI pipeline:
+The repository includes several experiment scripts for different use cases:
 
 ```bash
-# Linting (Ruff) - check only
-uv run lint
+# General 3D Simulation (Single Track)
+uv run python experiments/run_3d.py
 
-# Linting (Ruff) - auto-fix issues
-uv run ruff check --fix .
+# High-Fidelity Bidirectional Hatch Pattern (Used for the GIF below)
+uv run python experiments/hatch_pattern.py
 
-# Formatting Check (Ruff)
-uv run format
-
-# Type Checking (Pyright)
-uv run typecheck
-
-# Tests (Pytest)
-uv run test
-
-# Run tests with coverage
-uv run test -- --cov=neural_pbf
+# Fidelity Comparison (Low-res vs. High-res)
+uv run python experiments/compare_fidelity.py
 ```
+
+Each run will generate artifacts (plots, interactive HTMLs, and logs) in the `artifacts/` directory.
+
+#### Experiment Tracking (MLflow)
+The project is integrated with [MLflow](https://mlflow.org/) for tracking parameters, metrics, and artifact lineage.
+- **Local Dashboard**: Run `uv run mlflow ui` to view the experiment dashboard.
+- **More Info**: See the [Project Wiki](https://github.com/technojesusB/learning-based-lpbf-thermal-design/wiki) for detailed MLflow setup and usage.
+
+**Notebooks:**
+- `notebooks/01_view_states.ipynb`: Basic state visualization.
+- `notebooks/02_verify_physics_and_viz.ipynb`: Advanced 3D visualization, cross-sections, and physics validation.
+
+## Current State & Results
+
+The simulator now supports full 3D transient thermal analysis with automated artifact generation and advanced visualization.
+
+### Simulation Result (High-Fidelity)
+
+![High Fidelity Simulation](docs/assets/simulation_hi_fid.gif)
+
+*3D Transient Thermal Analysis:*
+- **Solver**: Dense grid ($512 \times 256 \times 128$ nodes, ~16.7M cells), physical domain of $1.0 \times 0.5 \times 0.25$ mm.
+- **Physics**: Realistic material conductivity and latent heat effects for Stainless Steel / Ti64.
+- **Capabilities**: Captures high-frequency thermal gradients and accurate melt pool morphology.
+
+---
+
+### Visualization Breakdown
+
+- **Surface Plot (Top-Down)**: Visualizes the temperature distribution on the top surface, highlighting the laser's path and the immediate thermal footprint.
+- **3D Block Plot**: Provides a volumetric representation of the temperature field, allowing for the inspection of heat penetration depth and internal thermal gradients.
+- **Orthogonal Cross-Sections**: XY, XZ, and YZ planes are extracted to show the internal structure of the thermal field, critical for understanding melt pool morphology and cooling rates at different depths.
+- **Phase State Overlay**: (Coming soon) Enhanced plotting to distinguish between Powder, Solid, and Liquid phases with clear boundaries.
+
+---
+
+## Critical Assessment
+
+### What the simulator can do now:
+- **Full 3D Transient Solver**: Solves the heat equation in 3D using finite differences.
+- **Differentiable Physics**: All operations are implemented in PyTorch, enabling backpropagation for inverse design.
+- **Phase Transition**: Models the transition between Powder, Solid, and Liquid phases including latent heat effects.
+- **Irreversible State**: Correctly handles the physical transformation from Powder to Solid.
+- **Automated Artifacts**: Generates high-quality 3D visualizations, cross-sections, and interactive logs for every run.
+
+### Current Limitations:
+- **Temperature-Independent Parameters**: Material properties ($k, c_p$) are currently constant values rather than functions of temperature.
+- **Basic Boundary Conditions**: Limited to adiabatic or linear cooling losses; lacks radiation and gas flow convection.
+- **Memory Overhead**: Large 3D domains are constrained by VRAM due to PyTorch's memory management (to be solved by custom CUDA kernels).
+- **Domain Uniformity**: Currently assumes a homogeneous material block (to be expanded to substrate+powder layer systems).
+
 
 ### Continuous Integration
 
@@ -249,12 +280,26 @@ CI is hosted on GitHub Actions:
 ---
 
 
-## Extensions and Future Work
-- Multi-laser scan strategies
-- Separate lasers for melting vs. thermal conditioning
-- Patch-based / domain-decomposed surrogates
-- 2.5D (thin-slab) or local 3D moving-window models
-- Learned closure terms for unresolved physics
+## Roadmap & Future Work
+
+The following milestones are planned to increase physical fidelity and scalability:
+
+### 1. Advanced Physics & Materials
+- **Temperature-Dependent Parameters**: Transition from constant material properties to $T$-dependent thermal conductivity $k(T)$ and heat capacity $c_p(T)$.
+- **Phase State Refinement**: Improved tracking and visualization of phase transitions, including latent heat effects and irreversible powder-to-solid transformation.
+- **Surface Boundary Conditions**: Implementation of radiation and convection (argon flow) at the top surface.
+
+### 2. Domain & Geometry
+- **Customizable Domains**: Setup for multi-layer domains, including a base substrate material with a thin powder layer on top.
+- **Pre-heating**: Initialization of the domain with a prescribed base temperature to simulate build-plate heating.
+
+### 3. Scalability & Performance
+- **Custom CUDA Kernels**: Fused kernels for the forward solver to drastically reduce memory overhead and enable simulation of significantly larger domains.
+- **Domain Decomposition**: Implementation of "local-high-fidelity / far-field-low-fidelity" coupling to simulate large parts without sacrificing detail near the melt pool.
+- **Surrogate-Guided Optimization**: Leveraging the neural surrogate to optimize scan patterns and parameters across large parts.
+
+### 4. Scan Pattern Design
+- **Complex Scan Strategies**: Support for arbitrary scan patterns beyond simple hatches, including space-filling curves and multi-laser strategies.
 
 ---
 
