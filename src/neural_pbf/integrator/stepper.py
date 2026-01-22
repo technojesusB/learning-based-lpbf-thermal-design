@@ -11,6 +11,7 @@ from neural_pbf.scan.sources import HeatSource
 
 try:
     from neural_pbf.physics.triton_ops import run_thermal_step_3d_triton
+
     HAS_TRITON = True
 except ImportError:
     HAS_TRITON = False
@@ -67,10 +68,12 @@ class TimeStepper:
         # Currently not fully implemented with source evaluation.
         raise NotImplementedError("Use step_adaptive instead.")
 
-
-
     def step_explicit_euler(
-        self, state: SimulationState, dt: float, Q_ext: torch.Tensor | None = None, use_triton: bool = False
+        self,
+        state: SimulationState,
+        dt: float,
+        Q_ext: torch.Tensor | None = None,
+        use_triton: bool = False,
     ) -> SimulationState:
         """
         Perform a single Explicit Euler integration step.
@@ -103,34 +106,36 @@ class TimeStepper:
             # Note: Triton kernel handles unit consistency internally for 3D.
             # Q_ext is [W/m^3] for 3D.
             Q = Q_ext if Q_ext is not None else torch.zeros_like(T)
-            
+
             # The kernel currently expects [Nx, Ny, Nz] or [1,1,Nx,Ny,Nz]
             # We pass contiguous views
             T_new = run_thermal_step_3d_triton(
-                T.squeeze(), 
-                state.material_mask.squeeze(), 
-                Q.squeeze(), 
-                self.sim, self.mat, dt
+                T.squeeze(),
+                state.material_mask.squeeze(),
+                Q.squeeze(),
+                self.sim,
+                self.mat,
+                dt,
             )
-            
+
             # Reshape back to (B, C, Nx, Ny, Nz)
             T_new = T_new.view_as(T)
-            
+
             # Identify newly consolidated regions (for mask update)
             if state.material_mask is not None:
                 newly_solid = T_new > self.mat.T_solidus
                 state.material_mask = state.material_mask | newly_solid.to(torch.uint8)
-            
+
             state.T_prev = T
             state.T = T_new
             state.t += dt
             state.step += 1
-            
-            # (Analysis and Cooling rate logic simplified for bench, 
+
+            # (Analysis and Cooling rate logic simplified for bench,
             # should ideally be in kernel but for now we do it here if needed)
             if state.max_T is not None:
                 state.max_T = torch.maximum(state.max_T, T_new)
-            
+
             return state
 
         # STANDARD PYTORCH PATH
@@ -154,7 +159,7 @@ class TimeStepper:
         # We must divide by the effective layer thickness dz.
         # In 3D, Q_ext is already [W/m^3] (handled by source.intensity).
         if not self.sim.is_3d and Q_ext is not None:
-             # dz is now the physical thickness from config
+            # dz is now the physical thickness from config
             Q = Q / self.sim.dz
 
         # Loss term (linear cooling)
@@ -171,10 +176,10 @@ class TimeStepper:
         # Update Material Mask (Irreversible Powder -> Solid)
         # If T > T_solidus, assume it has melted/sintered and becomes Solid (1).
         if mask is not None:
-             # Identify newly consolidated regions
-             newly_solid = T_new > self.mat.T_solidus
-             # Update mask: Old Mask OR New Solid
-             state.material_mask = mask | newly_solid.to(torch.uint8)
+            # Identify newly consolidated regions
+            newly_solid = T_new > self.mat.T_solidus
+            # Update mask: Old Mask OR New Solid
+            state.material_mask = mask | newly_solid.to(torch.uint8)
 
         # Update State
         state.T_prev = T  # store for cooling rate calculation
@@ -273,18 +278,18 @@ class TimeStepper:
         # 1. Estimate effective max diffusivity for current state?
         # For strict safety, use theoretical max of the material.
         # `estimate_stability_dt` uses conservative max(k)/min(cp).
-        
+
         # Note: estimate_stability_dt generally assumes static properties.
         # The spike in cp REDUCES diffusivity (alpha = k/rho*cp), so it is SAFER.
         # The dangerous regime is high k, low cp.
-        
+
         dt_crit = self.estimate_stability_dt(state) * safety_factor
 
         # 2. Determine number of sub-steps
         if dt_crit < 1e-12:
             # Fallback to avoid infinite loop if properties are broken
             dt_crit = 1e-6
-            
+
         n_sub = math.ceil(dt_target / dt_crit)
         dt_sub = dt_target / n_sub
 
@@ -292,6 +297,8 @@ class TimeStepper:
         for _ in range(n_sub):
             # Apply identical Q_ext at each sub-step
             # Note: explicit Euler handles the Q unit normalization internally now.
-            state = self.step_explicit_euler(state, dt_sub, Q_ext, use_triton=use_triton)
+            state = self.step_explicit_euler(
+                state, dt_sub, Q_ext, use_triton=use_triton
+            )
 
         return state

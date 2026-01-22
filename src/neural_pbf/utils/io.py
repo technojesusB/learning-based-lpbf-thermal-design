@@ -73,7 +73,7 @@ def load_state(
     # This handles checkpoints saved when schemas was a top-level module
     original_schemas = sys.modules.get("schemas")
     sys.modules["schemas"] = neural_pbf.schemas
-    
+
     try:
         obj = torch.load(path, map_location=map_location, weights_only=False)
     except ModuleNotFoundError as e:

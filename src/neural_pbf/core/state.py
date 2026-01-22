@@ -39,7 +39,7 @@ class SimulationState:
     # Auxiliary / History fields for analysis
     max_T: torch.Tensor | None = None
     cooling_rate: torch.Tensor | None = None
-    
+
     # Material Phase Mask: 0 = Powder, 1 = Solid / Liquid
     # Used for irreversible transitions (once melted, powder becomes solid).
     material_mask: torch.Tensor | None = None
