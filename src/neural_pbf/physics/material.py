@@ -70,6 +70,8 @@ class MaterialConfig(BaseModel):
         default=False,
         description="Toggle temperature-dependent material properties (k, cp).",
     )
+    
+    # Simple linear model coefficients (Legacy support)
     T_ref: float = Field(
         default=293.15,
         gt=0.0,
@@ -77,7 +79,7 @@ class MaterialConfig(BaseModel):
     )
     k_solid_T_coeff: float = Field(
         default=0.0,
-        description="Linear temperature coefficient for solid conductivity [1/K]. k = k_solid * (1 + coeff * (T - T_ref))",
+        description="Linear temperature coefficient for solid conductivity [1/K].",
     )
     k_liquid_T_coeff: float = Field(
         default=0.0,
@@ -86,6 +88,24 @@ class MaterialConfig(BaseModel):
     cp_T_coeff: float = Field(
         default=0.0,
         description="Linear temperature coefficient for heat capacity [1/K].",
+    )
+
+    # --- Lookup Table (LUT) support ---
+    use_lut: bool = Field(
+        default=False,
+        description="Use Lookup Tables (LUT) for material properties instead of linear coefficients.",
+    )
+    T_lut: list[float] | None = Field(
+        default=None,
+        description="Temperature points for the lookup table [K]. Must be monotonically increasing.",
+    )
+    k_lut: list[float] | None = Field(
+        default=None,
+        description="Thermal conductivity values at T_lut [W/(m K)].",
+    )
+    cp_lut: list[float] | None = Field(
+        default=None,
+        description="Specific heat capacity values at T_lut [J/(kg K)].",
     )
 
     @property
@@ -101,6 +121,80 @@ class MaterialConfig(BaseModel):
         if gap < 1e-6:
             return 1.0  # fallback to avoid div0, shouldn't happen with valid cfg
         return gap
+
+    @classmethod
+    def ss316l_preset(cls) -> MaterialConfig:
+        """Returns physical properties for Stainless Steel 316L with LUT presets."""
+        return cls(
+            k_powder=0.2, k_solid=15.0, k_liquid=30.0,
+            cp_base=450.0, rho=7900.0,
+            T_solidus=1650.0, T_liquidus=1700.0,
+            latent_heat_L=2.7e5,
+            use_T_dep=True, use_lut=True,
+            T_lut=[293, 500, 800, 1100, 1400, 1700, 2500, 4000],
+            k_lut=[15.0, 17.0, 20.0, 24.0, 28.0, 30.0, 35.0, 40.0],
+            cp_lut=[450, 480, 520, 560, 600, 650, 700, 750]
+        )
+
+    @classmethod
+    def ti64_preset(cls) -> MaterialConfig:
+        """Returns physical properties for Ti-6Al-4V with LUT presets."""
+        return cls(
+            k_powder=0.15, k_solid=7.0, k_liquid=20.0,
+            cp_base=530.0, rho=4430.0,
+            T_solidus=1878.0, T_liquidus=1923.0,
+            latent_heat_L=3.7e5,
+            use_T_dep=True, use_lut=True,
+            T_lut=[293, 600, 900, 1200, 1500, 2000, 3000],
+            k_lut=[7.0, 10.0, 13.0, 16.0, 19.0, 25.0, 30.0],
+            cp_lut=[530, 580, 630, 680, 730, 800, 850]
+        )
+
+
+def interpolate_1d(T: torch.Tensor, T_lut: list[float], V_lut: list[float]) -> torch.Tensor:
+    """
+    Perform 1D linear interpolation on a temperature field.
+    
+    Args:
+        T (torch.Tensor): Temperature field.
+        T_lut (list[float]): Reference temperature points.
+        V_lut (list[float]): Values at T_lut.
+        
+    Returns:
+        torch.Tensor: Interpolated values.
+    """
+    # Convert LUT to tensors on same device/dtype as T
+    tlut = torch.tensor(T_lut, device=T.device, dtype=T.dtype)
+    vlut = torch.tensor(V_lut, device=T.device, dtype=T.dtype)
+    
+    # We use searchsorted to find indices
+    # T: (B, C, ...)
+    # tlut: (N,)
+    # Output indices: where T would be inserted into tlut.
+    idx = torch.searchsorted(tlut, T)
+    
+    # Clamp to valid range [1, N-1]
+    idx = torch.clamp(idx, 1, len(tlut) - 1)
+    
+    # Neighbors
+    t0, t1 = tlut[idx - 1], tlut[idx]
+    v0, v1 = vlut[idx - 1], vlut[idx]
+    
+    # Interpolation factor
+    # Handle cases where t1 == t0 (should not happen in valid LUT)
+    denom = t1 - t0
+    denom = torch.where(denom < 1e-9, torch.tensor(1.0, device=T.device, dtype=T.dtype), denom)
+    
+    alpha = (T - t0) / denom
+    
+    # Linear interpolation
+    res = v0 + alpha * (v1 - v0)
+    
+    # Handle extrapolation (constant outside range)
+    res = torch.where(T <= tlut[0], vlut[0], res)
+    res = torch.where(T >= tlut[-1], vlut[-1], res)
+    
+    return res
 
 
 def sigmoid_step(x: torch.Tensor, sharpness: float) -> torch.Tensor:
@@ -180,12 +274,26 @@ def k_eff(
     k_l = cfg.k_liquid
     
     if cfg.use_T_dep:
-        dT = T - cfg.T_ref
-        k_s = k_s * (1.0 + cfg.k_solid_T_coeff * dT)
-        k_l = k_l * (1.0 + cfg.k_liquid_T_coeff * dT)
-        
-    # Phase-weighted average
-    k_phase = (1.0 - phi) * k_s + phi * k_l
+        if cfg.use_lut and cfg.T_lut is not None and cfg.k_lut is not None:
+             # Use LUT for bulk conductivity
+             k_bulk = interpolate_1d(T, cfg.T_lut, cfg.k_lut)
+             # In LUT mode, we typically use the interpolated bulk value directly,
+             # but to be consistent with phase weighting:
+             # We assume k_lut describes the 'Solid' phase property, 
+             # and we might still want to scale liquid differently or just use the LUT value.
+             # BETTER: If LUT is present, it usually describes the 'material' property vs T.
+             # We'll treat the LUT as the master source for Solid/Liquid k.
+             k_phase = k_bulk
+        else:
+            # Simple linear scaling
+            dT = T - cfg.T_ref
+            k_s = k_s * (1.0 + cfg.k_solid_T_coeff * dT)
+            k_l = k_l * (1.0 + cfg.k_liquid_T_coeff * dT)
+            # Phase-weighted average
+            k_phase = (1.0 - phi) * k_s + phi * k_l
+    else:
+        # Phase-weighted average (constant)
+        k_phase = (1.0 - phi) * k_s + phi * k_l
     
     if mask is not None:
         # mask is 0 or 1.
@@ -220,10 +328,13 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     """
     cp_base = cfg.cp_base
     if cfg.use_T_dep:
-        dT = T - cfg.T_ref
-        cp_base = cp_base * (1.0 + cfg.cp_T_coeff * dT)
+        if cfg.use_lut and cfg.T_lut is not None and cfg.cp_lut is not None:
+            cp_base = interpolate_1d(T, cfg.T_lut, cfg.cp_lut)
+        else:
+            dT = T - cfg.T_ref
+            cp_base = cp_base * (1.0 + cfg.cp_T_coeff * dT)
         
-    cp = torch.full_like(T, 0.0) # allocation, but easier to combine
+    cp = torch.zeros_like(T) 
     cp = cp + cp_base
 
     if cfg.latent_heat_L <= 1e-9:

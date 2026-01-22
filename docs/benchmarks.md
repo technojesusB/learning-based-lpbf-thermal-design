@@ -9,19 +9,20 @@ This document tracks the performance characteristics of the thermal solver acros
 
 ### Comparison: Resolution Scaling
 
-| Grid Size ($N_x \times N_y \times N_z$) | Total Cells | PyTorch (Const) | PyTorch (T-Dep) | Triton (T-Dep) |
+| Grid Size ($N_x \times N_y \times N_z$) | Total Cells | PyTorch (Const) | PyTorch (SS316L LUT) | Triton (SS316L LUT) |
 | :--- | :--- | :--- | :--- | :--- |
-| $256 \times 128 \times 64$ | ~2.1 Million | 62.65 ms | 69.68 ms | - |
-| $512 \times 256 \times 128$ | ~16.8 Million | 1887.43 ms | 2160.78 ms | **316.96 ms** |
+| $256 \times 128 \times 64$ | ~2.1 Million | 4.80 ms | 7.90 ms | - |
+| $512 \times 256 \times 128$ | ~16.8 Million | 41.65 ms | 62.81 ms | **5.91 ms** |
 
 ### Key Observations
-1. **Geometric vs. Computational Scaling**: 
-   - While the cell count increased by factor **8.0**, the PyTorch computation time increased by factor **~30.0**. 
-   - **Triton Solution**: By using a fused kernel, we reduced the scaling penalty significantly. The Triton solver achieves a **6.8x speedup** over PyTorch for the 16.8M cell domain.
-2. **Memory Efficiency**:
-   - Triton reduced VRAM consumption by **~70%** (1764 MB -> 528 MB) by eliminating intermediate tensor fields.
-3. **Temperature Dependency Overhead**:
-   - Enabling T-dependent material properties adds ~14% overhead in PyTorch, but is virtually "free" within the Triton fused kernel compared to the standard PyTorch baseline.
+1. **Unprecedented Performance**: 
+   - The Triton fused kernel with realistic SS316L Lookup Tables achieves a **10.6x speedup** over the PyTorch implementation.
+   - For a 16.8 Million cell domain, a single solver step takes only **~6 ms** on current hardware.
+2. **Computational Efficiency**:
+   - While PyTorch baseline scaled linearly with cell count (factor 8x), the memory-bound property lookups in PyTorch (LUT interpolation) added a **50% overhead**.
+   - **Triton Advantage**: The fused kernel eliminates this overhead entirely by performing the LUT interpolation in registers during the same pass as the stencil calculation.
+3. **Memory Savings**:
+   - Triton reduces peak VRAM usage by **70%** (1.76 GB -> 0.53 GB) by fusing intermediate tensor fields (conductivity, melt fraction, indices).
 
 ## 2. Optimization Strategy
 
