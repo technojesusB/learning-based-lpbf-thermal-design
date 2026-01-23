@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import torch
+from tqdm.auto import tqdm
 
 from src.neural_pbf.core.config import LengthUnit, SimulationConfig  # noqa: E402
 from src.neural_pbf.core.state import SimulationState  # noqa: E402
@@ -36,6 +37,7 @@ def run_3d_experiment(
     run_name: str | None = None,
     scan_speed: float = 0.8,
     total_time: float = 0.6e-3,
+    use_triton: bool = True,
 ):
     # Setup
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -161,8 +163,14 @@ def run_3d_experiment(
     velocity = torch.tensor([scan_speed, 0.0], device=device)
     t_tensor = torch.tensor(0.0, device=device)
 
+    pbar = tqdm(
+        range(steps),
+        desc=f"Simulating {run_name or '3D'}",
+        file=sys.stdout,
+        mininterval=2.0,
+    )
     try:
-        for i in range(steps):
+        for i in pbar:
             current_pos = start_pos + velocity * t_tensor
 
             # Calculate Source Term [W/m^3]
@@ -178,7 +186,10 @@ def run_3d_experiment(
 
             # Use adaptive stepping for stability
             state = stepper.step_adaptive(
-                state, dt_target=sim_cfg.dt_base, Q_ext=Q_vol.unsqueeze(0).unsqueeze(0)
+                state,
+                dt_target=sim_cfg.dt_base,
+                Q_ext=Q_vol.unsqueeze(0).unsqueeze(0),
+                use_triton=use_triton,
             )
 
             t_tensor += sim_cfg.dt_base
@@ -186,9 +197,9 @@ def run_3d_experiment(
 
             ctx.maybe_snapshot(i, state, meta={"t": state.t})
 
-            if i % 50 == 0:
+            if i % 10 == 0:
                 T_max = state.T.max().item()
-                print(f"Step {i}/{steps} | T_max={T_max:.1f} K")
+                pbar.set_postfix({"T_max": f"{T_max:.1f}K"})
 
     except KeyboardInterrupt:
         print("Interrupted.")

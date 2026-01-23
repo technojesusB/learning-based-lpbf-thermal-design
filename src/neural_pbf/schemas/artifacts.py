@@ -14,3 +14,4 @@ class ArtifactConfig(BaseModel):
     vmax: float | None = None  # Max temperature for color scale consistency
     include_scan_overlay: bool = True
     save_raw: bool = False  # Save full temperature fields as .npy
+    buffer_steps: bool = True  # Keep steps in RAM for post-run rendering

@@ -32,8 +32,8 @@ def run_comparison():
     # 2. Artifact Config (High-res artifacts)
     art_cfg = ArtifactConfig(
         enabled=True,
-        png_every_n_steps=100,
-        html_every_n_steps=200,
+        png_every_n_steps=10,
+        html_every_n_steps=100,
         make_report=True,
         downsample=2,  # Downsample 3D volume for frontend performance
     )
@@ -67,6 +67,7 @@ def run_comparison():
             art_cfg=art_cfg,
             total_time=0.3e-3,  # 0.3ms to capture stable state
             scan_speed=1.0,  # 1 m/s
+            use_triton=True,
         )
 
     print("\n" + "=" * 60)

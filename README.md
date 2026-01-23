@@ -237,14 +237,21 @@ The project is integrated with [MLflow](https://mlflow.org/) for tracking parame
 
 The simulator now supports full 3D transient thermal analysis with automated artifact generation and advanced visualization.
 
-### Simulation Result (High-Fidelity)
+### Simulation Result (High-Fidelity Showcase)
 
 ![High Fidelity Simulation](docs/assets/simulation_hi_fid.gif)
 
-*3D Transient Thermal Analysis:*
-- **Solver**: Dense grid ($512 \times 256 \times 128$ nodes, ~16.7M cells), physical domain of $1.0 \times 0.5 \times 0.25$ mm.
-- **Physics**: Realistic material conductivity and latent heat effects for Stainless Steel / Ti64.
-- **Capabilities**: Captures high-frequency thermal gradients and accurate melt pool morphology.
+*High-Fidelity Multi-Hatch Simulation (SS316L)*:
+- **Grid Resolution**: $1024 \times 512 \times 128$ nodes (~67.1M voxels, ~1 $\mu$m spatial resolution).
+- **Physical Domain**: $1.0 \times 0.5 \times 0.125$ mm.
+- **Material**: SS316L (Temperature-dependent properties via LUT: $k(T)$, $c_p(T)$).
+- **Process Parameters**:
+  - **Heat Source**: Gaussian Beam ($P=200$ W, $v=1.0$ m/s, $\sigma=40 \mu$m, $\eta=0.35$).
+  - **Scan Strategy**: 4-track Zig-Zag pattern (length 0.6 mm, hatch spacing $h=80 \mu$m).
+- **Performance**:
+  - **Total Steps**: 2400 (simulating 2.4 ms physical time).
+  - **Compute**: ~3.9 s/step (on single GPU).
+  - **Time Integration**: Adaptive sub-stepping (`dt_base`=1 $\mu$s).
 
 ---
 

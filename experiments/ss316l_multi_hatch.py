@@ -2,6 +2,7 @@ import datetime
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 from tqdm.auto import tqdm
 
@@ -65,11 +66,11 @@ def run_ss316l_hi_fid():
     sim_cfg = SimulationConfig(
         Lx=1.0,
         Ly=0.5,
-        Lz=0.15,
-        Nx=100,
-        Ny=50,
-        Nz=15,
-        dt_base=1e-6,  # Conservative 1us step
+        Lz=0.125,
+        Nx=1024,
+        Ny=512,
+        Nz=128,
+        dt_base=1e-6,
         length_unit=LengthUnit.MILLIMETERS,
     )
 
@@ -84,6 +85,7 @@ def run_ss316l_hi_fid():
         html_every_n_steps=100,
         make_report=True,
         save_raw=True,  # User requested raw persistence
+        buffer_steps=False,  # Disable RAM buffering to avoid OOM
     )
     diag_cfg = DiagnosticsConfig(log_every_n_steps=50)
 
@@ -130,9 +132,47 @@ def run_ss316l_hi_fid():
     total_time = n_hatches * (length_m / v_scan)
     steps = int(total_time / sim_cfg.dt_base)
 
-    print(f"Simulating SS316L Hi-Fid: {steps} steps, 4 hatches...")
+    # Resume Logic
+    start_step = 0
+    states_dir = out_dir / "states"
+    if states_dir.exists():
+        checkpoints = sorted(list(states_dir.glob("step_*.npy")))
+        if checkpoints:
+            last_ckpt = checkpoints[-1]
+            try:
+                # Extract step index from filename step_XXXXXX.npy
+                resume_step = int(last_ckpt.stem.split("_")[1])
+                print(
+                    f"Found checkpoint: {last_ckpt}. Resuming from step {resume_step}..."
+                )
 
-    pbar = tqdm(range(steps), file=sys.stdout, mininterval=2.0)
+                # Load T
+                T_np = np.load(last_ckpt)
+                T = torch.from_numpy(T_np).to(device)
+
+                # Ensure dimensions match (broadcasting fix if saved reduced)
+                if T.ndim == 3:
+                    # If saved as [Nx, Ny, Nz] but we need [1, 1, Nx, Ny, Nz]
+                    T = T.unsqueeze(0).unsqueeze(0)
+
+                # Restore state vars
+                state.T = T
+                # Restore Mask (approximate from T)
+                state.material_mask = (T > mat_cfg.T_solidus).int()
+
+                start_step = resume_step + 1
+                state.t = start_step * sim_cfg.dt_base
+                state.step = start_step
+
+            except Exception as e:
+                print(f"Failed to resume from checkpoint {last_ckpt}: {e}")
+                print("Starting from scratch.")
+
+    print(
+        f"Simulating SS316L Hi-Fid: Steps {start_step} to {steps} ({steps - start_step} remaining)..."
+    )
+
+    pbar = tqdm(range(start_step, steps), file=sys.stdout, mininterval=2.0)
     try:
         for i in pbar:
             t = i * sim_cfg.dt_base
