@@ -6,11 +6,20 @@ from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MaxNLocator
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from plotly.subplots import make_subplots
 
 
 def plot_interactive_volume(
-    T: np.ndarray, dx: float, dy: float, dz: float, step: int, max_pts: int = 200000
+    T: np.ndarray,
+    dx: float,
+    dy: float,
+    dz: float,
+    step: int,
+    max_pts: int = 200000,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     """Generate Plotly Figure for 3D Volume with adaptive downsampling."""
     nx, ny, nz = T.shape
@@ -33,8 +42,8 @@ def plot_interactive_volume(
             y=Y.flatten(),
             z=Z.flatten(),
             value=T_sub.flatten(),
-            isomin=np.min(T_sub),
-            isomax=np.max(T_sub),
+            isomin=vmin if vmin is not None else np.min(T_sub),
+            isomax=vmax if vmax is not None else np.max(T_sub),
             opacity=0.1,
             surface_count=20,
             colorscale="Jet",
@@ -117,12 +126,23 @@ def plot_interactive_composite(
     return fig
 
 
-def plot_interactive_heatmap(T: np.ndarray, dx: float, dy: float, step: int):
+def plot_interactive_heatmap(
+    T: np.ndarray,
+    dx: float,
+    dy: float,
+    step: int,
+    vmin: float | None = None,
+    vmax: float | None = None,
+):
     """Generate Plotly Figure for 2D Heatmap"""
     nx, ny = T.shape
     x = np.linspace(0, nx * dx * 1000, nx)
     y = np.linspace(0, ny * dy * 1000, ny)
-    fig = go.Figure(data=go.Heatmap(x=x, y=y, z=T.T, colorscale="Jet"))
+    fig = go.Figure(
+        data=go.Heatmap(
+            x=x, y=y, z=T.T, colorscale="Jet", zmin=vmin, zmax=vmax, showscale=True
+        )
+    )
     fig.update_layout(title=f"2D Interactive Heatmap - Step {step}")
     return fig
 
@@ -137,6 +157,7 @@ def plot_surface_heatmap_mpl(
     vmax: float | None = None,
     cmap: str = "jet",
     unit: str = "m",
+    show_colorbar: bool = True,
 ):
     """
     Plot a 2D heatmap on a Matplotlib Axes with physical units.
@@ -170,93 +191,20 @@ def plot_surface_heatmap_mpl(
     if title:
         ax.set_title(title)
 
+    if show_colorbar:
+        cb_ax = inset_axes(
+            ax,
+            width="3%",
+            height="40%",
+            loc="upper right",
+            bbox_to_anchor=(0.02, 0.0, 1, 1),
+            bbox_transform=ax.transAxes,
+            borderpad=0,
+        )
+        plt.colorbar(im, cax=cb_ax)
+        cb_ax.tick_params(labelsize=8)
+
     return im
-
-
-def plot_3d_block_mpl(
-    fig: Figure,
-    T: np.ndarray,
-    dx: float,
-    dy: float,
-    dz: float,
-    title: str | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
-    cmap: str = "jet",
-    unit: str = "m",
-):
-    """
-    Create a 3D Block visualization (Top, Side, Front faces) on a Matplotlib Figure.
-
-    Args:
-        fig: Figure to add 3D axes to.
-        T: 3D array [X, Y, Z].
-    """
-    ax = fig.add_subplot(111, projection="3d")
-
-    nx, ny, nz = T.shape
-    scale = 1000.0 if unit == "mm" else 1.0
-    Lx = nx * dx * scale
-    Ly = ny * dy * scale
-    Lz = nz * dz * scale
-
-    # Faces data
-    # Top: Z = max, XY plane
-    # T[..., -1].T  # [Y, X] (Removed useless access)
-    # Side: Y = mid?, actually user wants 'exterior' faces usually
-    # Figure 12c shows: Top, Side (XZ plane at Y=0 or Y=Ly?), Front (YZ plane at X=Lx?)
-    # Let's plot the bounding box faces.
-    # Top (Z=Lz), Front (Y=0), Side (X=Lx) ?
-    # Let's match typical view:
-    # X axis -> right, Y axis -> depth/right-up, Z axis -> up
-
-    # We will project the surfaces onto the bounding box planes.
-
-    # 1. Top Surface (Z = Lz)
-    X, Y = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Ly, ny))
-    Z_top = np.full_like(X, Lz)
-    # T map needs matching shape [ny, nx] which is T[..., -1].T
-    # Use plot_surface
-
-    # Normalizing colormap
-    norm = Normalize(vmin=vmin, vmax=vmax)
-    m = cm.ScalarMappable(cmap=cmap, norm=norm)
-
-    # Top
-    ax.plot_surface(X, Y, Z_top, facecolors=m.to_rgba(T[..., -1].T), shade=False)
-
-    # Side (Y = 0) - XZ plane
-    X_side, Z_side = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Lz, nz))
-    Y_side = np.full_like(X_side, 0)
-    # T slice: T[:, 0, :] -> [X, Z]. Transpose for meshgrid [Z, X]?
-    # Meshgrid is [nz, nx]. T slice is [nx, nz]. So transpose.
-    ax.plot_surface(
-        X_side, Y_side, Z_side, facecolors=m.to_rgba(T[:, 0, :].T), shade=False
-    )
-
-    # Usually we want to see the cut. If we show the block,
-    # we usually show Top, Right, Front.
-    # Let's show X=Lx (Right) and Y=0 (Front) and Z=Lz (Top).
-
-    # Right (X = Lx)
-    # Y, Z mesh
-    Y_right, Z_right = np.meshgrid(np.linspace(0, Ly, ny), np.linspace(0, Lz, nz))
-    X_right = np.full_like(Y_right, Lx)
-    # T slice: T[-1, :, :] -> [Y, Z]. Transpose -> [Z, Y]
-    ax.plot_surface(
-        X_right, Y_right, Z_right, facecolors=m.to_rgba(T[-1, :, :].T), shade=False
-    )
-
-    # Beautify
-    ax.set_xlabel(f"X [{unit}]")
-    ax.set_ylabel(f"Y [{unit}]")
-    ax.set_zlabel(f"Z [{unit}]")
-    ax.set_box_aspect((Lx, Ly, Lz))  # Aspect ratio matching physical dims
-
-    if title:
-        ax.set_title(title)
-
-    return ax
 
 
 def plot_cross_sections(
@@ -270,6 +218,7 @@ def plot_cross_sections(
     vmin: float | None = None,
     vmax: float | None = None,
     cmap: str = "jet",
+    show_colorbar: bool = True,
 ):
     """
     Create a 3-view cross-section plot (XY, XZ, YZ planes).
@@ -294,7 +243,7 @@ def plot_cross_sections(
     ax3 = fig.add_subplot(133)  # YZ
 
     # 1. XY Slice (Top view at zi)
-    plot_surface_heatmap_mpl(
+    im = plot_surface_heatmap_mpl(
         ax1,
         T[:, :, zi],
         dx,
@@ -304,6 +253,7 @@ def plot_cross_sections(
         vmin=vmin,
         vmax=vmax,
         cmap=cmap,
+        show_colorbar=False,
     )
 
     # 2. XZ Slice (Side view at yi)
@@ -318,6 +268,7 @@ def plot_cross_sections(
         vmin=vmin,
         vmax=vmax,
         cmap=cmap,
+        show_colorbar=False,
     )
     ax2.set_ylabel(f"Z [{unit}]")
 
@@ -333,11 +284,19 @@ def plot_cross_sections(
         vmin=vmin,
         vmax=vmax,
         cmap=cmap,
+        show_colorbar=False,
     )
     ax3.set_xlabel(f"Y [{unit}]")
     ax3.set_ylabel(f"Z [{unit}]")
 
-    plt.tight_layout()
+    if show_colorbar:
+        # Shared horizontal colorbar at the bottom.
+        # Reduced bottom margin and positioned colorbar for better compactness.
+        fig.subplots_adjust(bottom=0.20, wspace=0.3)
+        cbar_ax = fig.add_axes([0.15, 0.06, 0.7, 0.03])
+        cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
+        cb.ax.set_xlabel("Temperature [K]", fontsize=10)
+
     return (ax1, ax2, ax3)
 
 
@@ -349,37 +308,115 @@ def plot_composite_thermal_view(
     dz: float,
     step: int,
     unit: str = "mm",
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     """Combined view with 3D block and Cross-sections."""
     # Top half: 3D Block
     # Bottom half: 3 Cross sections
 
     # Use GridSpec for better control
-    gs = GridSpec(2, 3, figure=fig)
+    # Column 0 will be for the shared colorbar
+    # height_ratios: make the 3D plot (top row) much taller
+    gs = GridSpec(
+        2, 4, figure=fig, width_ratios=[0.12, 1, 1, 1], height_ratios=[2.5, 1]
+    )
 
-    ax_3d = fig.add_subplot(gs[0, :], projection="3d")
+    # shared colorbar axes (top half, left)
+    ax_cb = fig.add_subplot(gs[0, 0])
+    ax_cb.set_axis_off()
+
+    ax_3d = fig.add_subplot(gs[0, 1:], projection="3d")
     # Custom 3D block logic inside here...
     plot_3d_block_mpl_ax(
-        ax_3d, T, dx, dy, dz, unit=unit, title=f"3D Field - Step {step}"
+        ax_3d,
+        T,
+        dx,
+        dy,
+        dz,
+        unit=unit,
+        vmin=vmin,
+        vmax=vmax,
+        show_colorbar=False,
+        dist=10.0,
     )
 
     # Cross sections
-    ax_xy = fig.add_subplot(gs[1, 0])
-    ax_xz = fig.add_subplot(gs[1, 1])
-    ax_yz = fig.add_subplot(gs[1, 2])
+    ax_xy = fig.add_subplot(gs[1, 1])
+    ax_xz = fig.add_subplot(gs[1, 2])
+    ax_yz = fig.add_subplot(gs[1, 3])
 
     idx = np.unravel_index(np.argmax(T, axis=None), T.shape)
     xi, yi, zi = idx
 
-    plot_surface_heatmap_mpl(ax_xy, T[:, :, zi], dx, dy, unit=unit, title="Top (XY)")
-    plot_surface_heatmap_mpl(ax_xz, T[:, yi, :], dx, dz, unit=unit, title="Side (XZ)")
-    plot_surface_heatmap_mpl(ax_yz, T[xi, :, :], dy, dz, unit=unit, title="Front (YZ)")
+    im = plot_surface_heatmap_mpl(
+        ax_xy,
+        T[:, :, zi],
+        dx,
+        dy,
+        unit=unit,
+        title="Top (XY)",
+        vmin=vmin,
+        vmax=vmax,
+        show_colorbar=False,
+    )
+    plot_surface_heatmap_mpl(
+        ax_xz,
+        T[:, yi, :],
+        dx,
+        dz,
+        unit=unit,
+        title="Side (XZ)",
+        vmin=vmin,
+        vmax=vmax,
+        show_colorbar=False,
+    )
+    plot_surface_heatmap_mpl(
+        ax_yz,
+        T[xi, :, :],
+        dy,
+        dz,
+        unit=unit,
+        title="Front (YZ)",
+        vmin=vmin,
+        vmax=vmax,
+        show_colorbar=False,
+    )
 
-    plt.tight_layout()
+    # Shared colorbar in the top-left area
+    # Create an inset axes within the ax_cb for better control of bar size
+    cbar_ax_ins = inset_axes(
+        ax_cb,
+        width="40%",
+        height="85%",
+        loc="center",
+        bbox_to_anchor=(0.0, 0.0, 1, 1),
+        bbox_transform=ax_cb.transAxes,
+        borderpad=0,
+    )
+    cb = fig.colorbar(im, cax=cbar_ax_ins, orientation="vertical")
+    cb.ax.set_ylabel("Temperature [K]", fontsize=12, labelpad=10)
+    cb.ax.tick_params(labelsize=10)
+
+    # Note: tight_layout might struggle with GridSpec + 3D, so we manual adjust
+    fig.subplots_adjust(
+        left=0.02, right=0.95, top=0.98, bottom=0.05, wspace=0.5, hspace=0.1
+    )
 
 
 def plot_3d_block_mpl_ax(
-    ax, T, dx, dy, dz, vmin=None, vmax=None, cmap="jet", unit="mm", title=None
+    ax,
+    T,
+    dx,
+    dy,
+    dz,
+    vmin=None,
+    vmax=None,
+    cmap="jet",
+    unit="mm",
+    title=None,
+    show_colorbar=True,
+    dist=10.0,
 ):
     """Helper to plot 3D block onto an EXISTING axes."""
     nx, ny, nz = T.shape
@@ -394,8 +431,14 @@ def plot_3d_block_mpl_ax(
     # so maybe rstride/cstride)
     # But usually user wants it sharp.
     stride = 1  # Keep it 1 for resolution
-    if nx > 200 or ny > 200:
-        stride = 2  # Adaptive stride for performance
+
+    # Adaptive stride calculation to keep 3D surface plotting fast
+    # Matplotlib struggles with >50k points in 3D
+    max_dim = max(nx, ny)
+    if max_dim > 150:
+        # Target roughly 100-150 points along the longest dimension
+        stride = int(max_dim / 150)
+        stride = max(stride, 1)
 
     # Top
     X, Y = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Ly, ny))
@@ -433,10 +476,51 @@ def plot_3d_block_mpl_ax(
         cstride=stride,
     )
 
+    ax.zaxis._axinfo["juggled"] = (1, 2, 0)
     ax.set_box_aspect((Lx, Ly, Lz))
+    ax.dist = dist
+    ax.view_init(elev=30, azim=-60)  # Standard perspective to show all labels
+
     if title:
-        ax.set_title(title)
-    ax.set_xlabel(f"X [{unit}]")
-    ax.set_ylabel(f"Y [{unit}]")
-    ax.set_zlabel(f"Z [{unit}]")
+        ax.set_title(title, pad=10, fontsize=14)
+    ax.set_xlabel(f"X [{unit}]", labelpad=15, fontsize=10)
+    ax.set_ylabel(f"Y [{unit}]", labelpad=15, fontsize=10)
+
+    # Robust Z-label using 2D axes coordinates
+    # (avoids Axes3D clipping/bounding box issues)
+    # Positioned to the left of the axes box
+    ax.text2D(
+        -0.08,
+        0.5,
+        f"Z [{unit}]",
+        transform=ax.transAxes,
+        rotation="vertical",
+        va="center",
+        ha="right",
+        fontsize=10,
+    )
+    # ax.set_zlabel is unreliable with bbox_inches='tight' in 3D
+
+    # Improve tick labels to avoid overlap
+    ax.tick_params(axis="x", pad=5, labelsize=9)
+    ax.tick_params(axis="y", pad=5, labelsize=9)
+    ax.tick_params(axis="z", pad=4, labelsize=9)
+    ax.yaxis.set_major_locator(MaxNLocator(5))
+    ax.zaxis.set_major_locator(MaxNLocator(5))
+
+    if show_colorbar:
+        # Add colorbar for 3D block
+        # Assuming inset_axes is imported globally or available
+        cb_ax = inset_axes(
+            ax,
+            width="3%",
+            height="40%",
+            loc="upper right",
+            bbox_to_anchor=(0.02, 0.0, 1, 1),
+            bbox_transform=ax.transAxes,
+            borderpad=0,
+        )
+        plt.colorbar(m, cax=cb_ax)
+        cb_ax.tick_params(labelsize=8)
+
     return ax

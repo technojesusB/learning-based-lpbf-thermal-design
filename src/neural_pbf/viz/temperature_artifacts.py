@@ -139,16 +139,22 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         T_full = self._extract_temperature(state, reduce_3d=False)
         T_surf = self._extract_temperature(state, reduce_3d=True)
 
-        self._snapshot_buffer.append(
-            {
-                "step_idx": step_idx,
-                "T_full": T_full,
-                "T_surf": T_surf,
-                "meta": meta,
-                "do_png": do_png,
-                "do_html": do_html,
-            }
-        )
+        if self.cfg.buffer_steps:
+            self._snapshot_buffer.append(
+                {
+                    "step_idx": step_idx,
+                    "T_full": T_full,
+                    "T_surf": T_surf,
+                    "meta": meta,
+                    "do_png": do_png,
+                    "do_html": do_html,
+                }
+            )
+        else:
+            # If buffering is disabled, we still might want T_surf for XT plot
+            # But we drop T_full to save RAM.
+            # We assume save_raw handled the persistence of T_full.
+            pass
 
         # Buffer profile for XT diagram
         if T_surf.ndim == 2:
@@ -178,9 +184,10 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             title=f"Surface T - Step {step}",
             unit="mm" if self._length_unit in ["m", "mm"] else self._length_unit,
             vmax=vmax,
+            show_colorbar=False,
         )
         plt.colorbar(im, ax=ax, label="T (K)")
-        plt.tight_layout()
+        # No tight_layout as it conflicts with custom axes sometimes
         plt.savefig(path)
         plt.close(fig)
 
@@ -217,7 +224,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
     def _save_3d_block(self, T, path, step, vmax=None):
         if plt is None:
             return
-        fig = plt.figure(figsize=(9, 7))
+        fig = plt.figure(figsize=(12, 6))  # Wider aspect ratio to fit side labels
         ax = fig.add_subplot(111, projection="3d")
         plots.plot_3d_block_mpl_ax(
             ax,
@@ -228,16 +235,22 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             title=f"3D Block - Step {step}",
             unit="mm",
             vmax=vmax,
+            show_colorbar=False,
+            dist=12.0,
         )
+
         # Add colorbar for 3D block
         import matplotlib.cm as cm
         from matplotlib.colors import Normalize
 
         norm = Normalize(vmin=T.min(), vmax=vmax if vmax else T.max())
         mappable = cm.ScalarMappable(norm=norm, cmap="jet")
-        fig.colorbar(mappable, ax=ax, label="T (K)", shrink=0.6)
+        # Global horizontal colorbar at the bottom
+        fig.subplots_adjust(bottom=0.22)
+        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.03])
+        fig.colorbar(mappable, cax=cbar_ax, label="T (K)", orientation="horizontal")
 
-        plt.savefig(path, bbox_inches="tight", dpi=150)
+        plt.savefig(path, bbox_inches="tight", pad_inches=0.2, dpi=150)
         plt.close(fig)
 
     def _save_cross_sections(self, T, path, step, vmax=None):
@@ -247,7 +260,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         plots.plot_cross_sections(
             fig, T, self._dx, self._dy, self._dz, unit="mm", cmap="jet", vmax=vmax
         )
-        plt.savefig(path, bbox_inches="tight", dpi=150)
+        plt.savefig(path, dpi=150)
         plt.close(fig)
 
     def _save_composite(self, T, path, step, vmax=None):
@@ -257,7 +270,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         plots.plot_composite_thermal_view(
             fig, T, self._dx, self._dy, self._dz, step, unit="mm", vmax=vmax
         )
-        plt.savefig(path, bbox_inches="tight", dpi=150)
+        plt.savefig(path, dpi=150)
         plt.close(fig)
 
     def _save_plotly(self, T, path, step, vmax=None):
