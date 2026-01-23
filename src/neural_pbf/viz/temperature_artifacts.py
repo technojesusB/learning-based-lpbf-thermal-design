@@ -48,6 +48,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         self._html_paths: list[Path] = []
         self._block_paths: list[Path] = []  # Store paths for GIF
         self._comp_paths: list[Path] = []  # Store composite paths for GIF
+        self._snapshot_buffer: list[dict[str, Any]] = []  # Buffer for delayed rendering
 
         self._xt_buffer: list[np.ndarray] = []
         self._xt_times: list[float] = []
@@ -109,86 +110,76 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
     def on_snapshot(
         self, step_idx: int, state: Any, meta: dict[str, Any]
     ) -> list[Path]:
+        """Buffer the state for later rendering to ensure consistent dynamic vmax."""
         generated: list[Path] = []
-
         if not self.cfg.enabled:
             return generated
 
-        do_png = (self.cfg.png_every_n_steps > 0) and (
-            step_idx % self.cfg.png_every_n_steps == 0
+        do_png = (step_idx == 999999) or (
+            (self.cfg.png_every_n_steps > 0)
+            and (step_idx % self.cfg.png_every_n_steps == 0)
         )
-        do_html = (self.cfg.html_every_n_steps > 0) and (
-            step_idx % self.cfg.html_every_n_steps == 0
+        do_html = (step_idx == 999999) or (
+            (self.cfg.html_every_n_steps > 0)
+            and (step_idx % self.cfg.html_every_n_steps == 0)
         )
 
         if not (do_png or do_html):
             return generated
 
+        # 2. Save raw data if requested (before buffering)
+        if self.cfg.save_raw:
+            p_raw = self.dirs["states"] / f"step_{step_idx:06d}.npy"
+            T_raw = self._extract_temperature(state, reduce_3d=False)
+            np.save(p_raw, T_raw)
+            generated.append(p_raw)
+
+        # 1. Capture states while they are on GPU/in-memory for buffering/delayed render
+        # We store them as CPU numpy arrays to avoid VRAM leak
         T_full = self._extract_temperature(state, reduce_3d=False)
         T_surf = self._extract_temperature(state, reduce_3d=True)
 
-        if T_full.ndim == 3 and do_png:
-            p_block = self.dirs["plots_png"] / f"step_{step_idx:06d}_block.png"
-            self._save_3d_block(T_full, p_block, step_idx)
-            self._block_paths.append(p_block)
-            generated.append(p_block)
+        self._snapshot_buffer.append(
+            {
+                "step_idx": step_idx,
+                "T_full": T_full,
+                "T_surf": T_surf,
+                "meta": meta,
+                "do_png": do_png,
+                "do_html": do_html,
+            }
+        )
 
-        if do_png and plt:
-            p_surf = self.dirs["plots_png"] / f"step_{step_idx:06d}_surf.png"
-            self._save_surface(T_surf, p_surf, step_idx)
-            self._png_paths.append(p_surf)
-            generated.append(p_surf)
-
-            if T_full.ndim == 3:
-                p_cross = self.dirs["plots_png"] / f"step_{step_idx:06d}_cross.png"
-                self._save_cross_sections(T_full, p_cross, step_idx)
-                generated.append(p_cross)
-
-                p_comp = self.dirs["plots_png"] / f"step_{step_idx:06d}_composite.png"
-                self._save_composite(T_full, p_comp, step_idx)
-                self._comp_paths.append(p_comp)
-                generated.append(p_comp)
-
-                p_html_comp = (
-                    self.dirs["plots_interactive"]
-                    / f"step_{step_idx:06d}_composite.html"
-                )
-                self._save_plotly_composite(T_full, p_html_comp, step_idx)
-                generated.append(p_html_comp)
-
-        if do_html and go:
-            p_html = self.dirs["plots_interactive"] / f"step_{step_idx:06d}.html"
-            self._save_plotly(T_full, p_html, step_idx)
-            generated.append(p_html)
-
+        # Buffer profile for XT diagram
         if T_surf.ndim == 2:
             Ny = T_surf.shape[1]
             profile = T_surf[:, Ny // 2]
             self._xt_buffer.append(profile)
             t_val = float(step_idx)
             if (
-                isinstance(state, (dict, object))
+                isinstance(state, dict | object)
                 and not isinstance(state, torch.Tensor)
                 and hasattr(state, "t")
-                and not callable(getattr(state, "t", None))
             ):
                 t_val = float(state.t)  # type: ignore
             self._xt_times.append(t_val)
 
         return generated
 
-    def _save_surface(self, T, path, step):
+    def _save_surface(self, T, path, step, vmax=None):
         if plt is None:
             return
-        fig, ax = plt.subplots(figsize=(6, 5))
-        plots.plot_surface_heatmap_mpl(
+        fig, ax = plt.subplots(figsize=(7, 5))
+        im = plots.plot_surface_heatmap_mpl(
             ax,
             T,
             self._dx,
             self._dy,
             title=f"Surface T - Step {step}",
             unit="mm" if self._length_unit in ["m", "mm"] else self._length_unit,
+            vmax=vmax,
         )
+        plt.colorbar(im, ax=ax, label="T (K)")
         plt.tight_layout()
         plt.savefig(path)
         plt.close(fig)
@@ -223,65 +214,151 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         plt.savefig(path)
         plt.close(fig)
 
-    def _save_3d_block(self, T, path, step):
+    def _save_3d_block(self, T, path, step, vmax=None):
         if plt is None:
             return
-        fig = plt.figure(figsize=(8, 6))
+        fig = plt.figure(figsize=(9, 7))
+        ax = fig.add_subplot(111, projection="3d")
         plots.plot_3d_block_mpl_ax(
-            fig.add_subplot(111, projection="3d"),
+            ax,
             T,
             self._dx,
             self._dy,
             self._dz,
             title=f"3D Block - Step {step}",
             unit="mm",
+            vmax=vmax,
         )
+        # Add colorbar for 3D block
+        import matplotlib.cm as cm
+        from matplotlib.colors import Normalize
+
+        norm = Normalize(vmin=T.min(), vmax=vmax if vmax else T.max())
+        mappable = cm.ScalarMappable(norm=norm, cmap="jet")
+        fig.colorbar(mappable, ax=ax, label="T (K)", shrink=0.6)
+
         plt.savefig(path, bbox_inches="tight", dpi=150)
         plt.close(fig)
 
-    def _save_cross_sections(self, T, path, step):
+    def _save_cross_sections(self, T, path, step, vmax=None):
         if plt is None:
             return
         fig = plt.figure(figsize=(15, 5))
         plots.plot_cross_sections(
-            fig, T, self._dx, self._dy, self._dz, unit="mm", cmap="jet"
+            fig, T, self._dx, self._dy, self._dz, unit="mm", cmap="jet", vmax=vmax
         )
         plt.savefig(path, bbox_inches="tight", dpi=150)
         plt.close(fig)
 
-    def _save_composite(self, T, path, step):
+    def _save_composite(self, T, path, step, vmax=None):
         if plt is None:
             return
-        fig = plt.figure(figsize=(12, 10))
+        fig = plt.figure(figsize=(14, 10))
         plots.plot_composite_thermal_view(
-            fig, T, self._dx, self._dy, self._dz, step, unit="mm"
+            fig, T, self._dx, self._dy, self._dz, step, unit="mm", vmax=vmax
         )
         plt.savefig(path, bbox_inches="tight", dpi=150)
         plt.close(fig)
 
-    def _save_plotly(self, T, path, step):
+    def _save_plotly(self, T, path, step, vmax=None):
         if go is None:
             return
         if T.ndim == 3:
-            fig = plots.plot_interactive_volume(T, self._dx, self._dy, self._dz, step)
+            fig = plots.plot_interactive_volume(
+                T, self._dx, self._dy, self._dz, step, vmax=vmax
+            )
         else:
-            fig = plots.plot_interactive_heatmap(T, self._dx, self._dy, step)
+            fig = plots.plot_interactive_heatmap(T, self._dx, self._dy, step, vmax=vmax)
         fig.write_html(str(path), include_plotlyjs="cdn")
 
-    def _save_plotly_composite(self, T, path, step):
+    def _save_plotly_composite(self, T, path, step, vmax=None):
         if go is None or T.ndim != 3:
             return
+        # Note: plotly composite currently doesn't support global vmax
+        # easily in its subplots but we pass it anyway if we update it.
         fig = plots.plot_interactive_composite(T, self._dx, self._dy, self._dz, step)
         fig.write_html(str(path), include_plotlyjs="cdn")
 
     def on_run_end(self, final_state: Any, meta: dict[str, Any]) -> list[Path]:
         generated = []
 
+        # 0. Re-ensure directories (in case user deleted them)
+        for path in self.dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+
+        # 1. Capture final snapshot
+        self.on_snapshot(999999, final_state, meta)
+
+        # 2. Determine global vmax
+        overall_max = 0.0
+        for snap in self._snapshot_buffer:
+            overall_max = max(overall_max, np.max(snap["T_full"]))
+
+        # Round up to nearest 500
+        vmax = self.cfg.vmax
+        if vmax is None:
+            vmax = float(np.ceil(overall_max / 500.0) * 500.0)
+            if vmax < 500:
+                vmax = 500.0
+        logger.info(
+            f"Rendering {len(self._snapshot_buffer)} snapshots with vmax={vmax}"
+        )
+
+        # 3. Render all buffered snapshots
+        from tqdm.auto import tqdm
+
+        for snap in tqdm(self._snapshot_buffer, desc="Rendering Artifacts"):
+            step_idx = snap["step_idx"]
+            T_full = snap["T_full"]
+            T_surf = snap["T_surf"]
+            do_png = snap["do_png"]
+            do_html = snap["do_html"]
+
+            if T_full.ndim == 3 and do_png:
+                p_block = self.dirs["plots_png"] / f"step_{step_idx:06d}_block.png"
+                self._save_3d_block(T_full, p_block, step_idx, vmax=vmax)
+                self._block_paths.append(p_block)
+                generated.append(p_block)
+
+            if do_png and plt:
+                p_surf = self.dirs["plots_png"] / f"step_{step_idx:06d}_surf.png"
+                self._save_surface(T_surf, p_surf, step_idx, vmax=vmax)
+                self._png_paths.append(p_surf)
+                generated.append(p_surf)
+
+                if T_full.ndim == 3:
+                    p_cross = self.dirs["plots_png"] / f"step_{step_idx:06d}_cross.png"
+                    self._save_cross_sections(T_full, p_cross, step_idx, vmax=vmax)
+                    generated.append(p_cross)
+
+                    p_comp = (
+                        self.dirs["plots_png"] / f"step_{step_idx:06d}_composite.png"
+                    )
+                    self._save_composite(T_full, p_comp, step_idx, vmax=vmax)
+                    self._comp_paths.append(p_comp)
+                    generated.append(p_comp)
+
+                    p_html_comp = (
+                        self.dirs["plots_interactive"]
+                        / f"step_{step_idx:06d}_composite.html"
+                    )
+                    self._save_plotly_composite(
+                        T_full, p_html_comp, step_idx, vmax=vmax
+                    )
+                    generated.append(p_html_comp)
+
+            if do_html and go:
+                p_html = self.dirs["plots_interactive"] / f"step_{step_idx:06d}.html"
+                self._save_plotly(T_full, p_html, step_idx, vmax=vmax)
+                generated.append(p_html)
+
+        # 4. XT Diagram
         if self.cfg.enabled and self._xt_buffer:
             xt_path = self.dirs["plots_png"] / "xt_diagram.png"
             self._save_xt_diagram(xt_path)
             generated.append(xt_path)
 
+        # 5. GIFs
         if self._block_paths and imageio:
             gif_path = self.dirs["plots_png"] / "animation_3d.gif"
             self._create_gif(self._block_paths, gif_path)
@@ -292,10 +369,28 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             self._create_gif(self._comp_paths, gif_comp_path)
             generated.append(gif_comp_path)
 
+        # 6. Cleanup intermediate PNGs
+        # User requested: "i dont need the individual step plots,
+        # only the composited gif"
+        # We delete all pngs we tracked except the XT diagram if it's there
+        import os
+
+        # Combine all plotted paths for cleanup
+        all_plots = self._png_paths + self._block_paths + self._comp_paths
+        for p in all_plots:
+            if p.exists() and p != xt_path:
+                try:
+                    os.remove(p)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {p}: {e}")
+
+        # 7. Final Report
         if self.cfg.make_report:
             report_path = self.dirs["report"] / "index.html"
             self._write_report(
-                report_path, meta, gif_path if self._block_paths else None
+                report_path,
+                meta,
+                gif_path if self._block_paths else None,
             )
             generated.append(report_path)
 

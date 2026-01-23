@@ -217,6 +217,9 @@ uv run python experiments/hatch_pattern.py
 
 # Fidelity Comparison (Low-res vs. High-res)
 uv run python experiments/compare_fidelity.py
+
+# SS316L High-Fidelity Multi-Hatch Simulation (Updated Calibration)
+uv run python experiments/ss316l_multi_hatch.py
 ```
 
 Each run will generate artifacts (plots, interactive HTMLs, and logs) in the `artifacts/` directory.
@@ -256,17 +259,18 @@ The simulator now supports full 3D transient thermal analysis with automated art
 
 ## Critical Assessment
 
-### What the simulator can do now:
+### Implemented Physics
 - **Full 3D Transient Solver**: Solves the heat equation in 3D using finite differences.
-- **Differentiable Physics**: All operations are implemented in PyTorch, enabling backpropagation for inverse design.
+- **Triton-Accelerated Kernels**: Custom High-performance kernels for 60M+ node grids.
+- **Temperature-Dependent Parameters**: $k(T)$ and $c_p(T)$ modeled via per-material Lookup Tables (LUT).
 - **Phase Transition**: Models the transition between Powder, Solid, and Liquid phases including latent heat effects.
 - **Irreversible State**: Correctly handles the physical transformation from Powder to Solid.
 - **Automated Artifacts**: Generates high-quality 3D visualizations, cross-sections, and interactive logs for every run.
+- **Persistence**: Optionally saves raw temperature fields as `.npy` for post-processing.
 
 ### Current Limitations:
-- **Temperature-Independent Parameters**: Material properties ($k, c_p$) are currently constant values rather than functions of temperature.
 - **Basic Boundary Conditions**: Limited to adiabatic or linear cooling losses; lacks radiation and gas flow convection.
-- **Memory Overhead**: Large 3D domains are constrained by VRAM due to PyTorch's memory management (to be solved by custom CUDA kernels).
+- **Memory Overhead**: Large 3D domains are constrained by VRAM (partially solved by Triton).
 - **Domain Uniformity**: Currently assumes a homogeneous material block (to be expanded to substrate+powder layer systems).
 
 

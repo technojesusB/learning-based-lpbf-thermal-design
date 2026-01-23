@@ -61,7 +61,12 @@ for step in range(100):
     if step % 10 == 0:
         print(f"Step {step}, Max T: {state.max_T.max():.2f} K")
 
-# 5. Visualize
+# 5. High-Fidelity Experiments
+The repository includes several high-fidelity scripts that utilize optimized Triton kernels and advanced visualization:
+- `experiments/ss316l_multi_hatch.py`: Simulates 4-hatch zig-zag pattern with calibrated SS316L parameters.
+- `experiments/run_3d.py`: Standard 3D track simulation.
+
+# 6. Visualize
 from neural_pbf.viz.static import plot_temperature_field
 plot_temperature_field(state, sim_cfg)
 ```
