@@ -41,6 +41,7 @@ dev = [
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+extend-exclude = ["notebooks", "scripts", "experiments", "legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -52,7 +53,7 @@ indent-style = "space"
 
 [tool.pyright]
 include = ["src"]
-exclude = ["**/node_modules", "**/__pycache__", "legacy", "experiments", "notebooks"]
+exclude = ["**/node_modules", "**/__pycache__", "legacy", "experiments", "notebooks", "scripts", "tests"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
@@ -85,6 +86,13 @@ ignore = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+explicit_package_bases = true
+ignore_missing_imports = true
+exclude = ["experiments/", "notebooks/", "legacy/", "scripts/", "tests/"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/neural_pbf"]

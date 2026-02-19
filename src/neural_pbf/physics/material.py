@@ -464,8 +464,8 @@ def k_eff(
     phi = melt_fraction(T, cfg)
 
     # Conductivity [W/(m K)]
-    k_s = cfg.k_solid
-    k_l = cfg.k_liquid
+    k_s: float | torch.Tensor = cfg.k_solid
+    k_l: float | torch.Tensor = cfg.k_liquid
 
     if cfg.use_T_dep:
         if cfg.use_lut and cfg.T_lut is not None and cfg.k_lut is not None:
@@ -521,7 +521,7 @@ def cp_eff(T: torch.Tensor, cfg: MaterialConfig) -> torch.Tensor:
     Returns:
         torch.Tensor: Effective specific heat capacity field.
     """
-    cp_base = cfg.cp_base
+    cp_base: float | torch.Tensor = cfg.cp_base
     if cfg.use_T_dep:
         if cfg.use_lut and cfg.T_lut is not None and cfg.cp_lut is not None:
             cp_base = interpolate_1d(T, cfg.T_lut, cfg.cp_lut)

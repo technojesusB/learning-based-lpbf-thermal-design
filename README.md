@@ -127,10 +127,17 @@ Gradient-based optimization (Adam / L-BFGS) is used to minimize the objective by
 ## Development & Usage
 
 ### Setup & Prerequisites
-This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
+This project requires [uv](https://github.com/astral-sh/uv) for dependency management.
 
 ```bash
-# Install dependencies
+# 1. Install uv (if not already present)
+# On Linux/macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# On Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. Sync dependencies
 uv sync
 ```
 

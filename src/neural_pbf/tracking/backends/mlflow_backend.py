@@ -24,7 +24,7 @@ class MLflowTracker(ExperimentTracker):
         )
         self.experiment_name = experiment_name
         self.artifact_location = artifact_location
-        self.active_run = None
+        self.active_run: Any = None
 
         if self.tracking_uri:
             mlflow.set_tracking_uri(self.tracking_uri)
@@ -63,7 +63,7 @@ class MLflowTracker(ExperimentTracker):
                 # Very basic flattening could be added here if needed, but
                 # let's trust the user or Pydantic serialization
                 for k, v in config.items():
-                    if isinstance(v, (dict, list)):
+                    if isinstance(v, dict | list):
                         # log complex structures as string or skip?
                         # better logging logic can be added.
                         pass
@@ -113,6 +113,6 @@ class MLflowTracker(ExperimentTracker):
         try:
             if mlflow.active_run():
                 mlflow.end_run(status=status)
-                self.active_run = None
+                self.active_run = None  # type: ignore
         except Exception as e:
             logger.warning(f"MLflow end_run failed: {e}")

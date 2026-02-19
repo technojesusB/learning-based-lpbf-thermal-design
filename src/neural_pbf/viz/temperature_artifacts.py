@@ -9,19 +9,19 @@ try:
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap
 except ImportError:
-    plt = None
-    BoundaryNorm = None
-    ListedColormap = None
+    plt = None  # type: ignore
+    BoundaryNorm = None  # type: ignore
+    ListedColormap = None  # type: ignore
 
 try:
     import plotly.graph_objects as go
 except ImportError:
-    go = None
+    go = None  # type: ignore
 
 try:
     import imageio.v3 as imageio
 except ImportError:
-    imageio = None
+    imageio = None  # type: ignore
 
 
 from ..schemas.artifacts import ArtifactConfig

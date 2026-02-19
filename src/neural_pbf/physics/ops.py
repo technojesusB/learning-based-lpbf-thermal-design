@@ -109,9 +109,9 @@ def div_k_grad(
 
     else:
         # 2D case: B, C, H, W
-        pad = (1, 1, 1, 1)
-        T_p = F.pad(T, pad, mode="replicate")
-        k_p = F.pad(k, pad, mode="replicate")
+        pad_2d: tuple[int, ...] = (1, 1, 1, 1)
+        T_p = F.pad(T, pad_2d, mode="replicate")
+        k_p = F.pad(k, pad_2d, mode="replicate")
 
         Tc = T_p[..., 1:-1, 1:-1]
         kc = k_p[..., 1:-1, 1:-1]

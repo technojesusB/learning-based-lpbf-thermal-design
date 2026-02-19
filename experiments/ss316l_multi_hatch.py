@@ -143,7 +143,8 @@ def run_ss316l_hi_fid():
                 # Extract step index from filename step_XXXXXX.npy
                 resume_step = int(last_ckpt.stem.split("_")[1])
                 print(
-                    f"Found checkpoint: {last_ckpt}. Resuming from step {resume_step}..."
+                    f"Found checkpoint: {last_ckpt}. "
+                    f"Resuming from step {resume_step}..."
                 )
 
                 # Load T
@@ -158,7 +159,7 @@ def run_ss316l_hi_fid():
                 # Restore state vars
                 state.T = T
                 # Restore Mask (approximate from T)
-                state.material_mask = (T > mat_cfg.T_solidus).int()
+                state.material_mask = (mat_cfg.T_solidus < T).int()
 
                 start_step = resume_step + 1
                 state.t = start_step * sim_cfg.dt_base
@@ -169,7 +170,8 @@ def run_ss316l_hi_fid():
                 print("Starting from scratch.")
 
     print(
-        f"Simulating SS316L Hi-Fid: Steps {start_step} to {steps} ({steps - start_step} remaining)..."
+        f"Simulating SS316L Hi-Fid: Steps {start_step} to {steps} "
+        f"({steps - start_step} remaining)..."
     )
 
     pbar = tqdm(range(start_step, steps), file=sys.stdout, mininterval=2.0)

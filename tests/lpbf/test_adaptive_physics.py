@@ -3,7 +3,6 @@
 import numpy as np
 import pytest
 import torch
-
 from neural_pbf.core.config import LengthUnit, SimulationConfig
 from neural_pbf.core.state import SimulationState
 from neural_pbf.integrator.stepper import TimeStepper
@@ -102,8 +101,21 @@ def test_xt_diagram_generation(tmp_path):
     # Ensure png_every_n_steps=1 so logic triggers
     cfg = ArtifactConfig(enabled=True, make_report=False, png_every_n_steps=1)
     builder = TemperatureArtifactBuilder(cfg)
-    # Mock dirs
-    builder.dirs = {"plots_png": tmp_path, "report": tmp_path}
+    # Properly initialize directories
+    from neural_pbf.schemas.run_meta import RunMeta
+
+    meta = RunMeta(
+        seed=42,
+        device="cpu",
+        dtype="float32",
+        started_at="2024-01-01T00:00:00",
+        dx=1.0,
+        dy=1.0,
+        dz=1.0,
+        dt=1.0,
+        grid_shape=[10, 10],
+    )
+    builder.on_run_start(meta, tmp_path)
 
     # Simulate a run
     # 10x10 grid. Center Y=5.
@@ -122,10 +134,10 @@ def test_xt_diagram_generation(tmp_path):
     builder.on_snapshot(2, T2, meta2)
 
     # Run End
-    builder.on_run_end(None, {})
+    builder.on_run_end(np.zeros((10, 10)), {})
 
     # Check buffer
-    assert len(builder._xt_buffer) == 2
+    assert len(builder._xt_buffer) == 3
     assert builder._xt_buffer[0].shape == (10,)
 
     # Check file

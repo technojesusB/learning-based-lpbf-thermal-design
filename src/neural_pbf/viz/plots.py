@@ -293,7 +293,7 @@ def plot_cross_sections(
         # Shared horizontal colorbar at the bottom.
         # Reduced bottom margin and positioned colorbar for better compactness.
         fig.subplots_adjust(bottom=0.20, wspace=0.3)
-        cbar_ax = fig.add_axes([0.15, 0.06, 0.7, 0.03])
+        cbar_ax = fig.add_axes((0.15, 0.06, 0.7, 0.03))
         cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
         cb.ax.set_xlabel("Temperature [K]", fontsize=10)
 
