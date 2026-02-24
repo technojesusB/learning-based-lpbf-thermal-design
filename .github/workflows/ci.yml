@@ -23,10 +23,10 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: "lint-${{ matrix.python-version }}"
@@ -54,10 +54,10 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: "typecheck-${{ matrix.python-version }}"
@@ -82,10 +82,10 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-suffix: "tests-${{ matrix.python-version }}"
@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload Test Results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
@@ -113,10 +113,10 @@ jobs:
     needs: tests
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Build distribution
         run: uv build
