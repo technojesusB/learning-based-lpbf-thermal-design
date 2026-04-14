@@ -1,6 +1,5 @@
 import pytest
 import torch
-
 from neural_pbf.diagnostics.recorder import DiagnosticsRecorder
 from neural_pbf.schemas.diagnostics import DiagnosticsConfig
 

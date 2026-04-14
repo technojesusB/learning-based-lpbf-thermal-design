@@ -3,7 +3,6 @@ import math
 
 import pytest
 import torch
-
 from neural_pbf.core.config import SimulationConfig
 from neural_pbf.core.state import SimulationState
 from neural_pbf.diagnostics.energy import EnergyMonitor

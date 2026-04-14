@@ -1,9 +1,8 @@
 # src/lpbf/config.py
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from neural_pbf.utils.units import LengthUnit, to_meters
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SimulationConfig(BaseModel):

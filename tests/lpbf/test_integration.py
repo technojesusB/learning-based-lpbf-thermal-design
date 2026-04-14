@@ -1,6 +1,5 @@
 # tests/lpbf/test_integration.py
 import torch
-
 from neural_pbf.core.config import SimulationConfig
 from neural_pbf.core.state import SimulationState
 from neural_pbf.integrator.stepper import TimeStepper
