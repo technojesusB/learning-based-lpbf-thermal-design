@@ -158,25 +158,25 @@ def plot_surface_heatmap_mpl(
     cmap: str = "jet",
     unit: str = "m",
     show_colorbar: bool = True,
+    xlabel: str | None = None,
+    ylabel: str | None = None,
 ):
     """
     Plot a 2D heatmap on a Matplotlib Axes with physical units.
 
     Args:
         ax: Matplotlib axes.
-        T: 2D array [X, Y].
-        dx, dy: Grid spacing in meters.
+        T: 2D array [Dim1, Dim2].
+        dx, dy: Grid spacing for Dim1 and Dim2 respectively.
         unit: 'm' or 'mm'. If 'mm', axis labels and extent are scaled.
     """
     scale = 1000.0 if unit == "mm" else 1.0
     lx = T.shape[0] * dx * scale
     ly = T.shape[1] * dy * scale
 
-    # Extent: [left, right, bottom, top]
-    # standard imshow origin='lower' expects [0, Lx, 0, Ly] (transposed T?)
-    # T is usually [X, Y]. Imshow expects [Row, Col] -> [Y, X].
+    # T is [Dim1, Dim2]. we want Dim1 on X (cols) and Dim2 on Y (rows).
+    # Imshow expects [Row, Col] -> [Dim2, Dim1].
     # So we plot T.T
-
     im = ax.imshow(
         T.T,
         origin="lower",
@@ -186,8 +186,8 @@ def plot_surface_heatmap_mpl(
         extent=(0, lx, 0, ly),
         aspect="auto",
     )
-    ax.set_xlabel(f"X [{unit}]")
-    ax.set_ylabel(f"Y [{unit}]")
+    ax.set_xlabel(xlabel if xlabel else f"X [{unit}]")
+    ax.set_ylabel(ylabel if ylabel else f"Y [{unit}]")
     if title:
         ax.set_title(title)
 
@@ -254,6 +254,8 @@ def plot_cross_sections(
         vmax=vmax,
         cmap=cmap,
         show_colorbar=False,
+        xlabel=f"X [{unit}]",
+        ylabel=f"Y [{unit}]",
     )
 
     # 2. XZ Slice (Side view at yi)
@@ -269,8 +271,9 @@ def plot_cross_sections(
         vmax=vmax,
         cmap=cmap,
         show_colorbar=False,
+        xlabel=f"X [{unit}]",
+        ylabel=f"Z [{unit}]",
     )
-    ax2.set_ylabel(f"Z [{unit}]")
 
     # 3. YZ Slice (Front view at xi)
     # T is [X, Y, Z]. Slice at xi -> [Y, Z]
@@ -285,9 +288,9 @@ def plot_cross_sections(
         vmax=vmax,
         cmap=cmap,
         show_colorbar=False,
+        xlabel=f"Y [{unit}]",
+        ylabel=f"Z [{unit}]",
     )
-    ax3.set_xlabel(f"Y [{unit}]")
-    ax3.set_ylabel(f"Z [{unit}]")
 
     if show_colorbar:
         # Shared horizontal colorbar at the bottom.
@@ -359,6 +362,8 @@ def plot_composite_thermal_view(
         vmin=vmin,
         vmax=vmax,
         show_colorbar=False,
+        xlabel=f"X [{unit}]",
+        ylabel=f"Y [{unit}]",
     )
     plot_surface_heatmap_mpl(
         ax_xz,
@@ -370,6 +375,8 @@ def plot_composite_thermal_view(
         vmin=vmin,
         vmax=vmax,
         show_colorbar=False,
+        xlabel=f"X [{unit}]",
+        ylabel=f"Z [{unit}]",
     )
     plot_surface_heatmap_mpl(
         ax_yz,
@@ -381,6 +388,8 @@ def plot_composite_thermal_view(
         vmin=vmin,
         vmax=vmax,
         show_colorbar=False,
+        xlabel=f"Y [{unit}]",
+        ylabel=f"Z [{unit}]",
     )
 
     # Shared colorbar in the top-left area
@@ -524,3 +533,175 @@ def plot_3d_block_mpl_ax(
         cb_ax.tick_params(labelsize=8)
 
     return ax
+
+
+def get_phase_colormap():
+    """Create a custom colormap for material phases: Powder, Solid, Mushy, Liquid."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # Colors: Grey (Powder), SteelBlue (Solid), Yellow/Orange (Liquid)
+    # We map 0.0 -> Powder
+    # We map 0.5 -> Solid
+    # We map 1.0 -> Liquid
+    colors = [
+        (0.4, 0.4, 0.4),  # 0.0: Powder (Grey)
+        (0.27, 0.51, 0.71),  # 0.5: Solid (SteelBlue)
+        (1.0, 0.84, 0.0),  # 1.0: Liquid (Gold/Yellow)
+    ]
+    return LinearSegmentedColormap.from_list("phase_map", colors, N=256)
+
+
+def plot_phase_sections(
+    fig: Figure,
+    T: np.ndarray,
+    mask: np.ndarray,
+    T_solidus: float,
+    T_liquidus: float,
+    dx: float,
+    dy: float,
+    dz: float,
+    gs: GridSpec,
+    row: int = 0,
+    slice_indices: tuple[int, int, int] | None = None,
+    unit: str = "mm",
+):
+    """
+    Plot 3 phase-state cross-sections (XY, XZ, YZ) in a specific row.
+    """
+    if slice_indices is None:
+        # Defaults to center or max T
+        iz = T.shape[2] // 2
+        iy = T.shape[1] // 2
+        ix = np.argmax(T[:, iy, iz])
+        slice_indices = (int(ix), int(iy), int(iz))
+
+    ix, iy, iz = slice_indices
+
+    # Calculate Phase Data
+    # 0.0: Powder
+    # 0.5: Solid
+    # 1.0: Liquid
+    # We use a smooth transition for Liquid part
+    phi = np.clip((T - T_solidus) / (T_liquidus - T_solidus + 1e-9), 0, 1)
+    phase = np.zeros_like(T)
+    phase[mask > 0] = 0.5 + 0.5 * phi[mask > 0]
+
+    cmap = get_phase_colormap()
+
+    # Slices (Pass [Dim1, Dim2] directly)
+    s_xy = phase[:, :, iz]
+    s_xz = phase[:, iy, :]
+    s_yz = phase[ix, :, :]
+
+    titles = ["XY Phase", "XZ Phase", "YZ Phase"]
+    slices = [s_xy, s_xz, s_yz]
+    deltas = [(dx, dy), (dx, dz), (dy, dz)]
+    labels = [
+        ("X", "Y"),
+        ("X", "Z"),
+        ("Y", "Z"),
+    ]
+
+    for i, (s, (d1, d2), (lx, ly)) in enumerate(
+        zip(slices, deltas, labels, strict=False)
+    ):
+        ax = fig.add_subplot(gs[row, i])
+        plot_surface_heatmap_mpl(
+            ax,
+            s,
+            d1,
+            d2,
+            title=titles[i],
+            vmin=0,
+            vmax=1,
+            cmap=cmap,
+            unit=unit,
+            show_colorbar=(i == 2),
+            xlabel=f"{lx} [{unit}]",
+            ylabel=f"{ly} [{unit}]",
+        )
+        if i == 2:
+            # Customize colorbar labels for Phase
+            cax = ax.images[-1].colorbar.ax
+            cax.set_yticks([0, 0.5, 1.0])
+            cax.set_yticklabels(["Powder", "Solid", "Liquid"])
+
+
+def plot_dual_thermal_phase_view(
+    fig: Figure,
+    T: np.ndarray,
+    mask: np.ndarray,
+    T_solidus: float,
+    T_liquidus: float,
+    dx: float,
+    dy: float,
+    dz: float,
+    step: int,
+    unit: str = "mm",
+    vmin: float | None = None,
+    vmax: float | None = None,
+):
+    """
+    Combined view:
+    Row 0: Temperature (XY, XZ, YZ)
+    Row 1: Phase State (XY, XZ, YZ)
+    """
+    fig.clear()
+    gs = GridSpec(2, 3, figure=fig, hspace=0.3, wspace=0.3)
+
+    # Find max T for slice centering
+    idx = np.unravel_index(np.argmax(T), T.shape)
+    slice_indices = (int(idx[0]), int(idx[1]), int(idx[2]))
+
+    # Row 0: Temperature
+    # plot_cross_sections currently uses fig.add_subplot(1, 3, i+1) which ignores gs.
+    # We need to manually place thermal subplots in Row 0 of gs.
+    s_xy = T[:, :, slice_indices[2]]
+    s_xz = T[:, slice_indices[1], :]
+    s_yz = T[slice_indices[0], :, :]
+
+    titles_t = ["XY Temperature", "XZ Temperature", "YZ Temperature"]
+    slices_t = [s_xy, s_xz, s_yz]
+    deltas = [(dx, dy), (dx, dz), (dy, dz)]
+    labels = [
+        ("X", "Y"),
+        ("X", "Z"),
+        ("Y", "Z"),
+    ]
+
+    for i, (s, (d1, d2), (lx, ly)) in enumerate(
+        zip(slices_t, deltas, labels, strict=False)
+    ):
+        ax = fig.add_subplot(gs[0, i])
+        plot_surface_heatmap_mpl(
+            ax,
+            s,
+            d1,
+            d2,
+            title=titles_t[i],
+            vmin=vmin,
+            vmax=vmax,
+            cmap="jet",
+            unit=unit,
+            show_colorbar=(i == 2),
+            xlabel=f"{lx} [{unit}]",
+            ylabel=f"{ly} [{unit}]",
+        )
+
+    # Row 1: Phase
+    plot_phase_sections(
+        fig,
+        T,
+        mask,
+        T_solidus,
+        T_liquidus,
+        dx,
+        dy,
+        dz,
+        gs=gs,
+        row=1,
+        slice_indices=slice_indices,
+        unit=unit,
+    )
+
+    fig.suptitle(f"Thermal & Phase State - Step {step}", fontsize=14)

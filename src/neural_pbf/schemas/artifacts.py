@@ -15,3 +15,6 @@ class ArtifactConfig(BaseModel):
     include_scan_overlay: bool = True
     save_raw: bool = False  # Save full temperature fields as .npy
     buffer_steps: bool = True  # Keep steps in RAM for post-run rendering
+    show_phase_map: bool = False  # If True, generate dual-view (T + Phase)
+    T_solidus: float = 1653.0  # Default for SS316L, used for Phase viz
+    T_liquidus: float = 1673.0

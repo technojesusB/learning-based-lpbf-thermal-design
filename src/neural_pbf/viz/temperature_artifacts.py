@@ -57,6 +57,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         self._dy: float = 1.0
         self._dz: float = 1.0
         self._length_unit: str = "m"
+        self._dual_paths: list[Path] = []  # Store dual-view paths for GIF
 
     def on_run_start(self, run_meta: Any, out_dir: Path):
         super().on_run_start(run_meta, out_dir)
@@ -107,6 +108,32 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
 
         return T
 
+    def _extract_mask(self, state: Any) -> np.ndarray:
+        mask = None
+        if isinstance(state, dict):
+            mask = state.get("material_mask")
+        elif hasattr(state, "material_mask"):
+            mask = state.material_mask
+
+        if mask is None:
+            return np.ones((10, 10), dtype=np.uint8)
+
+        if hasattr(mask, "cpu"):
+            mask = mask.detach().cpu().numpy()
+        elif hasattr(mask, "numpy"):
+            mask = mask.numpy()
+
+        mask = np.squeeze(mask)
+
+        if self.cfg.downsample and self.cfg.downsample > 1:
+            d = self.cfg.downsample
+            if mask.ndim == 2:
+                mask = mask[::d, ::d]
+            elif mask.ndim == 3:
+                mask = mask[::d, ::d, ::d]
+
+        return mask
+
     def on_snapshot(
         self, step_idx: int, state: Any, meta: dict[str, Any]
     ) -> list[Path]:
@@ -129,15 +156,25 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
 
         # 2. Save raw data if requested (before buffering)
         if self.cfg.save_raw:
-            p_raw = self.dirs["states"] / f"step_{step_idx:06d}.npy"
+            p_raw_T = self.dirs["states"] / f"step_{step_idx:06d}_T.npy"
             T_raw = self._extract_temperature(state, reduce_3d=False)
-            np.save(p_raw, T_raw)
-            generated.append(p_raw)
+            np.save(p_raw_T, T_raw)
+            generated.append(p_raw_T)
+
+            if self.cfg.show_phase_map:
+                p_raw_M = self.dirs["states"] / f"step_{step_idx:06d}_M.npy"
+                mask_raw = self._extract_mask(state)
+                np.save(p_raw_M, mask_raw)
+                generated.append(p_raw_M)
 
         # 1. Capture states while they are on GPU/in-memory for buffering/delayed render
-        # We store them as CPU numpy arrays to avoid VRAM leak
         T_full = self._extract_temperature(state, reduce_3d=False)
         T_surf = self._extract_temperature(state, reduce_3d=True)
+
+        # Store mask if dual view is enabled
+        mask_full = None
+        if self.cfg.show_phase_map:
+            mask_full = self._extract_mask(state)
 
         if self.cfg.buffer_steps:
             self._snapshot_buffer.append(
@@ -145,6 +182,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
                     "step_idx": step_idx,
                     "T_full": T_full,
                     "T_surf": T_surf,
+                    "mask_full": mask_full,
                     "meta": meta,
                     "do_png": do_png,
                     "do_html": do_html,
@@ -273,6 +311,26 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         plt.savefig(path, dpi=150)
         plt.close(fig)
 
+    def _save_dual_view(self, T, mask, path, step, vmax=None):
+        if plt is None:
+            return
+        fig = plt.figure(figsize=(14, 10))
+        plots.plot_dual_thermal_phase_view(
+            fig,
+            T,
+            mask,
+            self.cfg.T_solidus,
+            self.cfg.T_liquidus,
+            self._dx,
+            self._dy,
+            self._dz,
+            step,
+            unit="mm",
+            vmax=vmax,
+        )
+        plt.savefig(path, dpi=150)
+        plt.close(fig)
+
     def _save_plotly(self, T, path, step, vmax=None):
         if go is None:
             return
@@ -351,6 +409,16 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
                     self._comp_paths.append(p_comp)
                     generated.append(p_comp)
 
+                    if self.cfg.show_phase_map and snap.get("mask_full") is not None:
+                        p_dual = (
+                            self.dirs["plots_png"] / f"step_{step_idx:06d}_dual.png"
+                        )
+                        self._save_dual_view(
+                            T_full, snap["mask_full"], p_dual, step_idx, vmax=vmax
+                        )
+                        self._dual_paths.append(p_dual)
+                        generated.append(p_dual)
+
                     p_html_comp = (
                         self.dirs["plots_interactive"]
                         / f"step_{step_idx:06d}_composite.html"
@@ -382,6 +450,11 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             self._create_gif(self._comp_paths, gif_comp_path)
             generated.append(gif_comp_path)
 
+        if self._dual_paths and imageio:
+            gif_dual_path = self.dirs["plots_png"] / "animation_dual.gif"
+            self._create_gif(self._dual_paths, gif_dual_path)
+            generated.append(gif_dual_path)
+
         # 6. Cleanup intermediate PNGs
         # User requested: "i dont need the individual step plots,
         # only the composited gif"
@@ -389,7 +462,9 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         import os
 
         # Combine all plotted paths for cleanup
-        all_plots = self._png_paths + self._block_paths + self._comp_paths
+        all_plots = (
+            self._png_paths + self._block_paths + self._comp_paths + self._dual_paths
+        )
         for p in all_plots:
             if p.exists() and p != xt_path:
                 try:
