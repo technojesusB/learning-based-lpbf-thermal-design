@@ -165,9 +165,10 @@ uv run python experiments/run_3d.py
 - Demonstrated **Physics Regularization (PDE loss)** decreasing alongside data loss, indicating successful learning of the heat conduction physics.
 
 ### Phase 8: Scaling to Universal Surrogates [IN PROGRESS]
-- Transitioning to an **Offline HDF5 Pipeline** to decouple simulation from training.
-- Implementing **Domain Randomization** (Material Zoo) to create a surrogate that generalizes across different alloys.
-- Introducing **Complex Scan Patterns** (Sinusoidal, Spiral, Island) for increased data variance.
+- **Offline HDF5 Pipeline** implemented (`scripts/generate_offline_dataset.py`): decouples simulation from training with fp16/GZIP storage and lazy-loading `HDF5ThermalDataset`.
+- **Domain Randomization** (Material Zoo) documented: property perturbation ±10–20% over 5 base presets (SS316L, Ti-6Al-4V, IN718, AlSi10Mg, CuCrZr).
+- **Complex Scan Patterns** implemented in `scan/path_generator.py`: zigzag, raster, and island strategies with arbitrary rotation angle.
+- **Surrogate Training Pipeline** scaffolded (`pipelines/training_pipeline.py`): coordinate grids, experience replay, and physics-informed loss ready for offline training runs.
 
 ---
 

@@ -1,13 +1,21 @@
 # Usage Guide
 
 ## Project Structure
+
+<!-- AUTO-GENERATED from src/neural_pbf/ layout — do not edit this section manually -->
+
 - `src/neural_pbf`: Main package.
-    - `core`: Core data structures (`SimulationState`, `config`).
-    - `physics`: Material models (`MaterialConfig`) and operators (`ops`).
-    - `scan`: Heat sources (`sources`) and scan path generation (`engine`).
-    - `integrator`: Time stepping logic (`stepper`).
-    - `viz`: Visualization tools.
-    - `tracking`: Experiment tracking and logging.
+    - `core`: Core data structures (`SimulationState`, `SimulationConfig`).
+    - `physics`: Material models (`MaterialConfig`) and FD operators (`ops`, `triton_ops`).
+    - `scan`: Heat sources (`sources`), zig-zag/raster/island path generation (`path_generator`), and scan engine (`engine`).
+    - `integrator`: Explicit Euler time stepping with CFL sub-stepping (`stepper`).
+    - `data`: Lazy-loading HDF5 dataset for offline surrogate training (`hdf5_dataset`).
+    - `pipelines`: Coordinate grid construction (`grids`) and end-to-end surrogate training pipeline (`training_pipeline`).
+    - `models`: Neural surrogate architecture (`surrogate`), physics-informed loss (`loss`), replay buffer (`replay_buffer`), and hyperparameter config (`config`).
+    - `viz`: Visualization tools (static plots, interactive Plotly/Dash, animations).
+    - `tracking`: Experiment tracking, MLflow backend, diagnostics, and artifact generation.
+
+<!-- END AUTO-GENERATED -->
 
 ## Running a Simulation
 ```python
@@ -71,34 +79,73 @@ from neural_pbf.viz.static import plot_temperature_field
 plot_temperature_field(state, sim_cfg)
 ```
 
+## Offline Dataset & Surrogate Training
+
+### Generate an Offline HDF5 Dataset
+```bash
+# Default: 10 runs × 15 snapshots on CUDA, output to data/offline_dataset.h5
+uv run python scripts/generate_offline_dataset.py
+
+# Custom: 50 runs, 128³ grid, CPU fallback
+uv run python scripts/generate_offline_dataset.py \
+    --runs 50 --nx 128 --ny 64 --nz 16 \
+    --out data/my_dataset.h5 --device cpu
+```
+
+Each HDF5 sample group contains `T_in`, `Q`, `T_target`, `T_lf` (fp16), `mask` (uint8), and `scalars` `[t, laser_x, laser_y]` (fp32). See [Offline Dataset Guide](offline_dataset_generation.md) for the full schema.
+
+### Train the Surrogate
+```bash
+uv run python scripts/train_surrogate.py
+```
+
+### Visualise a Trained Surrogate
+```bash
+uv run python scripts/viz_surrogate.py
+```
+
+---
+
 ## Testing & Quality Assurance
 
-This project uses modern Python tooling for quality assurance.
+<!-- AUTO-GENERATED from pyproject.toml [project.scripts] — do not edit this section manually -->
 
-### Commands
+### Command Reference
 
-**Running Tests:**
+| Command | Description |
+|---------|-------------|
+| `uv run lint` | `ruff check .` — lint `src/` |
+| `uv run format` | `ruff format --check .` — check formatting |
+| `uv run typecheck` | `pyright src/` — static type checking |
+| `uv run test` | `pytest tests/` — full test suite |
+
+<!-- END AUTO-GENERATED -->
+
+### Running Tests
 ```bash
 # Run all tests
-uv run pytest
+uv run test
 
 # Run tests with coverage
-uv run pytest --cov=neural_pbf
+uv run pytest tests/ --cov=src/neural_pbf --cov-report=term-missing
 
-# Run specific test file
-uv run pytest tests/lpbf/test_integrator.py
+# Run a specific file
+uv run pytest tests/lpbf/test_integrator.py -v
+
+# Run a specific test by name
+uv run pytest tests/ -k "test_zigzag_alternates" -v
 ```
 
 **Linting and Formatting:**
 ```bash
 # Check code style and logical errors (Ruff)
-uv run ruff check .
+uv run lint
 
 # Auto-fix fixable errors
 uv run ruff check . --fix
 
-# Type checking (Pyright)
-uv run pyright
+# Type checking (Pyright, src/ only)
+uv run typecheck
 ```
 
 > [!NOTE]
