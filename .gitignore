@@ -10,3 +10,5 @@ notebook_artifacts/
 *.ipynb_checkpoints/
 scripts/
 CLAUDE.md
+
+docs/JOURNEY.md 

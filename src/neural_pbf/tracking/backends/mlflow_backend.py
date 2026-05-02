@@ -1,6 +1,6 @@
 import logging
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any, Literal
 
 import mlflow
@@ -29,44 +29,56 @@ class MLflowTracker(ExperimentTracker):
         if self.tracking_uri:
             mlflow.set_tracking_uri(self.tracking_uri)
 
-        # Setup experiment
+        # Setup experiment and store ID
         try:
-            experiment = mlflow.get_experiment_by_name(self.experiment_name)
-            if experiment is None:
-                mlflow.create_experiment(
-                    self.experiment_name, artifact_location=self.artifact_location
-                )
-                logger.info(f"Created MLflow experiment: {self.experiment_name}")
-            else:
-                mlflow.set_experiment(self.experiment_name)
+            exp = mlflow.set_experiment(self.experiment_name)
+            self.experiment_id = exp.experiment_id
+            logger.info(
+                f"MLflow tracking initialized for experiment "
+                f"'{self.experiment_name}' (ID: {self.experiment_id})"
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to setup MLflow experiment '{self.experiment_name}': {e}"
             )
+            self.experiment_id = None
 
     @contextmanager
     def start_run(
         self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]
     ):
-        self.active_run = mlflow.start_run(run_name=run_name)
+        # End any existing zombie runs (common in notebooks)
+        if mlflow.active_run():
+            mlflow.end_run()
+
+        # Set sampling configuration before run start
         try:
+            mlflow.set_system_metrics_sampling_interval(5)
+        except Exception as e:
+            logger.warning(f"Failed to set system metrics sampling interval: {e}")
+
+        # Start run with explicit experiment destination
+        self.active_run = mlflow.start_run(
+            run_name=run_name, experiment_id=self.experiment_id, log_system_metrics=True
+        )
+        try:
+            # Fallback for specific MLflow environments
+            with suppress(Exception):
+                mlflow.enable_system_metrics_logging()
+
             if tags:
                 mlflow.set_tags(tags)
             if config:
-                # flatten config if needed or log as params
-                # MLflow defines specific max param length, so we might need
-                # to be careful with huge configs
-                # For now, just log usage.
-                # Nested dicts can be logged as JSON artifacts if too large,
-                # but here we try simple params.
+                # Only scalar values are logged as params; nested dicts/lists
+                # exceed MLflow's max param length and must be logged separately
+                # as artifacts by the caller.
                 flat_params = {}
-                # Very basic flattening could be added here if needed, but
-                # let's trust the user or Pydantic serialization
                 for k, v in config.items():
                     if isinstance(v, dict | list):
-                        # log complex structures as string or skip?
-                        # better logging logic can be added.
-                        pass
+                        logger.warning(
+                            f"MLflow start_run: skipping complex config key '{k}' "
+                            f"({type(v).__name__}). Log it manually as an artifact."
+                        )
                     else:
                         flat_params[k] = v
                 mlflow.log_params(flat_params)
@@ -101,6 +113,27 @@ class MLflowTracker(ExperimentTracker):
             mlflow.log_artifact(local_path, artifact_path)
         except Exception as e:
             logger.warning(f"MLflow log_artifact failed: {e}")
+
+    def log_figure(self, fig: Any, artifact_name: str) -> None:
+        """Saves plotly figure to HTML and logs to MLflow."""
+        import tempfile
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                if not artifact_name.endswith(".html"):
+                    artifact_name += ".html"
+                # Check if it's plotly
+                if hasattr(fig, "write_html"):
+                    local_path = os.path.join(tmpdir, artifact_name)
+                    fig.write_html(local_path, include_plotlyjs="cdn")
+                    self.log_artifact(local_path, artifact_path="plots")
+                else:
+                    logger.warning(
+                        f"Figure type {type(fig)} not supported for log_figure "
+                        "(no write_html method)."
+                    )
+        except Exception as e:
+            logger.warning(f"MLflow log_figure failed: {e}")
 
     def flush(self) -> None:
         # MLflow python client usually handles this, specific implementation

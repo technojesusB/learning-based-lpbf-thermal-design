@@ -27,6 +27,10 @@ class ExperimentTracker(Protocol):
         """Log a local file or directory as an artifact."""
         ...
 
+    def log_figure(self, fig: Any, artifact_name: str) -> None:
+        """Log a Plotly/Matplotlib figure as an artifact."""
+        ...
+
     def flush(self) -> None:
         """Flush logging queue."""
         ...
@@ -57,6 +61,9 @@ class NullTracker:
         pass
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None) -> None:
+        pass
+
+    def log_figure(self, fig: Any, artifact_name: str) -> None:
         pass
 
     def flush(self) -> None:

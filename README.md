@@ -155,11 +155,27 @@ uv run python experiments/run_3d.py
 
 ---
 
+---
+
+## 📈 Project Status & Milestones
+
+### Phase 7: High-Resolution Surrogate Training [COMPLETED]
+- Successfully trained a **Physics-Informed Neural Surrogate** on a $512 \times 256 \times 64$ grid.
+- Achieved MSE losses in the $10^{-6}$ range.
+- Demonstrated **Physics Regularization (PDE loss)** decreasing alongside data loss, indicating successful learning of the heat conduction physics.
+
+### Phase 8: Scaling to Universal Surrogates [IN PROGRESS]
+- Transitioning to an **Offline HDF5 Pipeline** to decouple simulation from training.
+- Implementing **Domain Randomization** (Material Zoo) to create a surrogate that generalizes across different alloys.
+- Introducing **Complex Scan Patterns** (Sinusoidal, Spiral, Island) for increased data variance.
+
+---
+
 ## Roadmap & Future Work
-1. **Advanced Physics**: Implementation of radiation and convection at the top surface.
-2. **Domain & Geometry**: Multi-layer domains (substrate + powder) and pre-heating.
-3. **Performance**: Domain Decomposition for large-scale part simulation.
-4. **Scan Design**: Support for arbitrary complex scan patterns (space-filling curves).
+1. **Universal Surrogate**: Training on multi-material HDF5 datasets with randomized properties.
+2. **Advanced Architecture**: Transition from CNN-based surrogates to Fourier Neural Operators (FNO) for resolution-independent prediction.
+3. **Inverse Design Loop**: Using the trained surrogate for gradient-based optimization of 2D energy density distributions.
+4. **Physical Validation**: Comparison against open-source experimental datasets.
 
 ---
 

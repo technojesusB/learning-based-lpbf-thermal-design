@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from neural_pbf.core.config import SimulationConfig
 
 
 @dataclass
@@ -66,6 +70,47 @@ class SimulationState:
     def dtype(self) -> torch.dtype:
         """Get the floating point dtype of the state."""
         return self.T.dtype
+
+    @classmethod
+    def zeros(
+        cls,
+        sim_cfg: SimulationConfig,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+        T_initial: float | None = None,
+    ) -> SimulationState:
+        """Create a zero-initialized SimulationState on the given device.
+
+        Args:
+            sim_cfg:   Simulation configuration (determines grid shape).
+            device:    Target device for all tensors.
+            dtype:     Floating-point dtype for T and related tensors (default float32).
+            T_initial: Fill temperature [K]. Defaults to ``sim_cfg.T_ambient``.
+
+        Returns:
+            A freshly initialized :class:`SimulationState` where all tensors
+            reside on ``device``.
+        """
+        fill_value: float = T_initial if T_initial is not None else sim_cfg.T_ambient
+
+        if sim_cfg.is_3d:
+            shape = (1, 1, sim_cfg.Nz, sim_cfg.Ny, sim_cfg.Nx)
+        else:
+            shape = (1, 1, sim_cfg.Ny, sim_cfg.Nx)
+
+        T = torch.full(shape, fill_value, dtype=dtype, device=device)
+        max_T = T.clone()
+        cooling_rate = torch.zeros_like(T)
+        material_mask = torch.zeros_like(T, dtype=torch.uint8)
+
+        return cls(
+            T=T,
+            t=0.0,
+            step=0,
+            max_T=max_T,
+            cooling_rate=cooling_rate,
+            material_mask=material_mask,
+        )
 
     def clone(self) -> SimulationState:
         """

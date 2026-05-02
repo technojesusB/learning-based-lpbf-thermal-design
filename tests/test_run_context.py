@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+
 from neural_pbf.schemas.artifacts import ArtifactConfig
 from neural_pbf.schemas.diagnostics import DiagnosticsConfig
 from neural_pbf.schemas.run_meta import RunMeta

@@ -8,7 +8,12 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MaxNLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — for type annotation only
 from plotly.subplots import make_subplots
+
+# Data convention throughout this module:
+#   T.shape == (NZ, NY, NX)  — axis-0 is depth (Z), axis-2 is scan direction (X).
+# Slicing: T[zi, :, :] → XY plane, T[:, yi, :] → XZ, T[:, :, xi] → YZ.
 
 
 def plot_interactive_volume(
@@ -22,25 +27,28 @@ def plot_interactive_volume(
     vmax: float | None = None,
 ):
     """Generate Plotly Figure for 3D Volume with adaptive downsampling."""
-    nx, ny, nz = T.shape
+    T = np.asarray(T)
+    nz, ny, nx = T.shape
     total_pts = nx * ny * nz
     stride = 1
     if total_pts > max_pts:
         stride = int(np.ceil((total_pts / max_pts) ** (1 / 3)))
 
     T_sub = T[::stride, ::stride, ::stride]
-    nx_s, ny_s, nz_s = T_sub.shape
+    nz_s, ny_s, nx_s = T_sub.shape
 
-    X, Y, Z = np.mgrid[0:nx_s, 0:ny_s, 0:nz_s]
-    X = X * (dx * stride) * 1000
-    Y = Y * (dy * stride) * 1000
-    Z = Z * (dz * stride) * 1000
+    # Use linspace so coordinates span the full physical domain (not (N-1)*d).
+    x_lin = np.linspace(0, nx * dx * 1000, nx_s)
+    y_lin = np.linspace(0, ny * dy * 1000, ny_s)
+    z_lin = np.linspace(0, nz * dz * 1000, nz_s)
+    Z_g, Y_g, X_g = np.meshgrid(z_lin, y_lin, x_lin, indexing="ij")
+    x_pts, y_pts, z_pts = X_g, Y_g, Z_g
 
     fig = go.Figure(
         data=go.Volume(
-            x=X.flatten(),
-            y=Y.flatten(),
-            z=Z.flatten(),
+            x=x_pts.flatten(),
+            y=y_pts.flatten(),
+            z=z_pts.flatten(),
             value=T_sub.flatten(),
             isomin=vmin if vmin is not None else np.min(T_sub),
             isomax=vmax if vmax is not None else np.max(T_sub),
@@ -64,10 +72,10 @@ def plot_interactive_composite(
     - XZ Slice (Bottom Left)
     - YZ Slice (Bottom Right)
     """
-    # Find max T for slice indices
+    T = np.asarray(T)
+    nz, ny, nx = T.shape
     idx = np.unravel_index(np.argmax(T, axis=None), T.shape)
-    xi, yi, zi = idx
-    nx, ny, nz = T.shape
+    zi, yi, xi = int(idx[0]), int(idx[1]), int(idx[2])
     scale = 1000.0
 
     fig = make_subplots(
@@ -85,36 +93,36 @@ def plot_interactive_composite(
         ),
     )
 
-    # 1. 3D Volume (Subsampled for performance)
-    # We'll use a very aggressive downsample for the composite view to keep it snappy
+    # 1. 3D Volume
     v_fig = plot_interactive_volume(T, dx, dy, dz, step, max_pts=100000)
     fig.add_trace(v_fig.data[0], row=1, col=1)
 
-    # 2. XY Heatmap
     x_coords = np.linspace(0, nx * dx * scale, nx)
     y_coords = np.linspace(0, ny * dy * scale, ny)
+    z_coords = np.linspace(0, nz * dz * scale, nz)
+
+    # 2. XY Heatmap: T[zi, :, :] shape (NY, NX) → x=X, y=Y
     fig.add_trace(
         go.Heatmap(
-            x=x_coords, y=y_coords, z=T[:, :, zi].T, colorscale="Jet", showscale=False
+            x=x_coords, y=y_coords, z=T[zi, :, :], colorscale="Jet", showscale=False
         ),
         row=1,
         col=2,
     )
 
-    # 3. XZ Heatmap
-    z_coords = np.linspace(0, nz * dz * scale, nz)
+    # 3. XZ Heatmap: T[:, yi, :] shape (NZ, NX) → x=X, y=Z
     fig.add_trace(
         go.Heatmap(
-            x=x_coords, y=z_coords, z=T[:, yi, :].T, colorscale="Jet", showscale=False
+            x=x_coords, y=z_coords, z=T[:, yi, :], colorscale="Jet", showscale=False
         ),
         row=2,
         col=1,
     )
 
-    # 4. YZ Heatmap
+    # 4. YZ Heatmap: T[:, :, xi] shape (NZ, NY) → x=Y, y=Z
     fig.add_trace(
         go.Heatmap(
-            x=y_coords, y=z_coords, z=T[xi, :, :].T, colorscale="Jet", showscale=True
+            x=y_coords, y=z_coords, z=T[:, :, xi], colorscale="Jet", showscale=True
         ),
         row=2,
         col=2,
@@ -134,7 +142,17 @@ def plot_interactive_heatmap(
     vmin: float | None = None,
     vmax: float | None = None,
 ):
-    """Generate Plotly Figure for 2D Heatmap"""
+    """Generate Plotly Figure for a 2D Heatmap.
+
+    Args:
+        T:  2D array with shape ``(NX, NY)`` — Dim0 maps to the horizontal
+            x-axis (spacing dx) and Dim1 to the vertical y-axis (spacing dy).
+            To pass an XY-plane slice from a 3D field stored as (NZ, NY, NX),
+            transpose first: ``plot_interactive_heatmap(T[zi, :, :].T, dx, dy, ...)``.
+        dx: Grid spacing along x (horizontal axis) in metres.
+        dy: Grid spacing along y (vertical axis) in metres.
+    """
+    T = np.asarray(T)
     nx, ny = T.shape
     x = np.linspace(0, nx * dx * 1000, nx)
     y = np.linspace(0, ny * dy * 1000, ny)
@@ -165,18 +183,16 @@ def plot_surface_heatmap_mpl(
     Plot a 2D heatmap on a Matplotlib Axes with physical units.
 
     Args:
-        ax: Matplotlib axes.
-        T: 2D array [Dim1, Dim2].
-        dx, dy: Grid spacing for Dim1 and Dim2 respectively.
-        unit: 'm' or 'mm'. If 'mm', axis labels and extent are scaled.
+        T: 2D array [Dim1, Dim2]. Dim1 maps to the horizontal (x) axis with
+           spacing dx; Dim2 maps to the vertical (y) axis with spacing dy.
+        unit: 'm' or 'mm'.
     """
+    T = np.asarray(T)
     scale = 1000.0 if unit == "mm" else 1.0
     lx = T.shape[0] * dx * scale
     ly = T.shape[1] * dy * scale
 
-    # T is [Dim1, Dim2]. we want Dim1 on X (cols) and Dim2 on Y (rows).
-    # Imshow expects [Row, Col] -> [Dim2, Dim1].
-    # So we plot T.T
+    # imshow expects [Row, Col] = [Dim2, Dim1] → transpose so Dim1 is on x-axis.
     im = ax.imshow(
         T.T,
         origin="lower",
@@ -207,6 +223,21 @@ def plot_surface_heatmap_mpl(
     return im
 
 
+def _slice_xy(T: np.ndarray, zi: int) -> np.ndarray:
+    """Return XY plane slice with shape (NX, NY) ready for plot_surface_heatmap_mpl."""
+    return T[zi, :, :].T  # (NY, NX).T → (NX, NY): Dim1=NX on x, Dim2=NY on y
+
+
+def _slice_xz(T: np.ndarray, yi: int) -> np.ndarray:
+    """Return XZ plane slice with shape (NX, NZ) ready for plot_surface_heatmap_mpl."""
+    return T[:, yi, :].T  # (NZ, NX).T → (NX, NZ): Dim1=NX on x, Dim2=NZ on y
+
+
+def _slice_yz(T: np.ndarray, xi: int) -> np.ndarray:
+    """Return YZ plane slice with shape (NY, NZ) ready for plot_surface_heatmap_mpl."""
+    return T[:, :, xi].T  # (NZ, NY).T → (NY, NZ): Dim1=NY on x, Dim2=NZ on y
+
+
 def plot_cross_sections(
     fig: Figure,
     T: np.ndarray,
@@ -224,31 +255,29 @@ def plot_cross_sections(
     Create a 3-view cross-section plot (XY, XZ, YZ planes).
 
     Args:
-        slice_indices: (x_idx, y_idx, z_idx) for the slices.
-                       If None, uses the center or max T location.
+        slice_indices: Voxel indices as ``(xi, yi, zi)`` — X-index first, Z-index last.
+            Note: this is the *physical* axis order (X, Y, Z), opposite to the
+            storage order (NZ, NY, NX). ``np.unravel_index`` on a (NZ, NY, NX) tensor
+            returns ``(zi, yi, xi)`` — transpose before passing here.
     """
+    T = np.asarray(T)
     if slice_indices is None:
-        # Use location of Max T as interesting point
         idx = np.unravel_index(np.argmax(T, axis=None), T.shape)
-        # Ensure it's a 3-tuple
-        xi, yi, zi = int(idx[0]), int(idx[1]), int(idx[2])
+        zi, yi, xi = int(idx[0]), int(idx[1]), int(idx[2])
     else:
         xi, yi, zi = slice_indices
-    nx, ny, nz = T.shape
     scale = 1000.0 if unit == "mm" else 1.0
 
-    # 3 subplots: Top (XY), Side-X (XZ), Side-Y (YZ)
     ax1 = fig.add_subplot(131)  # XY
     ax2 = fig.add_subplot(132)  # XZ
     ax3 = fig.add_subplot(133)  # YZ
 
-    # 1. XY Slice (Top view at zi)
     im = plot_surface_heatmap_mpl(
         ax1,
-        T[:, :, zi],
+        _slice_xy(T, zi),
         dx,
         dy,
-        title=f"XY Plane (z={zi * dz * scale:.2f})",
+        title=f"XY Plane (z={zi * dz * scale:.2f} {unit})",
         unit=unit,
         vmin=vmin,
         vmax=vmax,
@@ -258,14 +287,12 @@ def plot_cross_sections(
         ylabel=f"Y [{unit}]",
     )
 
-    # 2. XZ Slice (Side view at yi)
-    # T is [X, Y, Z]. Slice at yi -> [X, Z]
     plot_surface_heatmap_mpl(
         ax2,
-        T[:, yi, :],
+        _slice_xz(T, yi),
         dx,
         dz,
-        title=f"XZ Plane (y={yi * dy * scale:.2f})",
+        title=f"XZ Plane (y={yi * dy * scale:.2f} {unit})",
         unit=unit,
         vmin=vmin,
         vmax=vmax,
@@ -275,14 +302,12 @@ def plot_cross_sections(
         ylabel=f"Z [{unit}]",
     )
 
-    # 3. YZ Slice (Front view at xi)
-    # T is [X, Y, Z]. Slice at xi -> [Y, Z]
     plot_surface_heatmap_mpl(
         ax3,
-        T[xi, :, :],
+        _slice_yz(T, xi),
         dy,
         dz,
-        title=f"YZ Plane (x={xi * dx * scale:.2f})",
+        title=f"YZ Plane (x={xi * dx * scale:.2f} {unit})",
         unit=unit,
         vmin=vmin,
         vmax=vmax,
@@ -293,8 +318,6 @@ def plot_cross_sections(
     )
 
     if show_colorbar:
-        # Shared horizontal colorbar at the bottom.
-        # Reduced bottom margin and positioned colorbar for better compactness.
         fig.subplots_adjust(bottom=0.20, wspace=0.3)
         cbar_ax = fig.add_axes((0.15, 0.06, 0.7, 0.03))
         cb = fig.colorbar(im, cax=cbar_ax, orientation="horizontal")
@@ -314,23 +337,16 @@ def plot_composite_thermal_view(
     vmin: float | None = None,
     vmax: float | None = None,
 ):
-    """Combined view with 3D block and Cross-sections."""
-    # Top half: 3D Block
-    # Bottom half: 3 Cross sections
-
-    # Use GridSpec for better control
-    # Column 0 will be for the shared colorbar
-    # height_ratios: make the 3D plot (top row) much taller
+    """Combined view with 3D block on top and XY/XZ/YZ cross-sections below."""
+    T = np.asarray(T)
     gs = GridSpec(
         2, 4, figure=fig, width_ratios=[0.12, 1, 1, 1], height_ratios=[2.5, 1]
     )
 
-    # shared colorbar axes (top half, left)
     ax_cb = fig.add_subplot(gs[0, 0])
     ax_cb.set_axis_off()
 
     ax_3d = fig.add_subplot(gs[0, 1:], projection="3d")
-    # Custom 3D block logic inside here...
     plot_3d_block_mpl_ax(
         ax_3d,
         T,
@@ -344,17 +360,16 @@ def plot_composite_thermal_view(
         dist=10.0,
     )
 
-    # Cross sections
     ax_xy = fig.add_subplot(gs[1, 1])
     ax_xz = fig.add_subplot(gs[1, 2])
     ax_yz = fig.add_subplot(gs[1, 3])
 
     idx = np.unravel_index(np.argmax(T, axis=None), T.shape)
-    xi, yi, zi = idx
+    zi, yi, xi = int(idx[0]), int(idx[1]), int(idx[2])
 
     im = plot_surface_heatmap_mpl(
         ax_xy,
-        T[:, :, zi],
+        _slice_xy(T, zi),
         dx,
         dy,
         unit=unit,
@@ -367,7 +382,7 @@ def plot_composite_thermal_view(
     )
     plot_surface_heatmap_mpl(
         ax_xz,
-        T[:, yi, :],
+        _slice_xz(T, yi),
         dx,
         dz,
         unit=unit,
@@ -380,7 +395,7 @@ def plot_composite_thermal_view(
     )
     plot_surface_heatmap_mpl(
         ax_yz,
-        T[xi, :, :],
+        _slice_yz(T, xi),
         dy,
         dz,
         unit=unit,
@@ -392,8 +407,6 @@ def plot_composite_thermal_view(
         ylabel=f"Z [{unit}]",
     )
 
-    # Shared colorbar in the top-left area
-    # Create an inset axes within the ax_cb for better control of bar size
     cbar_ax_ins = inset_axes(
         ax_cb,
         width="40%",
@@ -407,79 +420,71 @@ def plot_composite_thermal_view(
     cb.ax.set_ylabel("Temperature [K]", fontsize=12, labelpad=10)
     cb.ax.tick_params(labelsize=10)
 
-    # Note: tight_layout might struggle with GridSpec + 3D, so we manual adjust
     fig.subplots_adjust(
         left=0.02, right=0.95, top=0.98, bottom=0.05, wspace=0.5, hspace=0.1
     )
 
 
-def plot_3d_block_mpl_ax(
-    ax,
-    T,
-    dx,
-    dy,
-    dz,
-    vmin=None,
-    vmax=None,
-    cmap="jet",
-    unit="mm",
-    title=None,
-    show_colorbar=True,
-    dist=10.0,
+def plot_3d_block_mpl_ax(  # type: ignore[no-untyped-def]
+    ax,  # Axes3D — left untyped; pyright can't model 3D-specific attrs (dist, zaxis)
+    T: np.ndarray,
+    dx: float,
+    dy: float,
+    dz: float,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    cmap: str = "jet",
+    unit: str = "mm",
+    title: str | None = None,
+    show_colorbar: bool = True,
+    dist: float = 10.0,
 ):
-    """Helper to plot 3D block onto an EXISTING axes."""
-    nx, ny, nz = T.shape
+    """Helper to plot 3D block onto an EXISTING 3D axes.
+
+    T must have shape (NZ, NY, NX).
+    """
+    T = np.asarray(T)
+    nz, ny, nx = T.shape
     scale = 1000.0 if unit == "mm" else 1.0
     Lx, Ly, Lz = nx * dx * scale, ny * dy * scale, nz * dz * scale
 
     norm = Normalize(vmin=vmin if vmin else T.min(), vmax=vmax if vmax else T.max())
     m = cm.ScalarMappable(cmap=cmap, norm=norm)
 
-    # Increase resolution of surfaces by not skipping points
-    # (Matplotlib can be slow if we plot every point of 512x256,
-    # so maybe rstride/cstride)
-    # But usually user wants it sharp.
-    stride = 1  # Keep it 1 for resolution
-
-    # Adaptive stride calculation to keep 3D surface plotting fast
-    # Matplotlib struggles with >50k points in 3D
     max_dim = max(nx, ny)
-    if max_dim > 150:
-        # Target roughly 100-150 points along the longest dimension
-        stride = int(max_dim / 150)
-        stride = max(stride, 1)
+    stride = max(int(max_dim / 150), 1) if max_dim > 150 else 1
 
-    # Top
-    X, Y = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Ly, ny))
+    # Top face (Z = Lz): meshgrid is (NY, NX), colors from T[-1, :, :] shape (NY, NX)
+    X_t, Y_t = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Ly, ny))
     ax.plot_surface(
-        X,
-        Y,
-        np.full_like(X, Lz),
-        facecolors=m.to_rgba(T[..., -1].T),
+        X_t,
+        Y_t,
+        np.full_like(X_t, Lz),
+        facecolors=m.to_rgba(T[-1, :, :]),
         shade=False,
         rstride=stride,
         cstride=stride,
     )
 
-    # Side (Y=0)
+    # Side face (Y = 0): meshgrid is (NZ, NX), colors from T[:, 0, :] shape (NZ, NX)
     X_s, Z_s = np.meshgrid(np.linspace(0, Lx, nx), np.linspace(0, Lz, nz))
     ax.plot_surface(
         X_s,
         np.zeros_like(X_s),
         Z_s,
-        facecolors=m.to_rgba(T[:, 0, :].T),
+        facecolors=m.to_rgba(T[:, 0, :]),
         shade=False,
         rstride=stride,
         cstride=stride,
     )
 
-    # Front (X=Lx)
+    # Front face (X = Lx): meshgrid is (NZ, NY), colors from T[:, :, -1] shape (NZ, NY)
     Y_f, Z_f = np.meshgrid(np.linspace(0, Ly, ny), np.linspace(0, Lz, nz))
     ax.plot_surface(
         np.full_like(Y_f, Lx),
         Y_f,
         Z_f,
-        facecolors=m.to_rgba(T[-1, :, :].T),
+        facecolors=m.to_rgba(T[:, :, -1]),
         shade=False,
         rstride=stride,
         cstride=stride,
@@ -488,16 +493,12 @@ def plot_3d_block_mpl_ax(
     ax.zaxis._axinfo["juggled"] = (1, 2, 0)
     ax.set_box_aspect((Lx, Ly, Lz))
     ax.dist = dist
-    ax.view_init(elev=30, azim=-60)  # Standard perspective to show all labels
+    ax.view_init(elev=30, azim=-60)
 
     if title:
         ax.set_title(title, pad=10, fontsize=14)
     ax.set_xlabel(f"X [{unit}]", labelpad=15, fontsize=10)
     ax.set_ylabel(f"Y [{unit}]", labelpad=15, fontsize=10)
-
-    # Robust Z-label using 2D axes coordinates
-    # (avoids Axes3D clipping/bounding box issues)
-    # Positioned to the left of the axes box
     ax.text2D(
         -0.08,
         0.5,
@@ -508,9 +509,7 @@ def plot_3d_block_mpl_ax(
         ha="right",
         fontsize=10,
     )
-    # ax.set_zlabel is unreliable with bbox_inches='tight' in 3D
 
-    # Improve tick labels to avoid overlap
     ax.tick_params(axis="x", pad=5, labelsize=9)
     ax.tick_params(axis="y", pad=5, labelsize=9)
     ax.tick_params(axis="z", pad=4, labelsize=9)
@@ -518,8 +517,6 @@ def plot_3d_block_mpl_ax(
     ax.zaxis.set_major_locator(MaxNLocator(5))
 
     if show_colorbar:
-        # Add colorbar for 3D block
-        # Assuming inset_axes is imported globally or available
         cb_ax = inset_axes(
             ax,
             width="3%",
@@ -539,10 +536,6 @@ def get_phase_colormap():
     """Create a custom colormap for material phases: Powder, Solid, Mushy, Liquid."""
     from matplotlib.colors import LinearSegmentedColormap
 
-    # Colors: Grey (Powder), SteelBlue (Solid), Yellow/Orange (Liquid)
-    # We map 0.0 -> Powder
-    # We map 0.5 -> Solid
-    # We map 1.0 -> Liquid
     colors = [
         (0.4, 0.4, 0.4),  # 0.0: Powder (Grey)
         (0.27, 0.51, 0.71),  # 0.5: Solid (SteelBlue)
@@ -566,41 +559,32 @@ def plot_phase_sections(
     unit: str = "mm",
 ):
     """
-    Plot 3 phase-state cross-sections (XY, XZ, YZ) in a specific row.
+    Plot 3 phase-state cross-sections (XY, XZ, YZ) in a specific GridSpec row.
+
+    Args:
+        slice_indices: (xi, yi, zi) voxel indices for the cross-section planes.
     """
+    T = np.asarray(T)
+    mask = np.asarray(mask)
     if slice_indices is None:
-        # Defaults to center or max T
-        iz = T.shape[2] // 2
+        iz = T.shape[0] // 2
         iy = T.shape[1] // 2
-        ix = np.argmax(T[:, iy, iz])
-        slice_indices = (int(ix), int(iy), int(iz))
+        ix = int(np.argmax(T[iz, iy, :]))
+        slice_indices = (ix, iy, iz)
 
     ix, iy, iz = slice_indices
 
-    # Calculate Phase Data
-    # 0.0: Powder
-    # 0.5: Solid
-    # 1.0: Liquid
-    # We use a smooth transition for Liquid part
     phi = np.clip((T - T_solidus) / (T_liquidus - T_solidus + 1e-9), 0, 1)
     phase = np.zeros_like(T)
     phase[mask > 0] = 0.5 + 0.5 * phi[mask > 0]
 
     cmap = get_phase_colormap()
 
-    # Slices (Pass [Dim1, Dim2] directly)
-    s_xy = phase[:, :, iz]
-    s_xz = phase[:, iy, :]
-    s_yz = phase[ix, :, :]
-
+    # Slices in (NX, N*) order so plot_surface_heatmap_mpl maps Dim1 to x-axis
+    slices = [_slice_xy(phase, iz), _slice_xz(phase, iy), _slice_yz(phase, ix)]
     titles = ["XY Phase", "XZ Phase", "YZ Phase"]
-    slices = [s_xy, s_xz, s_yz]
     deltas = [(dx, dy), (dx, dz), (dy, dz)]
-    labels = [
-        ("X", "Y"),
-        ("X", "Z"),
-        ("Y", "Z"),
-    ]
+    labels = [("X", "Y"), ("X", "Z"), ("Y", "Z")]
 
     for i, (s, (d1, d2), (lx, ly)) in enumerate(
         zip(slices, deltas, labels, strict=False)
@@ -620,11 +604,12 @@ def plot_phase_sections(
             xlabel=f"{lx} [{unit}]",
             ylabel=f"{ly} [{unit}]",
         )
-        if i == 2:
-            # Customize colorbar labels for Phase
-            cax = ax.images[-1].colorbar.ax
-            cax.set_yticks([0, 0.5, 1.0])
-            cax.set_yticklabels(["Powder", "Solid", "Liquid"])
+        if i == 2 and hasattr(ax, "images") and len(ax.images) > 0:
+            im = ax.images[-1]
+            if hasattr(im, "colorbar") and im.colorbar is not None:
+                cax = im.colorbar.ax
+                cax.set_yticks([0, 0.5, 1.0])
+                cax.set_yticklabels(["Powder", "Solid", "Liquid"])
 
 
 def plot_dual_thermal_phase_view(
@@ -646,28 +631,19 @@ def plot_dual_thermal_phase_view(
     Row 0: Temperature (XY, XZ, YZ)
     Row 1: Phase State (XY, XZ, YZ)
     """
+    T = np.asarray(T)
+    mask = np.asarray(mask)
     fig.clear()
     gs = GridSpec(2, 3, figure=fig, hspace=0.3, wspace=0.3)
 
-    # Find max T for slice centering
     idx = np.unravel_index(np.argmax(T), T.shape)
-    slice_indices = (int(idx[0]), int(idx[1]), int(idx[2]))
+    zi, yi, xi = int(idx[0]), int(idx[1]), int(idx[2])
+    slice_indices = (xi, yi, zi)  # (xi, yi, zi) convention for plot_phase_sections
 
-    # Row 0: Temperature
-    # plot_cross_sections currently uses fig.add_subplot(1, 3, i+1) which ignores gs.
-    # We need to manually place thermal subplots in Row 0 of gs.
-    s_xy = T[:, :, slice_indices[2]]
-    s_xz = T[:, slice_indices[1], :]
-    s_yz = T[slice_indices[0], :, :]
-
+    slices_t = [_slice_xy(T, zi), _slice_xz(T, yi), _slice_yz(T, xi)]
     titles_t = ["XY Temperature", "XZ Temperature", "YZ Temperature"]
-    slices_t = [s_xy, s_xz, s_yz]
     deltas = [(dx, dy), (dx, dz), (dy, dz)]
-    labels = [
-        ("X", "Y"),
-        ("X", "Z"),
-        ("Y", "Z"),
-    ]
+    labels = [("X", "Y"), ("X", "Z"), ("Y", "Z")]
 
     for i, (s, (d1, d2), (lx, ly)) in enumerate(
         zip(slices_t, deltas, labels, strict=False)
@@ -688,7 +664,6 @@ def plot_dual_thermal_phase_view(
             ylabel=f"{ly} [{unit}]",
         )
 
-    # Row 1: Phase
     plot_phase_sections(
         fig,
         T,

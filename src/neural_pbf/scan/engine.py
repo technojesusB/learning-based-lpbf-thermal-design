@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import math
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ScanPattern(str, Enum):
+class ScanPattern(StrEnum):
     """
     Enumeration of supported scan patterns.
     """

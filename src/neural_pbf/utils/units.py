@@ -1,8 +1,8 @@
 # src/lpbf/units.py
-from enum import Enum
+from enum import StrEnum
 
 
-class LengthUnit(str, Enum):
+class LengthUnit(StrEnum):
     """
     Enumeration of supported length units for simulation input.
     Internally, the simulation always operates in SI units (meters).

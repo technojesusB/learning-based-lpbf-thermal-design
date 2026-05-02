@@ -285,7 +285,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         mappable = cm.ScalarMappable(norm=norm, cmap="jet")
         # Global horizontal colorbar at the bottom
         fig.subplots_adjust(bottom=0.22)
-        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.03])
+        cbar_ax = fig.add_axes((0.15, 0.08, 0.7, 0.03))
         fig.colorbar(mappable, cax=cbar_ax, label="T (K)", orientation="horizontal")
 
         plt.savefig(path, bbox_inches="tight", pad_inches=0.2, dpi=150)
