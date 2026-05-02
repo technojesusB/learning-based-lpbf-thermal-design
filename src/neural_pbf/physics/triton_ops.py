@@ -86,6 +86,38 @@ def _thermal_step_3d_kernel(
         mask_ptr + (o_x * stride_x + o_y * stride_y + zb * stride_z), mask=m_all
     ).to(tl.float32)
 
+    # ---------------------------------------------------------------------------
+    # Dynamic phase-transition overrides (register-only).
+    #
+    # When a voxel's temperature reaches or exceeds T_sol (solidus) its powder
+    # mask (0.0) is promoted to consolidated (1.0) for the duration of this
+    # kernel invocation.  This ensures that powder at or above solidus uses
+    # solid/liquid thermal properties (k_solid, k_liquid) rather than k_powder,
+    # capturing the in-flight phase change without requiring the caller to update
+    # the persistent mask buffer.
+    #
+    # NOTE: the threshold is >= T_sol (inclusive), matching the external
+    # macro-step mask promotion in step_adaptive which also uses >= T_solidus.
+    # Using strictly > would create a one-step discrepancy for voxels sitting
+    # exactly at T_solidus.
+    #
+    # IMPORTANT: these overrides live only in registers.  The persistent mask_ptr
+    # buffer is NOT written to; updating it after solidification is the caller's
+    # responsibility (e.g., via TimeStepper.step_adaptive).
+    # ---------------------------------------------------------------------------
+    # CRITICAL-1 fix: use scalar 1.0 instead of tl.full(mc.shape, 1.0, ...).
+    # tl.full requires a constexpr shape tuple known at JIT compile time.
+    # mc.shape is a runtime attribute — on some Triton versions this compiles
+    # but generates wrong tile shapes → illegal memory access → async CUDA crash.
+    # Triton broadcasts a scalar 1.0 to the tile shape automatically.
+    mc = tl.where(Tc >= T_sol, 1.0, mc)
+    mxl = tl.where(Txl >= T_sol, 1.0, mxl)
+    mxr = tl.where(Txr >= T_sol, 1.0, mxr)
+    myu = tl.where(Tyu >= T_sol, 1.0, myu)
+    myd = tl.where(Tyd >= T_sol, 1.0, myd)
+    mzf = tl.where(Tzf >= T_sol, 1.0, mzf)
+    mzb = tl.where(Tzb >= T_sol, 1.0, mzb)
+
     mid = 0.5 * (T_sol + T_liq)
     inv_hw = 1.0 / (0.5 * (T_liq - T_sol) + 1e-9)
 
@@ -307,7 +339,33 @@ def _thermal_step_3d_kernel(
     tl.store(T_new_ptr + idx_c, Tc + (dt / rho) * rhs / (cp_total + 1e-9), mask=m_all)
 
 
-def run_thermal_step_3d_triton(T, mask, Q, sim_cfg, mat_cfg, dt):
+def run_thermal_step_3d_triton(
+    T,
+    mask,
+    Q,
+    sim_cfg,
+    mat_cfg,
+    dt,
+    *,
+    lut_tensors: "dict[str, torch.Tensor] | None" = None,
+):
+    """Run one explicit-Euler thermal sub-step on the GPU via the Triton kernel.
+
+    Args:
+        T: Temperature field, shape (Nx, Ny, Nz), contiguous float32.
+        mask: Material phase mask, shape (Nx, Ny, Nz), uint8.
+        Q: Volumetric heat source [W/m³], shape (Nx, Ny, Nz).
+        sim_cfg: SimulationConfig (grid spacings, ambient T, loss_h).
+        mat_cfg: MaterialConfig (material properties, LUT data).
+        dt: Sub-step size [s].
+        lut_tensors: Optional pre-built GPU tensors for the LUT
+            ``{"T_lut": ..., "k_lut": ..., "cp_lut": ...}``.
+            When provided, the function uses these directly instead of calling
+            ``torch.tensor(mat_cfg.T_lut, ...)`` — avoids repeated CPU→GPU
+            copies across thousands of sub-steps (HIGH-1 fix).
+            The caller is responsible for keeping the tensors on the correct
+            device and with the correct dtype.
+    """
     nx, ny, nz = T.shape[-3], T.shape[-2], T.shape[-1]
     T_new = torch.empty_like(T)
     stride_x, stride_y, stride_z = ny * nz, nz, 1
@@ -319,10 +377,22 @@ def run_thermal_step_3d_triton(T, mask, Q, sim_cfg, mat_cfg, dt):
     )
 
     if mat_cfg.use_lut and mat_cfg.T_lut is not None:
-        T_lut = torch.tensor(mat_cfg.T_lut, device=T.device, dtype=T.dtype)
-        k_lut = torch.tensor(mat_cfg.k_lut, device=T.device, dtype=T.dtype)
-        cp_lut = torch.tensor(mat_cfg.cp_lut, device=T.device, dtype=T.dtype)
         n_lut = len(mat_cfg.T_lut)
+        # MEDIUM guard: kernel loop is hard-coded to range(16)
+        if n_lut > 16:
+            raise ValueError(
+                f"LUT has {n_lut} entries; kernel supports at most 16. "
+                "Use fewer LUT points."
+            )
+        # HIGH-1: use pre-built tensors if provided to avoid CPU→GPU copies
+        if lut_tensors is not None:
+            T_lut = lut_tensors["T_lut"]
+            k_lut = lut_tensors["k_lut"]
+            cp_lut = lut_tensors["cp_lut"]
+        else:
+            T_lut = torch.tensor(mat_cfg.T_lut, device=T.device, dtype=T.dtype)
+            k_lut = torch.tensor(mat_cfg.k_lut, device=T.device, dtype=T.dtype)
+            cp_lut = torch.tensor(mat_cfg.cp_lut, device=T.device, dtype=T.dtype)
         use_lut = True
     else:
         T_lut = k_lut = cp_lut = torch.zeros(1, device=T.device, dtype=T.dtype)

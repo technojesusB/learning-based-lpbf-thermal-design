@@ -9,6 +9,45 @@ from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff
 from neural_pbf.physics.ops import div_k_grad
 from neural_pbf.scan.sources import HeatSource
 
+
+def _assert_devices_match(
+    state: SimulationState,
+    Q_ext: torch.Tensor | None,
+) -> None:
+    """Raise RuntimeError if any state tensor or Q_ext is on a different device.
+
+    Checks:
+    - state.T.device == state.material_mask.device (when mask is not None)
+    - state.T.device == Q_ext.device (when Q_ext is not None)
+
+    Args:
+        state:  Current simulation state.
+        Q_ext:  Optional external heat source tensor.
+
+    Raises:
+        RuntimeError: When any device mismatch is detected.
+    """
+    state_device = state.T.device
+
+    if state.material_mask is not None:
+        mask_device = state.material_mask.device
+        if mask_device.type != state_device.type:
+            raise RuntimeError(
+                f"Device mismatch: state.T on {state_device}, "
+                f"state.material_mask on {mask_device}. "
+                "All tensors must be on the same device."
+            )
+
+    if Q_ext is not None:
+        q_device = Q_ext.device
+        if q_device.type != state_device.type:
+            raise RuntimeError(
+                f"Device mismatch: state.T on {state_device}, "
+                f"Q_ext on {q_device}. "
+                "Move Q_ext to the same device as state.T before calling the stepper."
+            )
+
+
 try:
     from neural_pbf.physics.triton_ops import run_thermal_step_3d_triton
 
@@ -40,6 +79,10 @@ class TimeStepper:
         """
         self.sim = sim_config
         self.mat = mat_config
+        # HIGH-1: LUT tensor cache keyed by device string to avoid repeated
+        # CPU→GPU copies across sub-steps.  Populated lazily on first Triton call.
+        # Key: str(device), Value: dict with "T_lut", "k_lut", "cp_lut" tensors.
+        self._lut_tensors: dict[str, dict[str, torch.Tensor]] = {}
 
     def step(
         self,
@@ -85,8 +128,12 @@ class TimeStepper:
             - Updates state.T, state.t, state.step.
             - Updates state.max_T.
             - Updates state.cooling_rate if solidification occurs.
-            - Updates state.material_mask (Power -> Solid).
             - Stores state.T_prev.
+
+        Note:
+            state.material_mask is NOT updated here.  Mask updates happen at
+            macro-step granularity inside step_adaptive (bitwise OR after all
+            sub-steps complete) to avoid repeated large tensor allocations.
 
         Args:
             state (SimulationState): Current simulation state (mutated in place,
@@ -99,6 +146,8 @@ class TimeStepper:
         Returns:
             SimulationState: Ref to the updated state.
         """
+        _assert_devices_match(state, Q_ext)
+
         T = state.T
 
         if use_triton and HAS_TRITON and self.sim.is_3d:
@@ -111,24 +160,54 @@ class TimeStepper:
             # We pass contiguous views
             mask = state.material_mask
             if mask is None:
-                mask = torch.zeros_like(T, dtype=torch.uint8)
+                # Cache the default zero mask on the state to avoid re-allocating
+                # 8+ million bytes every single substep (5000+ times per dt).
+                state.material_mask = torch.zeros_like(T, dtype=torch.uint8)
+                mask = state.material_mask
+
+            # CRITICAL-2 fix: use squeeze(0).squeeze(0) instead of bare
+            # squeeze() to remove ONLY the batch (dim 0) and channel (dim 1)
+            # leading dimensions.  Bare squeeze() removes ALL size-1 dims,
+            # which would silently drop a spatial dimension if Nz (or another
+            # spatial dim) happened to be 1 — passing a 2D tensor to the 3D
+            # kernel, causing illegal memory access.
+            #
+            # HIGH-1 fix: build LUT GPU tensors once per device and cache them
+            # on self._lut_tensors to avoid 3 × n_sub CPU→GPU copies.
+            dev_key = str(T.device)
+            lut_cache: dict[str, torch.Tensor] | None = None
+            if self.mat.use_lut and self.mat.T_lut is not None:
+                if dev_key not in self._lut_tensors:
+                    self._lut_tensors[dev_key] = {
+                        "T_lut": torch.tensor(
+                            self.mat.T_lut, device=T.device, dtype=T.dtype
+                        ),
+                        "k_lut": torch.tensor(
+                            self.mat.k_lut, device=T.device, dtype=T.dtype
+                        ),
+                        "cp_lut": torch.tensor(
+                            self.mat.cp_lut, device=T.device, dtype=T.dtype
+                        ),
+                    }
+                lut_cache = self._lut_tensors[dev_key]
 
             T_new = run_thermal_step_3d_triton(
-                T.squeeze(),
-                mask.squeeze(),
-                Q.squeeze(),
+                T.squeeze(0).squeeze(0).contiguous(),
+                mask.squeeze(0).squeeze(0).contiguous(),
+                Q.squeeze(0).squeeze(0).contiguous(),
                 self.sim,
                 self.mat,
                 dt,
+                lut_tensors=lut_cache,
             )
 
             # Reshape back to (B, C, Nx, Ny, Nz)
             T_new = T_new.view_as(T)
 
-            # Identify newly consolidated regions (for mask update)
-            if state.material_mask is not None:
-                newly_solid = T_new > self.mat.T_solidus
-                state.material_mask = state.material_mask | newly_solid.to(torch.uint8)
+            # NOTE: We intentionally DO NOT update the mask per sub-step here.
+            # Doing `T_new > T_sol` and `|` allocates 16MB of tensors 5000+ times
+            # per dt, stalling the GPU allocator. Mask updates should be done at
+            # the macro-step level (in step_adaptive or externally).
 
             state.T_prev = T
             state.T = T_new
@@ -143,8 +222,11 @@ class TimeStepper:
             return state
 
         # STANDARD PYTORCH PATH
-        # Use material mask if available
         mask = state.material_mask
+        if mask is None:
+            state.material_mask = torch.zeros_like(T, dtype=torch.uint8)
+            mask = state.material_mask
+
         k = k_eff(T, self.mat, mask)
         cp = cp_eff(T, self.mat)
         rho = self.mat.rho  # constant density for now
@@ -177,13 +259,8 @@ class TimeStepper:
         dT = (dt / rho) * (rhs / (cp + 1e-9))
         T_new = T + dT
 
-        # Update Material Mask (Irreversible Powder -> Solid)
-        # If T > T_solidus, assume it has melted/sintered and becomes Solid (1).
-        if mask is not None:
-            # Identify newly consolidated regions
-            newly_solid = T_new > self.mat.T_solidus
-            # Update mask: Old Mask OR New Solid
-            state.material_mask = mask | newly_solid.to(torch.uint8)
+        # NOTE: We intentionally DO NOT update the mask per sub-step here.
+        # Mask updates should be done at the macro-step level (in step_adaptive).
 
         # Update State
         state.T_prev = T  # store for cooling rate calculation
@@ -305,5 +382,17 @@ class TimeStepper:
             state = self.step_explicit_euler(
                 state, dt_sub, Q_ext, use_triton=use_triton
             )
+
+        # 4. Single macro-step mask update — promotes voxels that reached or
+        #    crossed T_solidus during this macro-step.  Doing this once per
+        #    macro-step rather than per sub-step avoids allocating large uint8
+        #    tensors 5000+ times per dt_target.
+        if state.T is not None and state.material_mask is not None:
+            # CRITICAL-3 fix: remove .squeeze() — both tensors are already
+            # (1, 1, Nx, Ny, Nz) so no squeeze is needed.  Bare squeeze()
+            # would remove ALL size-1 dims (including spatial ones), making
+            # view_as silently map wrong indices if a spatial dim is 1.
+            newly_solid = (self.mat.T_solidus <= state.T).to(torch.uint8)
+            state.material_mask = state.material_mask | newly_solid
 
         return state
