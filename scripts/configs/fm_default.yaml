@@ -1,0 +1,39 @@
+# FM surrogate training configuration
+# Usage: uv run python scripts/train_fm.py --config scripts/configs/fm_default.yaml
+#        (pass additional CLI flags to override any field)
+#
+# Phase 1 (teacher-forcing baseline): epsilon_sched_max=0.0
+# Phase 2 (scheduled sampling): set epsilon_sched_max=0.3, epsilon_sched_warmup=20
+
+dataset:
+  t_ref: 2000.0
+  t_ambient: 300.0
+  q_ref: 1.0e12
+
+model:
+  base_channels: 32
+  depth: 3
+  cond_embed_dim: 128
+  n_inference_steps: 25
+
+training:
+  epochs: 100
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  val_fraction: 0.1
+  seed: 42
+  device: cuda
+  num_workers: 2
+
+  # Scheduled sampling (disabled for baseline — set max > 0 to enable)
+  epsilon_sched_max: 0.0
+  epsilon_sched_warmup: 20
+  n_steps_train_rollout: 8
+
+  # Physics residual weight (0 = disabled, PINN-FM not yet implemented)
+  pde_weight: 0.0
+
+tracking:
+  mlflow_experiment: fm_surrogate
+  output_dir: checkpoints/fm

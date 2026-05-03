@@ -5,6 +5,7 @@ Provides:
 - heuristic_sample_indices: physics-informed index selection across a scan path
 - randomize_material: stochastic material property perturbation for data augmentation
 """
+
 from __future__ import annotations
 
 import math
