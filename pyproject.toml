@@ -89,6 +89,12 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+markers = [
+    "unit: fast unit tests",
+    "integration: integration tests",
+    "slow: slow tests requiring GPU; run with -m slow",
+]
+
 [filterwarnings]
 ignore = [
     "ignore::DeprecationWarning",
