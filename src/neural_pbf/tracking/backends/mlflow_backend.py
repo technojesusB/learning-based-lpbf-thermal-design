@@ -1,6 +1,6 @@
 import logging
 import os
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from typing import Any, Literal
 
 import mlflow
@@ -62,9 +62,7 @@ class MLflowTracker(ExperimentTracker):
             run_name=run_name, experiment_id=self.experiment_id, log_system_metrics=True
         )
         try:
-            # Fallback for specific MLflow environments
-            with suppress(Exception):
-                mlflow.enable_system_metrics_logging()
+            self.enable_system_metrics()
 
             if tags:
                 mlflow.set_tags(tags)
@@ -134,6 +132,13 @@ class MLflowTracker(ExperimentTracker):
                     )
         except Exception as e:
             logger.warning(f"MLflow log_figure failed: {e}")
+
+    def enable_system_metrics(self) -> None:
+        """Explicitly activate MLflow system-metrics logging for the active run."""
+        try:
+            mlflow.enable_system_metrics_logging()
+        except Exception as exc:
+            logger.warning("enable_system_metrics_logging failed: %s", exc)
 
     def flush(self) -> None:
         # MLflow python client usually handles this, specific implementation

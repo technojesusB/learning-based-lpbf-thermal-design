@@ -126,7 +126,7 @@ class FMThermalDataset(Dataset):
         for path in cfg.h5_paths:
             with h5py.File(path, "r") as f:
                 if "samples" in f:
-                    for key in f["samples"]:
+                    for key in f["samples"]:  # type: ignore
                         self._keys.append((path, key))
 
     def __len__(self) -> int:
@@ -137,12 +137,12 @@ class FMThermalDataset(Dataset):
         cfg = self.cfg
 
         with h5py.File(path, "r") as f:
-            grp = f["samples"][sample_key]
+            grp = f["samples"][sample_key]  # type: ignore
 
-            T_in = torch.from_numpy(grp["T_in"][:].astype(np.float32))
-            T_target = torch.from_numpy(grp["T_target"][:].astype(np.float32))
-            Q = torch.from_numpy(grp["Q"][:].astype(np.float32))
-            mask = torch.from_numpy(grp["mask"][:].astype(np.float32))
+            T_in = torch.from_numpy(grp["T_in"][:].astype(np.float32))  # type: ignore
+            T_target = torch.from_numpy(grp["T_target"][:].astype(np.float32))  # type: ignore
+            Q = torch.from_numpy(grp["Q"][:].astype(np.float32))  # type: ignore
+            mask = torch.from_numpy(grp["mask"][:].astype(np.float32))  # type: ignore
 
             # Build conditioning vector — raises KeyError with key name if missing
             cond_values: list[float] = []
@@ -152,7 +152,7 @@ class FMThermalDataset(Dataset):
                         f"Conditioning attribute '{key}' missing in sample "
                         f"'{sample_key}' of '{path}'"
                     )
-                cond_values.append(float(grp.attrs[key]))
+                cond_values.append(float(grp.attrs[key]))  # type: ignore
 
         # Normalise temperature fields: (T - T_ambient) / T_ref → O(1)
         T_in = (T_in - cfg.T_ambient) / cfg.T_ref

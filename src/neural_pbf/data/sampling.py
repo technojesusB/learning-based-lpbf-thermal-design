@@ -104,7 +104,11 @@ def _topup_sample_indices(
     return set(sample_indices) | set(extras)
 
 
-def randomize_material(cfg: MaterialConfig, scale: float = 0.1) -> MaterialConfig:
+def randomize_material(
+    cfg: MaterialConfig,
+    scale: float = 0.1,
+    k_liquid_max_factor: float = 1.2,
+) -> MaterialConfig:
     """
     Return a new MaterialConfig with random perturbations applied to key properties.
 
@@ -117,10 +121,16 @@ def randomize_material(cfg: MaterialConfig, scale: float = 0.1) -> MaterialConfi
     - LUT value arrays (k_lut, cp_lut) are perturbed element-wise in the
       same multiplicative fashion.  The temperature axis (T_lut) is **never
       modified**.
+    - k_liquid and the max k_lut value are clamped to
+      ``cfg.k_liquid * k_liquid_max_factor`` to prevent the thermal diffusivity
+      from exceeding a level that triggers extreme CFL sub-stepping.
 
     Args:
-        cfg:   Source MaterialConfig (Pydantic v2 frozen model).
-        scale: Fractional perturbation magnitude. Default 0.1 (+-10%).
+        cfg:                 Source MaterialConfig (Pydantic v2 frozen model).
+        scale:               Fractional perturbation magnitude. Default 0.1 (+-10%).
+        k_liquid_max_factor: Hard upper bound on k_liquid as a multiple of the
+                             base value. Default 1.2 (prevents runaway diffusivity
+                             when scale is increased beyond 0.1).
 
     Returns:
         A new MaterialConfig with perturbed properties.
@@ -131,7 +141,7 @@ def randomize_material(cfg: MaterialConfig, scale: float = 0.1) -> MaterialConfi
 
     k_powder = perturb(cfg.k_powder)
     k_solid = perturb(cfg.k_solid)
-    k_liquid = perturb(cfg.k_liquid)
+    k_liquid = min(perturb(cfg.k_liquid), cfg.k_liquid * k_liquid_max_factor)
     cp_base = perturb(cfg.cp_base)
     rho = perturb(cfg.rho)
     latent_heat_L = perturb(cfg.latent_heat_L)
@@ -142,11 +152,14 @@ def randomize_material(cfg: MaterialConfig, scale: float = 0.1) -> MaterialConfi
     T_solidus = cfg.T_solidus + shift
     T_liquidus = cfg.T_liquidus + shift
 
-    # LUT perturbation: perturb VALUE arrays only, never T_lut
+    # LUT perturbation: perturb VALUE arrays only, never T_lut.
+    # k_lut values are clamped to the same k_liquid bound so that the
+    # high-T conductivity doesn't exceed the scalar k_liquid ceiling.
+    k_liq_cap = cfg.k_liquid * k_liquid_max_factor
     k_lut: list[float] | None = None
     cp_lut: list[float] | None = None
     if cfg.k_lut is not None:
-        k_lut = [perturb(v) for v in cfg.k_lut]
+        k_lut = [min(perturb(v), k_liq_cap) for v in cfg.k_lut]
     if cfg.cp_lut is not None:
         cp_lut = [perturb(v) for v in cfg.cp_lut]
 

@@ -36,6 +36,7 @@ lint = "neural_pbf.dev_scripts:lint"
 format = "neural_pbf.dev_scripts:format"
 typecheck = "neural_pbf.dev_scripts:typecheck"
 test = "neural_pbf.dev_scripts:test"
+mlflow-ui = "neural_pbf.dev_scripts:ui"
 
 [dependency-groups]
 dev = [

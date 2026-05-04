@@ -149,8 +149,11 @@ class TestCritical1TlFullFix:
         nx, ny, nz = 8, 8, 8
         dt = 1e-5
 
-        T_cold = mat_no_lut.T_solidus - 200.0
-        T = torch.full((nx, ny, nz), T_cold, dtype=torch.float32, device=device)
+        T_cold_base = mat_no_lut.T_solidus - 200.0
+        T_cold_high = mat_no_lut.T_solidus - 100.0
+        T = torch.full((nx, ny, nz), T_cold_base, dtype=torch.float32, device=device)
+        # Add a gradient so conductivity matters
+        T[nx // 2 :, :, :] = T_cold_high
 
         mask_powder = torch.zeros((nx, ny, nz), dtype=torch.uint8, device=device)
         mask_solid = torch.ones((nx, ny, nz), dtype=torch.uint8, device=device)

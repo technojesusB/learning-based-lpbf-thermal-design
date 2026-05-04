@@ -51,6 +51,11 @@ class SimulationState:
     # Internal state for integrators (e.g. previous step T for dT/dt)
     T_prev: torch.Tensor | None = None
 
+    # Diagnostic: CFL sub-steps taken by the last step_adaptive call.
+    # Set by step_adaptive; None until first call. Not physically meaningful
+    # across clone/checkpoint boundaries — treat as a last-call diagnostic.
+    last_n_sub: int | None = None
+
     def __post_init__(self):
         """Initialize auxiliary fields if not provided."""
         if self.max_T is None:
@@ -131,4 +136,5 @@ class SimulationState:
             if self.material_mask is not None
             else None,
             T_prev=self.T_prev.clone() if self.T_prev is not None else None,
+            last_n_sub=self.last_n_sub,
         )

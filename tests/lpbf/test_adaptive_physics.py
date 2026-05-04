@@ -71,9 +71,9 @@ def test_irreversible_powder_mask(stable_configs):
     # Force T > Liquidus manually to simulate heating in one step
     state.T[0, 0, 10, 10] = 1200.0  # > 1100
 
-    # Step (mask update logic is in step_explicit_euler)
-    # We use step_explicit_euler directly for control
-    state = stepper.step_explicit_euler(state, dt=1e-6)
+    # Step (mask update logic is in step_adaptive)
+    # We use step_adaptive to ensure the mask is promoted
+    state = stepper.step_adaptive(state, dt_target=1e-6)
 
     # Check mask updated
     assert state.material_mask[0, 0, 10, 10] == 1
@@ -82,7 +82,7 @@ def test_irreversible_powder_mask(stable_configs):
     state.T[0, 0, 10, 10] = 300.0
 
     # Step again
-    state = stepper.step_explicit_euler(state, dt=1e-6)
+    state = stepper.step_adaptive(state, dt_target=1e-6)
 
     # Check mask remains 1 (Irreversible)
     assert state.material_mask[0, 0, 10, 10] == 1

@@ -32,3 +32,11 @@ def test() -> None:
     args = sys.argv[1:]
     print(f"Running tests (pytest {' '.join(args)})...")
     run_command(["pytest"] + args)
+
+
+def ui() -> None:
+    """Start MLflow UI with the project-standard backend."""
+    print("Starting MLflow UI (sqlite:///mlflow.db on port 5000)...")
+    run_command(
+        ["mlflow", "ui", "--backend-store-uri", "sqlite:///mlflow.db", "--port", "5000"]
+    )

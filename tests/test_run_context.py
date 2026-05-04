@@ -39,11 +39,14 @@ def test_run_context_lifecycle(tmp_path, run_meta):
     ctx.start()
     ctx.tracker.start_run.assert_called_once()
 
+    # Capture before end() clears the reference (double-close prevention)
+    tracker_ctx = ctx._tracker_ctx
+
     ctx.log_step(0, {"T": torch.tensor(0.0)}, {})
     ctx.end({"T": torch.tensor(0.0)})
 
-    # Check mocked context exit called
-    ctx._tracker_ctx.__exit__.assert_called()
+    tracker_ctx.__exit__.assert_called()
+    assert ctx._tracker_ctx is None  # verify it was cleared
 
 
 def test_run_context_cadence(tmp_path, run_meta):

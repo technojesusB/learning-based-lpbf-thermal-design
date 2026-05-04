@@ -27,7 +27,7 @@ class HDF5ThermalDataset(Dataset):
         for path in self.h5_paths:
             with h5py.File(path, "r") as f:
                 if "samples" in f:
-                    keys = list(f["samples"].keys())
+                    keys = list(f["samples"].keys())  # type: ignore
                     self._keys.extend([(path, k) for k in keys])
 
         self.length = len(self._keys)
@@ -38,16 +38,16 @@ class HDF5ThermalDataset(Dataset):
     def __getitem__(self, idx: int):
         path, sample_key = self._keys[idx]
         with h5py.File(path, "r") as f:
-            group = f["samples"][sample_key]
+            group = f["samples"][sample_key]  # type: ignore
 
             # Read arrays and cast back to float32
-            T_in = torch.from_numpy(group["T_in"][:].astype(np.float32))
-            Q = torch.from_numpy(group["Q"][:].astype(np.float32))
-            T_target = torch.from_numpy(group["T_target"][:].astype(np.float32))
-            T_lf = torch.from_numpy(group["T_lf"][:].astype(np.float32))
-            mask = torch.from_numpy(group["mask"][:].astype(np.uint8))
+            T_in = torch.from_numpy(group["T_in"][:].astype(np.float32))  # type: ignore
+            Q = torch.from_numpy(group["Q"][:].astype(np.float32))  # type: ignore
+            T_target = torch.from_numpy(group["T_target"][:].astype(np.float32))  # type: ignore
+            T_lf = torch.from_numpy(group["T_lf"][:].astype(np.float32))  # type: ignore
+            mask = torch.from_numpy(group["mask"][:].astype(np.uint8))  # type: ignore
 
-            scalars = torch.from_numpy(group["scalars"][:].astype(np.float32))
+            scalars = torch.from_numpy(group["scalars"][:].astype(np.float32))  # type: ignore
 
             # Process parameters can optionally be returned or retrieved via attrs
             # For now, we return the core arrays needed by the surrogate

@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
@@ -173,7 +177,7 @@ def plot_surface_heatmap_mpl(
     title: str | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
-    cmap: str = "jet",
+    cmap: Any = "jet",
     unit: str = "m",
     show_colorbar: bool = True,
     xlabel: str | None = None,

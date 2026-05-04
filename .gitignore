@@ -12,4 +12,18 @@ scripts/
 /data/
 CLAUDE.md
 
-docs/JOURNEY.md 
+docs/JOURNEY.md
+
+*.pt
+*.pth
+
+# Test / coverage artefacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Run-time scratch files
+dataset_gen.log
+scratch/
+temp.md
+hi-bfl-idea.md

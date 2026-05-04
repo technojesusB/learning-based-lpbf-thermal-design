@@ -395,4 +395,7 @@ class TimeStepper:
             newly_solid = (self.mat.T_solidus <= state.T).to(torch.uint8)
             state.material_mask = state.material_mask | newly_solid
 
+        # Expose substep count for diagnostics.
+        state.last_n_sub = n_sub
+
         return state

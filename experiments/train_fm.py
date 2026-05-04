@@ -66,6 +66,7 @@ class TrainConfig:
     q_ref: float = 1e12
     t_ref: float = 2000.0
     t_ambient: float = 300.0
+    mlflow_tracking_uri: str | None = "sqlite:///mlflow.db"
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,8 @@ def main() -> None:
     parser.add_argument("--pde_weight", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="checkpoints/fm")
-    parser.add_argument("--mlflow_experiment", type=str, default="fm_surrogate")
+    parser.add_argument("--mlflow_experiment", type=str, default="lpbf")
+    parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--mlflow_run_name", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num_workers", type=int, default=0)
@@ -165,6 +167,7 @@ def main() -> None:
         cond_embed_dim=args.cond_embed_dim,
         tau_embed_dim=args.cond_embed_dim,
         n_inference_steps=args.n_inference_steps,
+        mlflow_tracking_uri=args.mlflow_uri,
     )
 
     # Reproducibility
@@ -242,6 +245,7 @@ def main() -> None:
         backend="mlflow",
         experiment_name=cfg.mlflow_experiment,
         run_name=cfg.mlflow_run_name,
+        mlflow_tracking_uri=cfg.mlflow_tracking_uri,
     )
     tracker = build_tracker(tracking_cfg)
 
