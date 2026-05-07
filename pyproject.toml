@@ -20,6 +20,7 @@ dependencies = [
     "torchvision>=0.23.0",
     "tqdm>=4.67.1",
     "triton>=3.4.0",
+    "h5py>=3.16.0",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +48,6 @@ dev = [
     "ruff>=0.1.0",
     "pyright>=1.1.300",
     "pre-commit>=4.5.1",
-    "h5py>=3.16.0",
 ]
 
 [tool.ruff]
