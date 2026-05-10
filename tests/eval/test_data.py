@@ -103,8 +103,9 @@ def test_hdf5_roundtrip_with_qext(tmp_path, sim_cfg, mat_cfg):
 
 @pytest.mark.unit
 def test_hdf5_roundtrip_metadata(tmp_path, trajectory):
-    trajectory.metadata["scan_speed_m_s"] = 0.5
+    from dataclasses import replace
+    traj_with_meta = replace(trajectory, metadata={"scan_speed_m_s": 0.5})
     path = tmp_path / "traj_meta.h5"
-    save_trajectory(trajectory, path)
+    save_trajectory(traj_with_meta, path)
     loaded = load_trajectory(path)
     assert loaded.metadata.get("scan_speed_m_s") == 0.5
