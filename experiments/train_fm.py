@@ -26,6 +26,10 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import mlflow
 import torch
 import torch.nn as nn
@@ -102,6 +106,47 @@ def _self_rollout(
         v = model(x_full, tau_i, cond)
         x_T = x_T + v * dτ
     return x_T.detach()
+
+
+def _log_validation_image(model, cond_encoder, batch, epoch, device, cfg):
+    """Generate and log a GT/Pred/Error comparison slice to MLflow."""
+    model.eval()
+    cond_encoder.eval()
+
+    T_in = batch["T_in"][:1].to(device)
+    T_tgt = batch["T_target"][:1].to(device)
+    mask = batch["mask"][:1].to(device)
+    Q = batch["Q"][:1].to(device)
+    cond_raw = batch["conditioning"][:1].to(device)
+
+    if T_in.ndim == 6:
+        T_in, T_tgt, mask, Q = T_in.squeeze(1), T_tgt.squeeze(1), mask.squeeze(1), Q.squeeze(1)
+
+    cond_emb = cond_encoder(cond_raw)
+    x = _self_rollout(model, cond_encoder, T_in, mask, Q, cond_emb, cfg.n_inference_steps)
+
+    gt_slice = T_tgt[0, 0, -1].cpu().numpy()
+    pred_slice = x[0, 0, -1].cpu().numpy()
+    err_slice = np.abs(gt_slice - pred_slice)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    im0 = axes[0].imshow(gt_slice, vmin=0, vmax=1, cmap="magma")
+    axes[0].set_title("Ground Truth (Norm)")
+    fig.colorbar(im0, ax=axes[0])
+    im1 = axes[1].imshow(pred_slice, vmin=0, vmax=1, cmap="magma")
+    axes[1].set_title("Prediction (Norm)")
+    fig.colorbar(im1, ax=axes[1])
+    im2 = axes[2].imshow(err_slice, vmin=0, vmax=0.2, cmap="Reds")
+    axes[2].set_title("Absolute Error")
+    fig.colorbar(im2, ax=axes[2])
+
+    plt.tight_layout()
+    tmp_path = Path("val_comparison.png")
+    plt.savefig(tmp_path)
+    plt.close()
+    mlflow.log_artifact(str(tmp_path), artifact_path=f"epoch_{epoch:03d}")
+    if tmp_path.exists():
+        tmp_path.unlink()
 
 
 def _log_params_flat(prefix: str, d: dict) -> None:
@@ -399,6 +444,12 @@ def main() -> None:
                 }, best_path)
                 logger.info("  ↳ new best val_loss=%.6f  saved %s", best_val_loss, best_path)
                 mlflow.log_artifact(str(best_path))
+
+            # --- Image Logging (Every 10 epochs) ---
+            if epoch % 10 == 0:
+                # Take first batch from val_loader for consistency
+                val_batch = next(iter(val_loader))
+                _log_validation_image(model, cond_encoder, val_batch, epoch, device, cfg)
 
         mlflow.log_artifact(str(output_dir / "latest.pt"))
         logger.info("Training complete. Best val_loss=%.6f", best_val_loss)
