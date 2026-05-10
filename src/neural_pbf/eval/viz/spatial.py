@@ -116,8 +116,8 @@ def isotherm_overlay(
         ax.contour(
             pred, levels=[T_iso], colors=["red"], linestyles=["--"], linewidths=[2]
         )
-    except Exception:
-        pass  # no contour when isotherm not present in field
+    except ValueError:
+        pass  # contour() raises ValueError when no level intersects the field
 
     ax.set_title(title or f"Isotherm T={T_iso:.0f} K — blue=GT, red=Pred")
     plt.tight_layout()

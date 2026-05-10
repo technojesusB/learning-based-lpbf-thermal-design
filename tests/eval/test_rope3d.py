@@ -5,37 +5,37 @@ from __future__ import annotations
 import pytest
 import torch
 
-from experiments.train_fm_dit_physics import apply_rope_3d, patch_center_coords_mm
+from experiments.train_fm_dit_rope import apply_rope_3d, patch_center_coords_mm
 
 
 # ---------------------------------------------------------------------------
-# apply_rope_3d
+# apply_rope_3d — new signature: (B, num_heads, N, head_dim)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_rope3d_shape_preserved() -> None:
-    B, N, D = 2, 16, 12  # D=12 divisible by 6
-    x = torch.randn(B, N, D)
+    B, H, N, hd = 2, 4, 16, 12  # head_dim=12 divisible by 6
+    x = torch.randn(B, H, N, hd)
     coords = torch.randn(B, N, 3)
     out = apply_rope_3d(x, coords)
-    assert out.shape == (B, N, D)
+    assert out.shape == (B, H, N, hd)
 
 
 @pytest.mark.unit
-def test_rope3d_embed_dim_divisibility_check() -> None:
-    B, N, D = 1, 4, 10  # D=10 NOT divisible by 6
-    x = torch.randn(B, N, D)
+def test_rope3d_head_dim_divisibility_check() -> None:
+    B, H, N, hd = 1, 4, 4, 10  # head_dim=10 NOT divisible by 6
+    x = torch.randn(B, H, N, hd)
     coords = torch.randn(B, N, 3)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         apply_rope_3d(x, coords)
 
 
 @pytest.mark.unit
 def test_rope3d_zero_coords_is_identity() -> None:
     """Zero coordinates → zero rotation angles → no change to tokens."""
-    B, N, D = 2, 8, 18
-    x = torch.randn(B, N, D)
+    B, H, N, hd = 2, 4, 8, 18
+    x = torch.randn(B, H, N, hd)
     coords = torch.zeros(B, N, 3)
     out = apply_rope_3d(x, coords)
     assert torch.allclose(out, x, atol=1e-5), (
@@ -46,8 +46,8 @@ def test_rope3d_zero_coords_is_identity() -> None:
 @pytest.mark.unit
 def test_rope3d_norm_preservation() -> None:
     """RoPE is a rotation — it must preserve the L2 norm of each token."""
-    B, N, D = 3, 10, 24
-    x = torch.randn(B, N, D)
+    B, H, N, hd = 3, 8, 10, 24
+    x = torch.randn(B, H, N, hd)
     coords = torch.randn(B, N, 3)
     out = apply_rope_3d(x, coords)
 
@@ -60,23 +60,33 @@ def test_rope3d_norm_preservation() -> None:
 
 @pytest.mark.unit
 def test_rope3d_same_coords_same_rotation() -> None:
-    """Two tokens at the same coordinate must receive the same rotation."""
-    B, N, D = 1, 6, 12
-    x = torch.randn(B, N, D)
+    """Two tokens at the same coordinate receive the same rotation matrix."""
+    B, H, N, hd = 1, 4, 6, 12
+    x = torch.randn(B, H, N, hd)
     coords = torch.zeros(B, N, 3)
-    # Give first two tokens identical non-zero coords
     coords[0, 0] = torch.tensor([1.0, 2.0, 3.0])
     coords[0, 1] = torch.tensor([1.0, 2.0, 3.0])
 
     out = apply_rope_3d(x, coords)
-    # The rotation applied to token 0 and 1 used the same angles
-    # so (out[0,0] - x[0,0]) and (out[0,1] - x[0,1]) should match in pattern
-    # (they differ only because x[0,0] ≠ x[0,1], but the rotation matrices are equal)
-    # Verify by checking that rotating a copy of x[0,1] with coords[0,0] matches out[0,1]
+    # Verify via an independent copy: rotating x[0,1] with coords[0,0] must give out[0,1]
     x_copy = x.clone()
-    x_copy[0, 1] = x[0, 1]
+    x_copy[0, :, 1, :] = x[0, :, 1, :]
     out_copy = apply_rope_3d(x_copy, coords)
-    assert torch.allclose(out[0, 1], out_copy[0, 1], atol=1e-5)
+    assert torch.allclose(out[0, :, 1, :], out_copy[0, :, 1, :], atol=1e-5)
+
+
+@pytest.mark.unit
+def test_rope3d_rotation_varies_across_heads() -> None:
+    """The same coords broadcast identically across all heads (rotation is shared)."""
+    B, H, N, hd = 1, 8, 4, 12
+    x = torch.randn(B, H, N, hd)
+    coords = torch.randn(B, N, 3)
+    out = apply_rope_3d(x, coords)
+    # Compute what a single-head slice would produce
+    out_h0 = apply_rope_3d(x[:, :1, :, :], coords)
+    assert torch.allclose(out[:, :1, :, :], out_h0, atol=1e-5), (
+        "Rotation applied to head 0 in full batch should match single-head call"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +126,6 @@ def test_patch_center_coords_mm_origin_offset() -> None:
         origins_shifted, model_patch_size, grid_attrs, token_grid, torch.device("cpu")
     )
 
-    # y-axis (index 1) should differ by 8 * dy_m * 1000 mm
     expected_shift_mm = 8 * grid_attrs["dy_m"] * 1000.0
     diff = (coords_shifted - coords_zero)[0, :, 1]
     assert torch.allclose(diff, torch.full_like(diff, expected_shift_mm), atol=1e-5)

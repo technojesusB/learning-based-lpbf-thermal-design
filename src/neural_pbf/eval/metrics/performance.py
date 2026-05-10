@@ -14,7 +14,7 @@ class LatencyTimer:
 
         with LatencyTimer() as t:
             model(x)
-        print(t.elapsed_s)
+        logging.info("elapsed: %s s", t.elapsed_s)
     """
 
     elapsed_s: float = 0.0
