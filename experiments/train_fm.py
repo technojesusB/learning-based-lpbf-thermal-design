@@ -10,7 +10,7 @@ Usage::
         --device cuda
 
 Tracking is done via MLflow (project convention).  Set MLFLOW_TRACKING_URI or
-rely on the default ./mlruns directory.  View runs with: uv run mlflow ui.
+rely on the default ./mlruns directory.  View runs with: uv run mlflow-ui.
 
 Scheduled sampling starts disabled (epsilon_sched_max=0.0 — pure teacher
 forcing).  Enable once 1-step prediction is stable:
