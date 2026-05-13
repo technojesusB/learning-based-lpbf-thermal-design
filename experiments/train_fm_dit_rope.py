@@ -15,40 +15,48 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
-import os
+import time
 from pathlib import Path
 from typing import Any
 
 import h5py
+import mlflow
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-import mlflow
 
+from experiments.train_fm_dit import (
+    _T_LIQUIDUS_NORM,
+    VelocityDiT,
+    sinusoidal_time_embedding,
+)
+from experiments.train_fm_patches import PatchFMThermalDataset
 from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+from neural_pbf.eval.metrics.geometry import evaluate_physical_metrics, iou_melt_volumes
+from neural_pbf.eval.reporting.hardware import (
+    epoch0_profiler,
+    log_gpu_telemetry,
+    log_step_timing,
+)
+from neural_pbf.eval.viz.logging import log_figure
+from neural_pbf.eval.viz.losses import loss_panel
+from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
 from neural_pbf.physics.ops import div_k_grad
-from neural_pbf.tracking.factory import build_tracker
 from neural_pbf.schemas.tracking import TrackingConfig
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes
-
-from experiments.train_fm_patches import PatchFMThermalDataset
-from experiments.train_fm_dit import (
-    DiTBlock,
-    VelocityDiT,
-    sinusoidal_time_embedding,
-    _T_LIQUIDUS_NORM,
-)
+from neural_pbf.tracking.factory import build_tracker
 
 logger = logging.getLogger(__name__)
 
 # embed_dim=288: 288 / 8 heads = 36 head_dim, divisible by 6 for per-head 3D-RoPE.
 _DEFAULT_EMBED_DIM = 288
+_RUN_NAME = "v3_rope_patches_4"
 
 
 # ---------------------------------------------------------------------------
@@ -553,55 +561,6 @@ def _slice_batch_first(
     return result
 
 
-def _log_val_image_rope(
-    model: VelocityDiTRoPE,
-    tracker: Any,
-    cond_encoder: nn.Module,
-    batch: dict[str, Any],
-    epoch: int,
-    device: torch.device,
-    grid_attrs: dict[str, float],
-    model_patch_size: int,
-) -> None:
-    """Validation visualisation for VelocityDiTRoPE."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    model.eval()
-    cond_encoder.eval()
-    single = _slice_batch_first(batch, device)
-    T_tgt = single["T_target"].squeeze(1)
-    T_pred = _euler_rollout_rope(
-        model, cond_encoder, single, 25, device, grid_attrs, model_patch_size
-    )
-    mid_y = T_tgt.shape[3] // 2
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    axes[0, 0].imshow(T_tgt[0, 0, -1].cpu().numpy(), vmin=0, vmax=1, cmap="magma")
-    axes[0, 0].set_title("GT Surface (XY)")
-    axes[0, 1].imshow(T_pred[0, 0, -1].cpu().numpy(), vmin=0, vmax=1, cmap="magma")
-    axes[0, 1].set_title(f"Pred Surface (Ep {epoch})")
-    axes[1, 0].imshow(
-        T_tgt[0, 0, :, mid_y, :].cpu().numpy(), vmin=0, vmax=1, cmap="magma",
-        aspect="equal", origin="lower",
-    )
-    axes[1, 0].set_title("GT Depth (XZ)")
-    axes[1, 1].imshow(
-        T_pred[0, 0, :, mid_y, :].cpu().numpy(), vmin=0, vmax=1, cmap="magma",
-        aspect="equal", origin="lower",
-    )
-    axes[1, 1].set_title(f"Pred Depth (Ep {epoch})")
-    for ax in axes.flatten():
-        ax.axis("off")
-    plt.tight_layout()
-    path = f"val_rope_epoch_{epoch:03d}.png"
-    plt.savefig(path, dpi=120)
-    tracker.log_artifact(path, artifact_path="plots")
-    plt.close()
-    if os.path.exists(path):
-        os.remove(path)
-
-
 # ---------------------------------------------------------------------------
 # Training helpers
 # ---------------------------------------------------------------------------
@@ -613,10 +572,10 @@ def _parse_args_physics() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--mlflow_experiment", type=str, default="fm_dit_physics")
+    parser.add_argument("--mlflow_experiment", type=str, default="lpbf_surrogate_benchmark")
     parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/dit_physics")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/v3_rope_patches_4")
     parser.add_argument("--val_every", type=int, default=1)
     parser.add_argument("--test_n_steps", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
@@ -682,7 +641,8 @@ def _build_models_physics(
 def _setup_tracker_physics(args: argparse.Namespace) -> tuple[Path, Any]:
     mlflow.set_tracking_uri(args.mlflow_uri)
     mlflow.set_experiment(args.mlflow_experiment)
-    ckpt_dir = Path(args.checkpoint_dir)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ckpt_dir = Path(args.checkpoint_dir) / ts
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     return ckpt_dir, build_tracker(TrackingConfig(
         enabled=True, backend="mlflow",
@@ -746,10 +706,12 @@ def _run_train_epoch_physics(
     model_patch_size: int,
     ds_cfg: FMDatasetConfig,
     scheduler: torch.optim.lr_scheduler.OneCycleLR,
-) -> None:
+    profiler: Any = None,
+) -> float:
     model.train()
     cond_encoder.train()
     loss_total = loss_fm_total = phys_total = 0.0
+    t0 = time.perf_counter()
     for batch in tqdm(loader, desc=f"Train {epoch}", leave=False):
         lt, lf, ph = _train_batch_physics(
             batch, model, cond_encoder, optimizer, device,
@@ -759,10 +721,16 @@ def _run_train_epoch_physics(
         loss_total += lt
         loss_fm_total += lf
         phys_total += ph
-    n = len(loader)
-    mlflow.log_metric("train_loss", loss_total / n, step=epoch)
+        if profiler is not None:
+            profiler.step()
+    n = max(len(loader), 1)
+    avg = loss_total / n
+    mlflow.log_metric("train_loss", avg, step=epoch)
     mlflow.log_metric("train_loss_fm", loss_fm_total / n, step=epoch)
     mlflow.log_metric("physics_residual", phys_total / n, step=epoch)
+    log_step_timing(epoch, (time.perf_counter() - t0) / n)
+    log_gpu_telemetry(epoch)
+    return avg
 
 
 def _run_val_epoch_physics(
@@ -794,7 +762,7 @@ def _run_val_epoch_physics(
             x_tau = interpolate(noise, T_tgt, tau)
             v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_mm)
             total += fm_loss(v_pred, noise, T_tgt).item()
-    return total / len(loader)
+    return total / max(len(loader), 1)
 
 
 def _save_best_checkpoint_physics(
@@ -818,6 +786,27 @@ def _save_best_checkpoint_physics(
     )
 
 
+def _infer_pred_rope(
+    model: VelocityDiTRoPE,
+    cond_encoder: nn.Module,
+    batch: dict[str, Any],
+    device: torch.device,
+    grid_attrs: dict[str, float],
+    model_patch_size: int,
+    n_steps: int = 25,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Single-sample inference returning (T_gt_cpu, T_pred_cpu) as (1,1,D,H,W)."""
+    model.eval()
+    cond_encoder.eval()
+    single = _slice_batch_first(batch, device)
+    with torch.no_grad():
+        T_pred = _euler_rollout_rope(
+            model, cond_encoder, single, n_steps, device, grid_attrs, model_patch_size
+        )
+    T_gt = single["T_target"].squeeze(1)[:1].cpu()
+    return T_gt, T_pred[:1].cpu()
+
+
 def _train_loop_physics(
     model: VelocityDiTRoPE,
     cond_encoder: nn.Module,
@@ -831,7 +820,7 @@ def _train_loop_physics(
     grid_attrs: dict[str, float],
     model_patch_size: int,
     ds_cfg: FMDatasetConfig,
-) -> None:
+) -> tuple[torch.Tensor | None, list[torch.Tensor], list[str], list[float], list[float]]:
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=args.lr,
@@ -840,27 +829,53 @@ def _train_loop_physics(
         pct_start=0.1,
     )
     best_val_loss = float("inf")
+    val_batch_fixed = next(iter(val_loader))
+    pred_history: list[torch.Tensor] = []
+    epoch_labels: list[str] = []
+    T_gt_fixed: torch.Tensor | None = None
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+
     for epoch in tqdm(range(args.epochs), desc="Epochs"):
-        _run_train_epoch_physics(
-            model, cond_encoder, optimizer, train_loader, device, epoch,
-            args, grid_attrs, model_patch_size, ds_cfg, scheduler,
-        )
+        if epoch == 0:
+            with epoch0_profiler(len(train_loader), _RUN_NAME) as prof:
+                avg_train = _run_train_epoch_physics(
+                    model, cond_encoder, optimizer, train_loader, device, epoch,
+                    args, grid_attrs, model_patch_size, ds_cfg, scheduler,
+                    profiler=prof,
+                )
+        else:
+            avg_train = _run_train_epoch_physics(
+                model, cond_encoder, optimizer, train_loader, device, epoch,
+                args, grid_attrs, model_patch_size, ds_cfg, scheduler,
+            )
         if epoch % args.val_every != 0:
             continue
         avg_val = _run_val_epoch_physics(
             model, cond_encoder, val_loader, device, grid_attrs, model_patch_size
         )
         mlflow.log_metric("val_loss", avg_val, step=epoch)
+        train_losses.append(avg_train)
+        val_losses.append(avg_val)
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             _save_best_checkpoint_physics(model, cond_encoder, ckpt_dir, epoch, avg_val, args)
             mlflow.log_metric("best_val_loss", best_val_loss, step=epoch)
             logger.info("New best model at epoch %d: %.6f", epoch, best_val_loss)
         if epoch % 10 == 0:
-            _log_val_image_rope(
-                model, run, cond_encoder, next(iter(val_loader)),
-                epoch, device, grid_attrs, model_patch_size,
-            )
+            try:
+                T_gt_fixed, T_pred_snap = _infer_pred_rope(
+                    model, cond_encoder, val_batch_fixed, device, grid_attrs, model_patch_size
+                )
+                pred_history.append(T_pred_snap)
+                epoch_labels.append(f"Ep {epoch}")
+                log_figure(run, val_grid_2x2(T_gt_fixed, T_pred_snap, epoch=epoch),
+                         f"val_rope_epoch_{epoch:03d}.png", dpi=120)
+            finally:
+                model.train()
+                cond_encoder.train()
+
+    return T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses
 
 
 def _run_test_phase_physics(
@@ -876,10 +891,14 @@ def _run_test_phase_physics(
     run: Any,
     grid_attrs: dict[str, float],
     model_patch_size: int,
-) -> None:
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
     logger.info("Starting test evaluation with best checkpoint …")
+    best_ckpt = ckpt_dir / "best.pt"
+    if not best_ckpt.exists():
+        logger.warning("No best checkpoint at %s; skipping test phase.", best_ckpt)
+        return []
     # weights_only=False required: checkpoint includes args dict (not pure tensors)
-    ckpt = torch.load(ckpt_dir / "best.pt", map_location=device, weights_only=False)
+    ckpt = torch.load(best_ckpt, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
     cond_encoder.load_state_dict(ckpt["cond_encoder_state"])
     model.eval()
@@ -888,6 +907,8 @@ def _run_test_phase_physics(
     test_subset_indices: list[int] = list(test_ds.indices)  # type: ignore[attr-defined]
     mse_list: list[float] = []
     iou_list: list[float] = []
+    phys_metrics: dict[str, list[float]] = {}
+    gallery_samples: list[tuple[torch.Tensor, torch.Tensor]] = []
     mapping_path = ckpt_dir / "test_sample_mapping.txt"
     with mapping_path.open("w") as f_map:
         f_map.write("local_idx,h5_path,sample_key\n")
@@ -902,13 +923,36 @@ def _run_test_phase_physics(
             )
             mse_list.append(F.mse_loss(T_pred, T_tgt).item())
             iou_list.append(iou_melt_volumes(T_pred, T_tgt, _T_LIQUIDUS_NORM))
+            for k, val in evaluate_physical_metrics(T_pred, T_tgt, _T_LIQUIDUS_NORM).items():
+                phys_metrics.setdefault(k, []).append(val)
             if local_idx < 4:
-                _log_val_image_rope(
-                    model, run, cond_encoder, batch, 1000 + local_idx,
-                    device, grid_attrs, model_patch_size,
-                )
+                log_figure(run, val_grid_2x2(T_tgt[:1].cpu(), T_pred[:1].cpu(), epoch=1000 + local_idx),
+                         f"test_sample_{local_idx:03d}.png", dpi=120)
+            if len(gallery_samples) < 5:
+                gallery_samples.append((T_tgt[:1].cpu(), T_pred[:1].cpu()))
     tracker.log_artifact(str(mapping_path))
     _log_test_metrics_physics(mse_list, iou_list)
+    if phys_metrics:
+        mlflow.log_metrics({k: sum(v) / len(v) for k, v in phys_metrics.items()})
+    if mse_list:
+        metrics_detail = {
+            "samples": [
+                {"idx": idx, "mse": mse_list[idx], "iou": iou_list[idx],
+                 **{k: phys_metrics[k][idx] for k in phys_metrics}}
+                for idx in range(len(mse_list))
+            ],
+            "summary": {
+                "n_samples": len(mse_list),
+                "mse_mean": sum(mse_list) / len(mse_list),
+                "iou_mean": sum(iou_list) / len(iou_list) if iou_list else 0.0,
+                **{k: sum(v) / len(v) for k, v in phys_metrics.items()},
+            },
+        }
+        json_path = str(ckpt_dir / "test_metrics_detailed.json")
+        with open(json_path, "w") as _jf:
+            json.dump(metrics_detail, _jf, indent=2)
+        run.log_artifact(json_path, artifact_path="eval")
+    return gallery_samples
 
 
 def _log_test_metrics_physics(
@@ -919,9 +963,9 @@ def _log_test_metrics_physics(
         return
     avg_mse = sum(mse_list) / len(mse_list)
     avg_iou = sum(iou_list) / len(iou_list)
-    mlflow.log_metric("test_mse", avg_mse)
-    mlflow.log_metric("test_iou", avg_iou)
-    logger.info("Test — MSE: %.6f  IoU: %.4f", avg_mse, avg_iou)
+    mlflow.log_metric("test_mse_rollout", avg_mse)
+    mlflow.log_metric("test_iou_rollout", avg_iou)
+    logger.info("Test — MSE (rollout): %.6f  IoU: %.4f", avg_mse, avg_iou)
 
 
 # ---------------------------------------------------------------------------
@@ -950,20 +994,33 @@ def main() -> None:
     ckpt_dir, tracker = _setup_tracker_physics(args)
 
     with tracker.start_run(
-        run_name=f"dit_physics_{datetime.datetime.now().strftime('%H%M%S')}",
+        run_name=_RUN_NAME,
         config={"model": "VelocityDiTRoPE", "embed_dim": _DEFAULT_EMBED_DIM,
                 "epochs": args.epochs, "lr": args.lr,
                 "physics_loss_weight": args.physics_loss_weight, "seed": args.seed},
         tags={"architecture": "transformer_rope", "mode": "patches_physics"},
     ) as run:
-        _train_loop_physics(
+        T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses = _train_loop_physics(
             model, cond_encoder, optimizer, train_loader, val_loader,
             device, args, ckpt_dir, run, grid_attrs, model_patch_size, ds_cfg,
         )
-        _run_test_phase_physics(
+        if train_losses and val_losses:
+            log_figure(run, loss_panel(train_losses, val_losses, title=f"{_RUN_NAME} — Loss Panel"),
+                     "loss_panel.png")
+
+        if T_gt_fixed is not None and pred_history:
+            log_figure(run, gallery_evolution(T_gt_fixed, pred_history, epoch_labels=epoch_labels,
+                                            title=f"{_RUN_NAME} — Training Evolution", dpi=150),
+                     "gallery_evolution.png")
+
+        gallery_samples = _run_test_phase_physics(
             model, cond_encoder, test_loader, test_ds, full_ds, ckpt_dir,
             device, args, tracker, run, grid_attrs, model_patch_size,
         )
+        if gallery_samples:
+            log_figure(run, gallery_test(gallery_samples[:5], title=f"{_RUN_NAME} — Test Samples", dpi=150),
+                     "gallery_test.png")
+
         torch.save(
             {"model_state": model.state_dict(),
              "cond_encoder_state": cond_encoder.state_dict(),

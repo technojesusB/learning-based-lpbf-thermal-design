@@ -27,10 +27,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import mlflow
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -95,7 +96,7 @@ def _self_rollout(
     n_steps: int,
 ) -> torch.Tensor:
     """One-shot rollout from noise → predicted T (normalised). Returns detached tensor."""
-    from neural_pbf.models.generative.fm.flow import interpolate, sample_noise
+    from neural_pbf.models.generative.fm.flow import sample_noise
 
     noise = sample_noise(T_in_norm)
     x_T = noise.clone()
@@ -254,7 +255,6 @@ def main() -> None:
     from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
     from neural_pbf.models.generative.fm.config import FMConfig
     from neural_pbf.models.generative.fm.flow import (
-        compute_physics_residuum,
         fm_loss,
         interpolate,
         sample_noise,

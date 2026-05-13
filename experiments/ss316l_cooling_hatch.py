@@ -153,7 +153,7 @@ def run_ss316l_cooling_hatch():
                 state.T = T
                 state.t = resume_step * sim_cfg.dt_base
                 # approx mask from T for now
-                state.material_mask = (T > mat_cfg.T_solidus).int()
+                state.material_mask = (mat_cfg.T_solidus < T).int()
                 start_step = resume_step + 1
             except Exception as e:
                 print(f"Failed resume: {e}")

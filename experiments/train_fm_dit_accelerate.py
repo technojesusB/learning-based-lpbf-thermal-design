@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
-import os
+import time
 from pathlib import Path
 from typing import Any
 
-import h5py
+import mlflow
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,41 +24,39 @@ from accelerate import Accelerator
 from torch import Tensor
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-import mlflow
 
-from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
-from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
-from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
-from neural_pbf.physics.ops import div_k_grad
-from neural_pbf.tracking.factory import build_tracker
-from neural_pbf.schemas.tracking import TrackingConfig
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes
-
-from experiments.train_fm_patches import PatchFMThermalDataset
 from experiments.train_fm_dit import (
-    DiTBlock,
-    VelocityDiT,
-    sinusoidal_time_embedding,
     _T_LIQUIDUS_NORM,
 )
-
 from experiments.train_fm_dit_rope import (
     PatchFMThermalDatasetWithOrigin,
-    read_grid_attrs,
-    apply_rope_3d,
-    patch_center_coords_mm,
-    DiTBlockRoPE,
     VelocityDiTRoPE,
-    denorm_cond_batch,
-    physics_heat_residual,
     _collate_with_strings,
-    _slice_batch_first,
+    denorm_cond_batch,
+    patch_center_coords_mm,
+    physics_heat_residual,
+    read_grid_attrs,
 )
+from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+from neural_pbf.eval.metrics.geometry import evaluate_physical_metrics, iou_melt_volumes
+from neural_pbf.eval.reporting.hardware import (
+    epoch0_profiler,
+    log_gpu_telemetry,
+    log_step_timing,
+)
+from neural_pbf.eval.viz.logging import log_figure
+from neural_pbf.eval.viz.losses import loss_panel
+from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
+from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
+from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
+from neural_pbf.schemas.tracking import TrackingConfig
+from neural_pbf.tracking.factory import build_tracker
 from neural_pbf.training.relobralo import ReLoBRaLoWeighter
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EMBED_DIM = 288
+_RUN_NAME = "v4_pinn_patches_4"
 
 
 # ---------------------------------------------------------------------------
@@ -108,69 +107,6 @@ def _euler_rollout_rope_accel(
 # ---------------------------------------------------------------------------
 
 
-def _log_val_image_rope_accel(
-    model: VelocityDiTRoPE,
-    tracker: Any,
-    cond_encoder: nn.Module,
-    batch: dict[str, Any],
-    epoch: int,
-    device: torch.device,
-    grid_attrs: dict[str, float],
-    model_patch_size: int,
-    accelerator: Accelerator,
-) -> None:
-    """Validation visualisation — only runs on the main process."""
-    if not accelerator.is_main_process:
-        return
-
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    model.eval()
-    cond_encoder.eval()
-
-    # Move a single-sample sub-batch to device for eval
-    single: dict[str, Any] = {}
-    for k, v in batch.items():
-        if isinstance(v, Tensor):
-            single[k] = v[:1].to(device)
-        elif isinstance(v, list):
-            single[k] = v[:1]
-        else:
-            single[k] = v
-
-    T_tgt = single["T_target"].squeeze(1)
-    T_pred = _euler_rollout_rope_accel(
-        model, cond_encoder, single, 25, device, grid_attrs, model_patch_size
-    )
-    mid_y = T_tgt.shape[3] // 2
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    axes[0, 0].imshow(T_tgt[0, 0, -1].cpu().numpy(), vmin=0, vmax=1, cmap="magma")
-    axes[0, 0].set_title("GT Surface (XY)")
-    axes[0, 1].imshow(T_pred[0, 0, -1].cpu().numpy(), vmin=0, vmax=1, cmap="magma")
-    axes[0, 1].set_title(f"Pred Surface (Ep {epoch})")
-    axes[1, 0].imshow(
-        T_tgt[0, 0, :, mid_y, :].cpu().numpy(), vmin=0, vmax=1, cmap="magma",
-        aspect="equal", origin="lower",
-    )
-    axes[1, 0].set_title("GT Depth (XZ)")
-    axes[1, 1].imshow(
-        T_pred[0, 0, :, mid_y, :].cpu().numpy(), vmin=0, vmax=1, cmap="magma",
-        aspect="equal", origin="lower",
-    )
-    axes[1, 1].set_title(f"Pred Depth (Ep {epoch})")
-    for ax in axes.flatten():
-        ax.axis("off")
-    plt.tight_layout()
-    path = f"val_rope_epoch_{epoch:03d}.png"
-    plt.savefig(path, dpi=120)
-    tracker.log_artifact(path, artifact_path="plots")
-    plt.close()
-    if os.path.exists(path):
-        os.remove(path)
-
-
 # ---------------------------------------------------------------------------
 # Training helpers
 # ---------------------------------------------------------------------------
@@ -182,9 +118,9 @@ def _parse_args_accel() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--mlflow_experiment", type=str, default="fm_dit_accelerate")
+    parser.add_argument("--mlflow_experiment", type=str, default="lpbf_surrogate_benchmark")
     parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/dit_accelerate")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/v4_pinn_patches_4")
     parser.add_argument("--val_every", type=int, default=1)
     parser.add_argument("--test_n_steps", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
@@ -259,7 +195,8 @@ def _build_models_accel(
 def _setup_tracker_accel(args: argparse.Namespace) -> tuple[Path, Any]:
     mlflow.set_tracking_uri(args.mlflow_uri)
     mlflow.set_experiment(args.mlflow_experiment)
-    ckpt_dir = Path(args.checkpoint_dir)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ckpt_dir = Path(args.checkpoint_dir) / ts
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     return ckpt_dir, build_tracker(TrackingConfig(
         enabled=True, backend="mlflow",
@@ -346,11 +283,13 @@ def _run_train_epoch_accel(
     scheduler: torch.optim.lr_scheduler.OneCycleLR,
     accelerator: Accelerator,
     weighter: ReLoBRaLoWeighter,
-) -> None:
+    profiler: Any = None,
+) -> tuple[float, float, float]:
     model.train()
     cond_encoder.train()
     loss_total = loss_fm_total = phys_total = 0.0
     n = 0
+    t0 = time.perf_counter()
     for batch in tqdm(loader, desc=f"Train {epoch}", leave=False,
                       disable=not accelerator.is_main_process):
         lt, lf, ph, lam = _train_batch_accel(
@@ -361,12 +300,21 @@ def _run_train_epoch_accel(
         loss_fm_total += lf
         phys_total += ph
         n += 1
+        if profiler is not None:
+            profiler.step()
 
+    avg = loss_total / max(n, 1)
+    avg_fm = loss_fm_total / max(n, 1)
+    avg_phys = phys_total / max(n, 1)
     if accelerator.is_main_process and n > 0:
-        mlflow.log_metric("train_loss", loss_total / n, step=epoch)
-        mlflow.log_metric("train_loss_fm", loss_fm_total / n, step=epoch)
-        mlflow.log_metric("physics_residual", phys_total / n, step=epoch)
+        epoch_secs = time.perf_counter() - t0
+        mlflow.log_metric("train_loss", avg, step=epoch)
+        mlflow.log_metric("train_loss_fm", avg_fm, step=epoch)
+        mlflow.log_metric("physics_residual", avg_phys, step=epoch)
         mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
+        log_step_timing(epoch, epoch_secs / n)
+        log_gpu_telemetry(epoch)
+    return avg, avg_fm, avg_phys
 
 
 def _run_val_epoch_accel(
@@ -440,16 +388,16 @@ def _run_test_phase_accel(
     grid_attrs: dict[str, float],
     model_patch_size: int,
     accelerator: Accelerator,
-) -> None:
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
     if not accelerator.is_main_process:
-        return
+        return []
 
     logger.info("Starting test evaluation with best checkpoint …")
-    ckpt = torch.load(
-        ckpt_dir / "best.pt",
-        map_location=accelerator.device,
-        weights_only=False,
-    )
+    best_ckpt = ckpt_dir / "best.pt"
+    if not best_ckpt.exists():
+        logger.warning("No best checkpoint at %s; skipping test phase.", best_ckpt)
+        return []
+    ckpt = torch.load(best_ckpt, map_location=accelerator.device, weights_only=False)
     accelerator.unwrap_model(model).load_state_dict(ckpt["model_state"])
     accelerator.unwrap_model(cond_encoder).load_state_dict(ckpt["cond_encoder_state"])
     model.eval()
@@ -459,6 +407,8 @@ def _run_test_phase_accel(
     test_subset_indices: list[int] = list(test_ds.indices)  # type: ignore[attr-defined]
     mse_list: list[float] = []
     iou_list: list[float] = []
+    phys_metrics: dict[str, list[float]] = {}
+    gallery_samples: list[tuple[torch.Tensor, torch.Tensor]] = []
     mapping_path = ckpt_dir / "test_sample_mapping.txt"
 
     with mapping_path.open("w") as f_map:
@@ -482,23 +432,45 @@ def _run_test_phase_accel(
             mse_list.append(F.mse_loss(T_pred, T_tgt).detach().cpu().item())
             iou_val = iou_melt_volumes(T_pred, T_tgt, _T_LIQUIDUS_NORM)
             iou_list.append(float(iou_val))
+            for k, val in evaluate_physical_metrics(T_pred, T_tgt, _T_LIQUIDUS_NORM).items():
+                phys_metrics.setdefault(k, []).append(val)
 
             if local_idx < 4:
-                _log_val_image_rope_accel(
-                    model, run, cond_encoder, moved, 1000 + local_idx,
-                    device, grid_attrs, model_patch_size, accelerator,
-                )
+                log_figure(run, val_grid_2x2(T_tgt[:1].cpu(), T_pred[:1].cpu(), epoch=1000 + local_idx),
+                         f"test_sample_{local_idx:03d}.png", dpi=120)
+            if len(gallery_samples) < 5:
+                gallery_samples.append((T_tgt[:1].cpu(), T_pred[:1].cpu()))
 
     tracker.log_artifact(str(mapping_path))
 
     if mse_list:
         avg_mse = sum(mse_list) / len(mse_list)
         avg_iou = sum(iou_list) / len(iou_list)
-        mlflow.log_metric("test_mse", avg_mse)
-        mlflow.log_metric("test_iou", avg_iou)
-        logger.info("Test — MSE: %.6f  IoU: %.4f", avg_mse, avg_iou)
+        mlflow.log_metric("test_mse_rollout", avg_mse)
+        mlflow.log_metric("test_iou_rollout", avg_iou)
+        if phys_metrics:
+            mlflow.log_metrics({k: sum(v) / len(v) for k, v in phys_metrics.items()})
+        logger.info("Test — MSE (rollout): %.6f  IoU: %.4f", avg_mse, avg_iou)
+        metrics_detail = {
+            "samples": [
+                {"idx": idx, "mse": mse_list[idx], "iou": iou_list[idx],
+                 **{k: phys_metrics[k][idx] for k in phys_metrics}}
+                for idx in range(len(mse_list))
+            ],
+            "summary": {
+                "n_samples": len(mse_list),
+                "mse_mean": avg_mse,
+                "iou_mean": avg_iou,
+                **{k: sum(v) / len(v) for k, v in phys_metrics.items()},
+            },
+        }
+        json_path = str(ckpt_dir / "test_metrics_detailed.json")
+        with open(json_path, "w") as _jf:
+            json.dump(metrics_detail, _jf, indent=2)
+        run.log_artifact(json_path, artifact_path="eval")
     else:
         logger.warning("No test samples evaluated — skipping test metrics.")
+    return gallery_samples
 
 
 def _train_loop_accel(
@@ -515,21 +487,38 @@ def _train_loop_accel(
     ds_cfg: FMDatasetConfig,
     accelerator: Accelerator,
     scheduler: torch.optim.lr_scheduler.OneCycleLR,
-) -> None:
+) -> tuple[torch.Tensor | None, list[torch.Tensor], list[str], list[float], list[float], list[float], list[float], list[float]]:
     weighter = ReLoBRaLoWeighter(
         alpha=args.relobralo_alpha,
         beta=args.relobralo_beta,
         eps=args.relobralo_epsilon,
     )
     best_val_loss = float("inf")
+    val_batch_fixed = next(iter(val_loader))
+    pred_history: list[torch.Tensor] = []
+    epoch_labels: list[str] = []
+    T_gt_fixed: torch.Tensor | None = None
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+    fm_losses: list[float] = []
+    pde_losses: list[float] = []
+    lambda_hist: list[float] = []
 
     for epoch in tqdm(range(args.epochs), desc="Epochs",
                       disable=not accelerator.is_main_process):
-        _run_train_epoch_accel(
-            model, cond_encoder, optimizer, train_loader, epoch,
-            args, grid_attrs, model_patch_size, ds_cfg, scheduler,
-            accelerator, weighter,
-        )
+        if epoch == 0 and accelerator.is_main_process:
+            with epoch0_profiler(len(train_loader), _RUN_NAME) as prof:
+                avg_train, avg_fm, avg_phys = _run_train_epoch_accel(
+                    model, cond_encoder, optimizer, train_loader, epoch,
+                    args, grid_attrs, model_patch_size, ds_cfg, scheduler,
+                    accelerator, weighter, profiler=prof,
+                )
+        else:
+            avg_train, avg_fm, avg_phys = _run_train_epoch_accel(
+                model, cond_encoder, optimizer, train_loader, epoch,
+                args, grid_attrs, model_patch_size, ds_cfg, scheduler,
+                accelerator, weighter,
+            )
 
         if epoch % args.val_every != 0:
             continue
@@ -540,6 +529,11 @@ def _train_loop_accel(
 
         if accelerator.is_main_process:
             mlflow.log_metric("val_loss", avg_val, step=epoch)
+            train_losses.append(avg_train)
+            val_losses.append(avg_val)
+            fm_losses.append(avg_fm)
+            pde_losses.append(avg_phys)
+            lambda_hist.append(weighter.lambda_phys)
             if avg_val < best_val_loss:
                 best_val_loss = avg_val
                 _save_best_checkpoint_accel(
@@ -549,12 +543,31 @@ def _train_loop_accel(
                 logger.info("New best model at epoch %d: %.6f", epoch, best_val_loss)
 
             if epoch % 10 == 0:
-                _log_val_image_rope_accel(
-                    model, run, cond_encoder, next(iter(val_loader)),
-                    epoch, accelerator.device, grid_attrs, model_patch_size, accelerator,
-                )
+                model.eval()
+                cond_encoder.eval()
+                try:
+                    device = accelerator.device
+                    single: dict[str, Any] = {
+                        k: v[:1].to(device) if isinstance(v, Tensor) else v
+                        for k, v in val_batch_fixed.items()
+                    }
+                    with torch.no_grad():
+                        T_pred_snap = _euler_rollout_rope_accel(
+                            model, cond_encoder, single, 25, device, grid_attrs, model_patch_size
+                        )
+                    if T_gt_fixed is None:
+                        T_gt_fixed = single["T_target"].squeeze(1)[:1].cpu()
+                    pred_history.append(T_pred_snap[:1].cpu())
+                    epoch_labels.append(f"Ep {epoch}")
+                    log_figure(run, val_grid_2x2(T_gt_fixed, T_pred_snap[:1].cpu(), epoch=epoch),
+                             f"val_rope_epoch_{epoch:03d}.png", dpi=120)
+                finally:
+                    model.train()
+                    cond_encoder.train()
 
         accelerator.wait_for_everyone()
+
+    return T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses, fm_losses, pde_losses, lambda_hist
 
 
 # ---------------------------------------------------------------------------
@@ -608,13 +621,13 @@ def main() -> None:
             model, cond_encoder, optimizer, train_loader, val_loader,
             args, ckpt_dir, None, grid_attrs, model_patch_size, ds_cfg,
             accelerator, scheduler,
-        )
+        )  # return values intentionally ignored on non-main process
         return
 
     ckpt_dir, tracker = _setup_tracker_accel(args)
 
     with tracker.start_run(
-        run_name=f"dit_accel_{datetime.datetime.now().strftime('%H%M%S')}",
+        run_name=_RUN_NAME,
         config={
             **vars(args),
             "model": "VelocityDiTRoPE",
@@ -622,15 +635,36 @@ def main() -> None:
         },
         tags={"architecture": "transformer_rope", "mode": "accelerate_relobralo"},
     ) as run:
-        _train_loop_accel(
-            model, cond_encoder, optimizer, train_loader, val_loader,
-            args, ckpt_dir, run, grid_attrs, model_patch_size, ds_cfg,
-            accelerator, scheduler,
+        T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses, fm_losses, pde_losses, lambda_hist = (
+            _train_loop_accel(
+                model, cond_encoder, optimizer, train_loader, val_loader,
+                args, ckpt_dir, run, grid_attrs, model_patch_size, ds_cfg,
+                accelerator, scheduler,
+            )
         )
-        _run_test_phase_accel(
+        if train_losses and val_losses:
+            fig = loss_panel(
+                train_losses, val_losses,
+                fm_losses=fm_losses if fm_losses else None,
+                pde_losses=pde_losses if pde_losses else None,
+                lambda_hist=lambda_hist if lambda_hist else None,
+                title=f"{_RUN_NAME} — Loss Panel",
+            )
+            log_figure(run, fig, "loss_panel.png")
+
+        if T_gt_fixed is not None and pred_history:
+            log_figure(run, gallery_evolution(T_gt_fixed, pred_history, epoch_labels=epoch_labels,
+                                            title=f"{_RUN_NAME} — Training Evolution", dpi=150),
+                     "gallery_evolution.png")
+
+        gallery_samples = _run_test_phase_accel(
             model, cond_encoder, test_loader, test_ds, full_ds, ckpt_dir,
             args, tracker, run, grid_attrs, model_patch_size, accelerator,
         )
+        if gallery_samples:
+            log_figure(run, gallery_test(gallery_samples[:5], title=f"{_RUN_NAME} — Test Samples", dpi=150),
+                     "gallery_test.png")
+
         accelerator.wait_for_everyone()
         torch.save(
             {

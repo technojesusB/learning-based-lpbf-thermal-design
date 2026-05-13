@@ -1,9 +1,11 @@
-import mlflow
+import argparse
+import os
+
 import matplotlib.pyplot as plt
+import mlflow
 import numpy as np
 from PIL import Image
-import os
-import argparse
+
 
 def moving_average(a, n=5):
     ret = np.cumsum(a, dtype=float)

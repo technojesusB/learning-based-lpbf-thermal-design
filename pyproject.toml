@@ -22,6 +22,7 @@ dependencies = [
     "triton>=3.4.0",
     "h5py>=3.16.0",
     "accelerate>=1.13.0",
+    "seaborn>=0.13.0",
 ]
 
 [project.optional-dependencies]

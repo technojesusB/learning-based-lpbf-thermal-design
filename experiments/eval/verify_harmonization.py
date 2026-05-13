@@ -8,16 +8,16 @@ Usage:
 """
 import logging
 import sys
-import os
-import torch
-import matplotlib.pyplot as plt
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
-from neural_pbf.eval.viz.losses import loss_panel
 from neural_pbf.data.fm_dataset import FMDatasetConfig
+from neural_pbf.eval.viz.losses import loss_panel
+from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,9 @@ def _synthetic_samples(n: int = 5) -> list[tuple[torch.Tensor, torch.Tensor]]:
 
 
 def _load_real_samples(ds_cfg: FMDatasetConfig, n: int = 5) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    from neural_pbf.data.fm_dataset import FMThermalDataset, PatchFMThermalDataset
     from torch.utils.data import DataLoader
+
+    from neural_pbf.data.fm_dataset import FMThermalDataset, PatchFMThermalDataset
     ds = PatchFMThermalDataset(FMThermalDataset(ds_cfg), patch_size=64)
     if len(ds) == 0:
         raise ValueError("Dataset is empty")

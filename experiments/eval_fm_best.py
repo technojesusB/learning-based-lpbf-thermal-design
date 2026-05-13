@@ -1,23 +1,20 @@
 import argparse
 import logging
-import torch
 import os
-import h5py
-import numpy as np
-import matplotlib.pyplot as plt
+
+import mlflow
+import torch
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-import mlflow
-
-from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
-from neural_pbf.models.generative.fm.velocity_net import VelocityNet
-from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
-from neural_pbf.models.generative.fm.config import FMConfig
-from neural_pbf.models.generative.fm.flow import fm_loss, sample_noise, interpolate
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes, melt_pool_extent
 
 # Reuse the same dataset wrapper
 from experiments.train_fm_patches import PatchFMThermalDataset, _log_validation_image
+from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+from neural_pbf.eval.metrics.geometry import iou_melt_volumes, melt_pool_extent
+from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
+from neural_pbf.models.generative.fm.config import FMConfig
+from neural_pbf.models.generative.fm.flow import sample_noise
+from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 
 logger = logging.getLogger(__name__)
 

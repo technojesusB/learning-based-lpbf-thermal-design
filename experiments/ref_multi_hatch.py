@@ -158,7 +158,7 @@ def run_ss316l_hi_fid():
                 # Restore state vars
                 state.T = T
                 # Restore Mask (approximate from T)
-                state.material_mask = (T > mat_cfg.T_solidus).int()
+                state.material_mask = (mat_cfg.T_solidus < T).int()
 
                 start_step = resume_step + 1
                 state.t = start_step * sim_cfg.dt_base

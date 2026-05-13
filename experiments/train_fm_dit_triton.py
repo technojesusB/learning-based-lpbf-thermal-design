@@ -20,40 +20,34 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from accelerate import Accelerator
-from torch import Tensor
 from torch.profiler import ProfilerActivity
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-import mlflow
 
+from experiments.train_fm_dit_accelerate import (
+    _log_val_image_rope_accel,
+    _run_test_phase_accel,
+    _run_val_epoch_accel,
+    _save_best_checkpoint_accel,
+)
+from experiments.train_fm_dit_rope import (
+    PatchFMThermalDatasetWithOrigin,
+    VelocityDiTRoPE,
+    _collate_with_strings,
+    denorm_cond_batch,
+    patch_center_coords_mm,
+    read_grid_attrs,
+)
 from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
 from neural_pbf.physics.triton_pde_loss import PDEResidualLoss, _pde_residual_pytorch
-from neural_pbf.tracking.factory import build_tracker
 from neural_pbf.schemas.tracking import TrackingConfig
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes
-
-from experiments.train_fm_dit import _T_LIQUIDUS_NORM
-from experiments.train_fm_dit_rope import (
-    PatchFMThermalDatasetWithOrigin,
-    read_grid_attrs,
-    patch_center_coords_mm,
-    VelocityDiTRoPE,
-    denorm_cond_batch,
-    _collate_with_strings,
-)
-from experiments.train_fm_dit_accelerate import (
-    _euler_rollout_rope_accel,
-    _log_val_image_rope_accel,
-    _run_val_epoch_accel,
-    _save_best_checkpoint_accel,
-    _run_test_phase_accel,
-)
+from neural_pbf.tracking.factory import build_tracker
 from neural_pbf.training.relobralo import ReLoBRaLoWeighter
 
 logger = logging.getLogger(__name__)

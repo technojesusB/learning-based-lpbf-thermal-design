@@ -1,15 +1,14 @@
-import torch
-import time
-import json
-import matplotlib.pyplot as plt
 import importlib.util
-import sys
 import inspect
+import json
+import time
 from pathlib import Path
-from tqdm import tqdm
+
+import matplotlib.pyplot as plt
 import numpy as np
-import h5py
-from torch.utils.data import Dataset
+import torch
+from tqdm import tqdm
+
 
 # --- Helpers for Dynamic Loading ---
 def load_class_from_file(file_path, class_name):
@@ -18,7 +17,7 @@ def load_class_from_file(file_path, class_name):
     spec.loader.exec_module(module)
     return getattr(module, class_name)
 
-from neural_pbf.data.fm_dataset import FMThermalDataset, FMDatasetConfig
+from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.flow import sample_noise
 
@@ -141,6 +140,8 @@ def evaluate_sample(model, cond_encoder, batch, patch_size=4):
     return x.cpu(), mse, (end_time - start_time)
 
 import torch.nn.functional as F
+
+
 def F_avg_pool3d(x, **kwargs): return F.avg_pool3d(x, **kwargs)
 
 def main():

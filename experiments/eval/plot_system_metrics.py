@@ -1,6 +1,7 @@
-import json
 import glob
+import json
 from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -9,7 +10,7 @@ MLRUNS_DIR = Path("mlruns/21")
 STAGING_DIR = Path("scratch/final_comparison_report")
 
 def parse_trace_durations(json_path):
-    with open(json_path, "r") as f:
+    with open(json_path) as f:
         data = json.load(f)
     
     events = data.get("traceEvents", [])

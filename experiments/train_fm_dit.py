@@ -9,34 +9,43 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 import math
-import os
+import time
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-import mlflow
 
+from experiments.train_fm_patches import PatchFMThermalDataset
 from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+from neural_pbf.eval.metrics.geometry import evaluate_physical_metrics, iou_melt_volumes
+from neural_pbf.eval.reporting.hardware import (
+    epoch0_profiler,
+    log_gpu_telemetry,
+    log_step_timing,
+)
+from neural_pbf.eval.viz.logging import log_figure
+from neural_pbf.eval.viz.losses import loss_panel
+from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
-from neural_pbf.tracking.factory import build_tracker
 from neural_pbf.schemas.tracking import TrackingConfig
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes
-
-from experiments.train_fm_patches import PatchFMThermalDataset, _log_validation_image
+from neural_pbf.tracking.factory import build_tracker
 
 logger = logging.getLogger(__name__)
 
 # T_liquidus in normalised space: T_norm = (T_phys - 300) / 2000.
 # TODO: calibrate to physical liquidus of SS316L (~1723 K → ~0.71).
 _T_LIQUIDUS_NORM: float = 0.6
+_RUN_NAME = "v2_dit_patches_8"
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +276,37 @@ def _euler_rollout(
 
 
 # ---------------------------------------------------------------------------
+# Inference helper
+# ---------------------------------------------------------------------------
+
+
+def _infer_pred_dit(
+    model: VelocityDiT,
+    cond_encoder: nn.Module,
+    batch: dict,
+    device: torch.device,
+    n_steps: int = 25,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Euler rollout for one DiT batch; returns (T_tgt, T_pred) on CPU.
+
+    Caller is responsible for restoring model.train() after this call.
+    """
+    model.eval()
+    cond_encoder.eval()
+    with torch.no_grad():
+        T_tgt = batch["T_target"][:1].to(device).squeeze(1)
+        mask = batch["mask"][:1].to(device).squeeze(1)
+        Q = batch["Q"][:1].to(device).squeeze(1)
+        cond_emb = cond_encoder(batch["conditioning"][:1].to(device))
+        x = sample_noise(T_tgt)
+        dt = 1.0 / n_steps
+        for i in range(n_steps):
+            tau = torch.full((1,), i * dt, device=device)
+            x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb) * dt
+    return T_tgt.cpu(), x.cpu()
+
+
+# ---------------------------------------------------------------------------
 # Training helpers
 # ---------------------------------------------------------------------------
 
@@ -286,10 +326,12 @@ def _run_train_epoch(
     loader: DataLoader,
     device: torch.device,
     epoch: int,
+    profiler: Any = None,
 ) -> float:
     model.train()
     cond_encoder.train()
     total = 0.0
+    t0 = time.perf_counter()
     for batch in tqdm(loader, desc=f"Train {epoch}", leave=False):
         T_tgt = batch["T_target"].to(device).squeeze(1)
         mask = batch["mask"].to(device).squeeze(1)
@@ -299,14 +341,18 @@ def _run_train_epoch(
         tau = torch.rand(T_tgt.shape[0], device=device)
         x_tau = interpolate(noise, T_tgt, tau)
         v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
-        
         loss_fm = fm_loss(v_pred, noise, T_tgt)
         loss = loss_fm + 0.001 * _tv_loss(v_pred)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total += loss.item()
-    return total / len(loader)
+        if profiler is not None:
+            profiler.step()
+    n = max(len(loader), 1)
+    log_step_timing(epoch, (time.perf_counter() - t0) / n)
+    log_gpu_telemetry(epoch)
+    return total / n
 
 
 def _run_val_epoch(
@@ -329,7 +375,7 @@ def _run_val_epoch(
             x_tau = interpolate(noise, T_tgt, tau)
             v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
             total += fm_loss(v_pred, noise, T_tgt).item()
-    return total / len(loader)
+    return total / max(len(loader), 1)
 
 
 def _save_best_checkpoint(
@@ -361,7 +407,11 @@ def _run_test_phase(
     n_steps: int,
     ckpt_path: Path,
     seed: int,
-) -> tuple[list[float], list[float]]:
+    ckpt_dir: Path | None = None,
+) -> tuple[list[float], list[float], list[tuple[torch.Tensor, torch.Tensor]]]:
+    if not ckpt_path.exists():
+        logger.warning("No best checkpoint at %s; skipping test phase.", ckpt_path)
+        return [], [], []
     # weights_only=False required: checkpoint contains args dict (not pure tensors)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state"])
@@ -371,15 +421,42 @@ def _run_test_phase(
     torch.manual_seed(seed)
     mse_list: list[float] = []
     iou_list: list[float] = []
+    phys_metrics: dict[str, list[float]] = {}
+    gallery_samples: list[tuple[torch.Tensor, torch.Tensor]] = []
     with torch.no_grad():
         for i, batch in enumerate(tqdm(loader, desc="Test")):
             T_tgt = batch["T_target"].to(device).squeeze(1)
             T_pred = _euler_rollout(model, cond_encoder, batch, n_steps, device)
             mse_list.append(F.mse_loss(T_pred, T_tgt).item())
             iou_list.append(iou_melt_volumes(T_pred, T_tgt, _T_LIQUIDUS_NORM))
+            for k, val in evaluate_physical_metrics(T_pred, T_tgt, _T_LIQUIDUS_NORM).items():
+                phys_metrics.setdefault(k, []).append(val)
             if i < 4:
-                _log_validation_image(model, run, cond_encoder, batch, 1000 + i, device)
-    return mse_list, iou_list
+                log_figure(run, val_grid_2x2(T_tgt[:1].cpu(), T_pred[:1].cpu(), epoch=1000 + i),
+                         f"test_sample_{i:03d}.png", dpi=120)
+            if len(gallery_samples) < 5:
+                gallery_samples.append((T_tgt[:1].cpu(), T_pred[:1].cpu()))
+    if phys_metrics:
+        mlflow.log_metrics({k: sum(v) / len(v) for k, v in phys_metrics.items()})
+    if mse_list and ckpt_dir is not None:
+        metrics_detail = {
+            "samples": [
+                {"idx": idx, "mse": mse_list[idx],
+                 **{k: phys_metrics[k][idx] for k in phys_metrics}}
+                for idx in range(len(mse_list))
+            ],
+            "summary": {
+                "n_samples": len(mse_list),
+                "mse_mean": sum(mse_list) / len(mse_list),
+                "iou_mean": sum(iou_list) / len(iou_list) if iou_list else 0.0,
+                **{k: sum(v) / len(v) for k, v in phys_metrics.items()},
+            },
+        }
+        json_path = str(ckpt_dir / "test_metrics_detailed.json")
+        with open(json_path, "w") as _jf:
+            json.dump(metrics_detail, _jf, indent=2)
+        run.log_artifact(json_path, artifact_path="eval")
+    return mse_list, iou_list, gallery_samples
 
 
 def _build_data(
@@ -420,14 +497,18 @@ def _build_models_and_optimizer(
     return model, cond_encoder, optimizer
 
 
-def _setup_tracker(args: argparse.Namespace) -> Any:
+def _setup_tracker(args: argparse.Namespace) -> tuple[Path, Any]:
     mlflow.set_tracking_uri(args.mlflow_uri)
     mlflow.set_experiment(args.mlflow_experiment)
-    return build_tracker(TrackingConfig(
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ckpt_dir = Path(args.checkpoint_dir) / ts
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    tracker = build_tracker(TrackingConfig(
         enabled=True, backend="mlflow",
         experiment_name=args.mlflow_experiment,
         mlflow_tracking_uri=args.mlflow_uri,
     ))
+    return ckpt_dir, tracker
 
 
 def _train_loop(
@@ -440,26 +521,50 @@ def _train_loop(
     args: argparse.Namespace,
     ckpt_dir: Path,
     run: Any,
-) -> None:
+) -> tuple[torch.Tensor | None, list[torch.Tensor], list[str], list[float], list[float]]:
     best_val_loss = float("inf")
+    val_batch_fixed = next(iter(val_loader))
+    pred_history: list[torch.Tensor] = []
+    epoch_labels: list[str] = []
+    T_gt_fixed: torch.Tensor | None = None
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+
     for epoch in tqdm(range(args.epochs), desc="Epochs"):
-        avg_train = _run_train_epoch(
-            model, cond_encoder, optimizer, train_loader, device, epoch
-        )
+        if epoch == 0:
+            with epoch0_profiler(len(train_loader), _RUN_NAME) as prof:
+                avg_train = _run_train_epoch(
+                    model, cond_encoder, optimizer, train_loader, device, epoch,
+                    profiler=prof,
+                )
+        else:
+            avg_train = _run_train_epoch(
+                model, cond_encoder, optimizer, train_loader, device, epoch
+            )
         mlflow.log_metric("train_loss", avg_train, step=epoch)
         if epoch % args.val_every != 0:
             continue
         avg_val = _run_val_epoch(model, cond_encoder, val_loader, device)
         mlflow.log_metric("val_loss", avg_val, step=epoch)
+        train_losses.append(avg_train)
+        val_losses.append(avg_val)
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             _save_best_checkpoint(model, cond_encoder, ckpt_dir, epoch, avg_val, args)
             mlflow.log_metric("best_val_loss", best_val_loss, step=epoch)
             logger.info("New best model at epoch %d: %.6f", epoch, best_val_loss)
         if epoch % 10 == 0:
-            _log_validation_image(
-                model, run, cond_encoder, next(iter(val_loader)), epoch, device
-            )
+            try:
+                T_gt_fixed, T_pred_snap = _infer_pred_dit(model, cond_encoder, val_batch_fixed, device)
+                pred_history.append(T_pred_snap)
+                epoch_labels.append(f"Ep {epoch}")
+                log_figure(run, val_grid_2x2(T_gt_fixed, T_pred_snap, epoch=epoch),
+                         f"val_epoch_{epoch:03d}.png", dpi=120)
+            finally:
+                model.train()
+                cond_encoder.train()
+
+    return T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses
 
 
 def _log_test_metrics(mse_list: list[float], iou_list: list[float]) -> None:
@@ -468,9 +573,9 @@ def _log_test_metrics(mse_list: list[float], iou_list: list[float]) -> None:
         return
     avg_mse = sum(mse_list) / len(mse_list)
     avg_iou = sum(iou_list) / len(iou_list)
-    mlflow.log_metric("test_mse", avg_mse)
-    mlflow.log_metric("test_iou", avg_iou)
-    logger.info("Test — MSE: %.6f  IoU: %.4f", avg_mse, avg_iou)
+    mlflow.log_metric("test_mse_rollout", avg_mse)
+    mlflow.log_metric("test_iou_rollout", avg_iou)
+    logger.info("Test — MSE (rollout): %.6f  IoU: %.4f", avg_mse, avg_iou)
 
 
 # ---------------------------------------------------------------------------
@@ -484,10 +589,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--mlflow_experiment", type=str, default="fm_dit_baseline")
+    parser.add_argument("--mlflow_experiment", type=str, default="lpbf_surrogate_benchmark")
     parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/dit")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/v2_dit_patches_8")
     parser.add_argument("--val_every", type=int, default=1)
     parser.add_argument("--test_n_steps", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
@@ -499,15 +604,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    ckpt_dir = Path(args.checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     ds_cfg, train_loader, val_loader, test_loader, n_train, n_val, n_test = _build_data(args)
     model, cond_encoder, optimizer = _build_models_and_optimizer(args, ds_cfg, device)
-    tracker = _setup_tracker(args)
+    ckpt_dir, tracker = _setup_tracker(args)
 
     with tracker.start_run(
-        run_name=f"dit_{datetime.datetime.now().strftime('%H%M%S')}",
+        run_name=_RUN_NAME,
         config={
             "model": "VelocityDiT", 
             "epochs": args.epochs, 
@@ -523,15 +626,29 @@ def main() -> None:
         },
         tags={"architecture": "transformer", "mode": "patches", "version": "v2_hotfix"},
     ) as run:
-        _train_loop(
+        T_gt_fixed, pred_history, epoch_labels, train_losses, val_losses = _train_loop(
             model, cond_encoder, optimizer, train_loader, val_loader,
             device, args, ckpt_dir, run,
         )
-        mse_list, iou_list = _run_test_phase(
+        if train_losses and val_losses:
+            log_figure(run, loss_panel(train_losses, val_losses, title=f"{_RUN_NAME} — Loss Panel"),
+                     "loss_panel.png")
+
+        if T_gt_fixed is not None and pred_history:
+            log_figure(run, gallery_evolution(T_gt_fixed, pred_history, epoch_labels=epoch_labels,
+                                            title=f"{_RUN_NAME} — Training Evolution", dpi=150),
+                     "gallery_evolution.png")
+
+        mse_list, iou_list, gallery_samples = _run_test_phase(
             model, cond_encoder, test_loader, run, device,
             args.test_n_steps, ckpt_dir / "best.pt", args.seed,
+            ckpt_dir=ckpt_dir,
         )
         _log_test_metrics(mse_list, iou_list)
+        if gallery_samples:
+            log_figure(run, gallery_test(gallery_samples[:5], title=f"{_RUN_NAME} — Test Samples", dpi=150),
+                     "gallery_test.png")
+
         torch.save(
             {"model_state": model.state_dict(),
              "cond_encoder_state": cond_encoder.state_dict(),
