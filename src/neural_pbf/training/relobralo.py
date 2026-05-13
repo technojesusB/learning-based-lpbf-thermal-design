@@ -63,13 +63,13 @@ class ReLoBRaLoWeighter:
         ref_fm = self._init_fm if use_init else self._ema_fm
         ref_phys = self._init_phys if use_init else self._ema_phys
 
-        rho_fm = loss_fm / (ref_fm + self.eps)
-        rho_phys = loss_phys / (ref_phys + self.eps)
+        # Inverse relative progress: how much each loss has improved since reference.
+        # Normalised over both terms so lambda stays bounded even with e+26 magnitudes.
+        inv_rho_phys = ref_phys / (loss_phys + self.eps)
+        inv_rho_fm = ref_fm / (loss_fm + self.eps)
+        self.lambda_phys = 2.0 * inv_rho_phys / (inv_rho_fm + inv_rho_phys + self.eps)
 
-        magnitude_ratio = ref_fm / (ref_phys + self.eps)
-        self.lambda_phys = magnitude_ratio * (rho_fm / (rho_phys + self.eps))
-
-        # Guard against NaN/Inf from extreme ratios
+        # Guard against NaN/Inf from degenerate inputs
         if not math.isfinite(self.lambda_phys) or self.lambda_phys <= 0:
             self.lambda_phys = 1.0
 

@@ -1,4 +1,5 @@
 """Snapshot — a single point-in-time capture of the simulation state."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

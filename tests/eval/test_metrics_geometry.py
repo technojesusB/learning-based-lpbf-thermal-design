@@ -4,7 +4,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from neural_pbf.eval.metrics.geometry import iou_melt_volumes, melt_pool_extent
+from neural_pbf.eval.metrics.geometry import (
+    evaluate_physical_metrics,
+    hotspot_offset_vox,
+    iou_melt_volumes,
+    melt_pool_extent,
+)
 
 _T_LIQ = 1673.0
 
@@ -78,3 +83,73 @@ def test_iou_partial_overlap():
     iou = iou_melt_volumes(T_pred, T_gt, _T_LIQ)
     # intersection=2, union=6 → IoU = 1/3
     assert iou == pytest.approx(2 / 6, rel=1e-5)
+
+
+# ── hotspot_offset_vox ────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_hotspot_offset_vox_identical_returns_zero():
+    T = torch.zeros(1, 1, 4, 4)
+    T[0, 0, 2, 3] = 1.0
+    assert hotspot_offset_vox(T, T) == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_hotspot_offset_vox_known_2d_shift():
+    T_pred = torch.zeros(1, 1, 4, 4)
+    T_pred[0, 0, 0, 0] = 1.0  # hotspot at (row=0, col=0)
+    T_tgt = torch.zeros(1, 1, 4, 4)
+    T_tgt[0, 0, 3, 0] = 1.0   # hotspot at (row=3, col=0) → offset = 3 in Y
+    assert hotspot_offset_vox(T_pred, T_tgt) == pytest.approx(3.0)
+
+
+@pytest.mark.unit
+def test_hotspot_offset_vox_known_3d_shift():
+    T_pred = torch.zeros(1, 1, 4, 4, 4)
+    T_pred[0, 0, 0, 0, 0] = 1.0
+    T_tgt = torch.zeros(1, 1, 4, 4, 4)
+    T_tgt[0, 0, 3, 0, 0] = 1.0  # z-shift of 3 only → L2 = 3
+    assert hotspot_offset_vox(T_pred, T_tgt) == pytest.approx(3.0)
+
+
+@pytest.mark.unit
+def test_hotspot_offset_vox_batch_average():
+    # Two samples: one zero offset, one offset of 3 → mean = 1.5
+    T_pred = torch.zeros(2, 1, 4, 4)
+    T_tgt = torch.zeros(2, 1, 4, 4)
+    T_pred[0, 0, 1, 1] = 1.0
+    T_tgt[0, 0, 1, 1] = 1.0   # sample 0: offset = 0
+    T_pred[1, 0, 0, 0] = 1.0
+    T_tgt[1, 0, 3, 0] = 1.0   # sample 1: offset = 3
+    assert hotspot_offset_vox(T_pred, T_tgt) == pytest.approx(1.5)
+
+
+# ── evaluate_physical_metrics ─────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_evaluate_physical_metrics_perfect_prediction():
+    T = torch.zeros(1, 1, 4, 4, 4)
+    T[0, 0, 2, 2, 2] = 2000.0
+    result = evaluate_physical_metrics(T, T, _T_LIQ)
+    assert result["Physical/Meltpool_IoU"] == pytest.approx(1.0)
+    assert result["Physical/Depth_Error_Vox"] == pytest.approx(0.0)
+    assert result["Physical/Hotspot_Offset_Vox"] == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_evaluate_physical_metrics_cold_fields():
+    T = torch.ones(1, 1, 4, 4, 4) * 300.0  # all below liquidus
+    result = evaluate_physical_metrics(T, T, _T_LIQ)
+    assert result["Physical/Meltpool_IoU"] == pytest.approx(1.0)  # both empty → agreement
+    assert result["Physical/Depth_Error_Vox"] == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_evaluate_physical_metrics_returns_expected_keys():
+    T = torch.zeros(1, 1, 4, 4)
+    result = evaluate_physical_metrics(T, T, _T_LIQ)
+    assert set(result.keys()) == {
+        "Physical/Meltpool_IoU",
+        "Physical/Depth_Error_Vox",
+        "Physical/Hotspot_Offset_Vox",
+    }

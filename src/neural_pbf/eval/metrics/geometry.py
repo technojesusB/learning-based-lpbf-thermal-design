@@ -1,8 +1,9 @@
-"""Melt-pool geometric metrics: extent (W/L/D) and volumetric IoU.
+"""Melt-pool geometric metrics: extent (W/L/D), volumetric IoU, and hotspot offset.
 
 All functions are pure (no I/O, no MLflow).
 Extents are returned in *voxels*; multiply by dx/dy/dz for SI metres.
 """
+
 from __future__ import annotations
 
 import torch
@@ -59,3 +60,73 @@ def iou_melt_volumes(
     if union.item() == 0:
         return 1.0
     return (intersection / union).item()
+
+
+def hotspot_offset_vox(T_pred: torch.Tensor, T_tgt: torch.Tensor) -> float:
+    """L2 distance between the peak-temperature voxel in *T_pred* and *T_tgt*.
+
+    Operates on the first channel and averages across the batch dimension.
+    Works for both 2D ``(B, C, Ny, Nx)`` and 3D ``(B, C, Nz, Ny, Nx)`` inputs.
+
+    Returns:
+        Mean L2 offset in voxel units across the batch.
+    """
+    B = T_pred.shape[0]
+    spatial_shape = T_pred.shape[2:]  # skip B, C
+
+    sp = T_pred[:, 0].reshape(B, -1)
+    st = T_tgt[:, 0].reshape(B, -1)
+
+    total = 0.0
+    for b in range(B):
+        ip = int(sp[b].argmax().item())
+        it = int(st[b].argmax().item())
+        # Unravel flat index → per-axis voxel coordinates (last axis first)
+        cp: list[int] = []
+        ct: list[int] = []
+        for dim in reversed(spatial_shape):
+            cp.append(ip % dim)
+            ct.append(it % dim)
+            ip //= dim
+            it //= dim
+        total += float(sum((a - c) ** 2 for a, c in zip(cp, ct, strict=False)) ** 0.5)
+    return total / B
+
+
+def evaluate_physical_metrics(
+    T_pred: torch.Tensor,
+    T_tgt: torch.Tensor,
+    T_liquidus: float,
+) -> dict[str, float]:
+    """Compute the standard physical-fidelity triad for a single prediction/GT pair.
+
+    Intended for the final test phase only (rollout-based T_pred required).
+    Expects batch size 1; ``melt_pool_extent`` squeezes batch and channel dims.
+
+    Args:
+        T_pred:     Predicted temperature field ``(1, 1, [Nz,] Ny, Nx)``.
+        T_tgt:      Ground-truth field, same shape.
+        T_liquidus: Liquidus threshold in the same normalisation as the fields.
+
+    Returns:
+        Dict with keys ``Physical/Meltpool_IoU``, ``Physical/Depth_Error_Vox``,
+        and ``Physical/Hotspot_Offset_Vox``.
+
+    Raises:
+        ValueError: If ``T_pred`` batch size is not 1 (``melt_pool_extent``
+                    squeezes batch and channel dims and silently corrupts results
+                    for B > 1).
+    """
+    if T_pred.shape[0] != 1:
+        raise ValueError(
+            f"evaluate_physical_metrics expects batch size 1, got {T_pred.shape[0]}. "
+            "Call per-sample inside your test loop."
+        )
+    return {
+        "Physical/Meltpool_IoU": iou_melt_volumes(T_pred, T_tgt, T_liquidus),
+        "Physical/Depth_Error_Vox": abs(
+            melt_pool_extent(T_pred, T_liquidus)["D"]
+            - melt_pool_extent(T_tgt, T_liquidus)["D"]
+        ),
+        "Physical/Hotspot_Offset_Vox": hotspot_offset_vox(T_pred, T_tgt),
+    }

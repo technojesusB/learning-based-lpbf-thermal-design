@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import torch
+
 from neural_pbf.schemas.state import SnapshotState
 
 

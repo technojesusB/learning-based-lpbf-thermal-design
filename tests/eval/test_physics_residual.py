@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -14,19 +16,27 @@ def _scalar_to_field(val: float, B: int) -> torch.Tensor:
     return torch.full((B, 1, 1, 1, 1), val)
 
 
+def _identity_ds_cfg() -> SimpleNamespace:
+    """ds_cfg stub with identity normalisation: T_ref=1, T_ambient=0, Q_ref=1."""
+    return SimpleNamespace(T_ref=1.0, T_ambient=0.0, Q_ref=1.0)
+
+
 @pytest.mark.unit
 def test_physics_residual_returns_scalar() -> None:
     B, D, H, W = 2, 8, 8, 8
     shape = (B, 1, D, H, W)
     v_pred = torch.randn(*shape, requires_grad=True)
     x_tau = torch.randn(*shape)
+    tau = torch.zeros(B)
+    T_in = torch.randn(*shape)
     Q = torch.randn(*shape)
     res = physics_heat_residual(
-        v_pred, x_tau, Q,
+        v_pred, x_tau, tau, T_in, Q,
         rho=_scalar_to_field(7900.0, B),
         cp=_scalar_to_field(500.0, B),
         k=_scalar_to_field(20.0, B),
         dx_m=1e-5, dy_m=1e-5, dz_m=1e-5,
+        ds_cfg=_identity_ds_cfg(),
     )
     assert res.shape == (), f"Expected scalar, got shape {res.shape}"
 
@@ -36,13 +46,16 @@ def test_physics_residual_gradient_flows_through_v_pred() -> None:
     B, D, H, W = 1, 4, 4, 4
     v_pred = torch.randn(B, 1, D, H, W, requires_grad=True)
     x_tau = torch.randn(B, 1, D, H, W)
+    tau = torch.zeros(B)
+    T_in = torch.randn(B, 1, D, H, W)
     Q = torch.zeros(B, 1, D, H, W)
     res = physics_heat_residual(
-        v_pred, x_tau, Q,
+        v_pred, x_tau, tau, T_in, Q,
         rho=_scalar_to_field(1.0, B),
         cp=_scalar_to_field(1.0, B),
         k=_scalar_to_field(1.0, B),
         dx_m=1e-4, dy_m=1e-4, dz_m=1e-4,
+        ds_cfg=_identity_ds_cfg(),
     )
     res.backward()
     assert v_pred.grad is not None
@@ -55,12 +68,16 @@ def test_physics_residual_no_gradient_through_x_tau() -> None:
     B, D, H, W = 1, 4, 4, 4
     v_pred = torch.randn(B, 1, D, H, W, requires_grad=True)
     x_tau = torch.randn(B, 1, D, H, W, requires_grad=True)
+    tau = torch.zeros(B)
+    T_in = torch.randn(B, 1, D, H, W)
+    Q = torch.zeros(B, 1, D, H, W)
     res = physics_heat_residual(
-        v_pred, x_tau.detach(), Q=torch.zeros(B, 1, D, H, W),
+        v_pred, x_tau.detach(), tau, T_in, Q,
         rho=_scalar_to_field(1.0, B),
         cp=_scalar_to_field(1.0, B),
         k=_scalar_to_field(1.0, B),
         dx_m=1e-4, dy_m=1e-4, dz_m=1e-4,
+        ds_cfg=_identity_ds_cfg(),
     )
     res.backward()
     assert x_tau.grad is None, "x_tau should not receive gradients when detached"
@@ -68,24 +85,32 @@ def test_physics_residual_no_gradient_through_x_tau() -> None:
 
 @pytest.mark.unit
 def test_physics_residual_near_zero_on_exact_solution() -> None:
-    """When v_pred == (∇·(k∇T) + Q) / (ρ·cp), the residual should be ~0."""
+    """Residual is ~0 when v_pred=0 and Q balances the diffusion term.
+
+    With tau=0 and T_in=x_tau: T_pred=x_tau, so dT/dt=0 (lhs=0).
+    Setting Q = -div_k_grad(x_tau) makes rhs = div_kgrad + Q = 0 too.
+    """
     B, D, H, W = 1, 8, 8, 8
     rho_val, cp_val, k_val = 1.0, 1.0, 1.0
     dx_m = dy_m = dz_m = 1.0
 
     x_tau = torch.rand(B, 1, D, H, W)
-    Q = torch.zeros(B, 1, D, H, W)
-
     k_field = torch.full_like(x_tau, k_val)
     divkgrad = div_k_grad(x_tau, k_field, dx_m, dy_m, dz_m)
-    v_exact = (divkgrad + Q) / (rho_val * cp_val)
+    Q = -divkgrad  # lhs=0, rhs = divkgrad - divkgrad = 0
 
     res = physics_heat_residual(
-        v_exact, x_tau, Q,
+        v_pred=torch.zeros_like(x_tau),
+        x_tau_detached=x_tau,
+        tau=torch.zeros(B),
+        T_in=x_tau,
+        Q=Q,
         rho=_scalar_to_field(rho_val, B),
         cp=_scalar_to_field(cp_val, B),
         k=_scalar_to_field(k_val, B),
         dx_m=dx_m, dy_m=dy_m, dz_m=dz_m,
+        ds_cfg=_identity_ds_cfg(),
+        dt_s=1.0,
     )
     assert res.item() < 1e-8, f"Residual should be ~0 for exact solution, got {res.item()}"
 
@@ -93,15 +118,20 @@ def test_physics_residual_near_zero_on_exact_solution() -> None:
 @pytest.mark.unit
 def test_physics_residual_nonzero_for_wrong_v() -> None:
     B, D, H, W = 1, 4, 4, 4
-    v_pred = torch.ones(B, 1, D, H, W) * 1e6
-    x_tau = torch.zeros(B, 1, D, H, W)
+    tau = torch.zeros(B)
+    T_in = torch.zeros(B, 1, D, H, W)
     Q = torch.zeros(B, 1, D, H, W)
     res = physics_heat_residual(
-        v_pred, x_tau, Q,
+        v_pred=torch.ones(B, 1, D, H, W) * 1e6,
+        x_tau_detached=torch.zeros(B, 1, D, H, W),
+        tau=tau,
+        T_in=T_in,
+        Q=Q,
         rho=_scalar_to_field(1.0, B),
         cp=_scalar_to_field(1.0, B),
         k=_scalar_to_field(1.0, B),
         dx_m=1.0, dy_m=1.0, dz_m=1.0,
+        ds_cfg=_identity_ds_cfg(),
     )
     assert res.item() > 0.0
 
@@ -112,23 +142,22 @@ def test_physics_residual_per_sample_heterogeneous_material() -> None:
     B, D, H, W = 2, 4, 4, 4
     v_pred = torch.ones(B, 1, D, H, W)
     x_tau = torch.zeros(B, 1, D, H, W)
+    tau = torch.zeros(B)
+    T_in = torch.zeros(B, 1, D, H, W)
     Q = torch.zeros(B, 1, D, H, W)
 
-    # Two very different rho values per sample
     rho = torch.tensor([1.0, 1e6]).view(B, 1, 1, 1, 1)
     cp = _scalar_to_field(1.0, B)
     k = _scalar_to_field(1.0, B)
 
-    # Compute residual — if batch-mean were used instead, this would equal a
-    # single scalar residual; per-sample produces different LHS contributions.
     lhs_per_sample = (rho * cp * v_pred).view(B, -1).mean(dim=1)
     assert not torch.allclose(lhs_per_sample[0], lhs_per_sample[1]), (
         "Per-sample rho must produce different LHS contributions across batch"
     )
 
-    # Full residual should be non-zero
     res = physics_heat_residual(
-        v_pred, x_tau, Q, rho=rho, cp=cp, k=k,
+        v_pred, x_tau, tau, T_in, Q, rho=rho, cp=cp, k=k,
         dx_m=1.0, dy_m=1.0, dz_m=1.0,
+        ds_cfg=_identity_ds_cfg(),
     )
     assert res.item() > 0.0

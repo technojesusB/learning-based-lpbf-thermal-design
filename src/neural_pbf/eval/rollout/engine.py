@@ -1,4 +1,5 @@
 """RolloutEngine — drives a BaseStepper over a Trajectory and collects metrics."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,4 +1,5 @@
 """Autoregressive rollout analytics: cumulative drift and divergence detection."""
+
 from __future__ import annotations
 
 from .engine import RolloutResult

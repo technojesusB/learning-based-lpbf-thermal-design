@@ -1,4 +1,5 @@
 """Trajectory — an ordered sequence of Snapshots with shared configuration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

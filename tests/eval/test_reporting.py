@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from neural_pbf.eval.adapters.identity_adapter import IdentityAdapter
+from neural_pbf.eval.reporting.hardware import log_gpu_telemetry, log_step_timing
 from neural_pbf.eval.reporting.markdown_report import build_markdown_report, save_markdown_report
 from neural_pbf.eval.reporting.mlflow_logger import log_rollout_to_mlflow
 from neural_pbf.eval.rollout.engine import RolloutEngine
@@ -81,3 +82,28 @@ def test_mlflow_logger_no_artifact_upload_when_no_dir(rollout_result):
          patch("mlflow.log_artifacts") as mock_art:
         log_rollout_to_mlflow(rollout_result, artifact_dir=None)
         assert not mock_art.called
+
+
+# ── hardware reporter ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_log_step_timing_logs_metric():
+    with patch("mlflow.log_metric") as mock_metric:
+        log_step_timing(step=5, secs_per_iter=0.5)
+        mock_metric.assert_called_once_with("Perf/steps_per_sec", pytest.approx(2.0), step=5)
+
+
+@pytest.mark.unit
+def test_log_step_timing_handles_zero_secs():
+    with patch("mlflow.log_metric") as mock_metric:
+        log_step_timing(step=0, secs_per_iter=0.0)
+        assert mock_metric.called
+        key, val = mock_metric.call_args[0][:2]
+        assert key == "Perf/steps_per_sec"
+        assert val > 0
+
+
+@pytest.mark.unit
+def test_log_gpu_telemetry_no_crash_without_gpu():
+    # Should be a silent no-op when pynvml cannot initialise (no GPU in CI).
+    log_gpu_telemetry(step=0)  # must not raise

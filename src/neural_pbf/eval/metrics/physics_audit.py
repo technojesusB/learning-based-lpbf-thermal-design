@@ -4,6 +4,7 @@ Conductivity is computed with the *same* harmonic-mean finite-difference
 operator (``div_k_grad``) used by the Triton solver so that GT trajectories
 yield near-zero residuals and false positives are avoided.
 """
+
 from __future__ import annotations
 
 import torch

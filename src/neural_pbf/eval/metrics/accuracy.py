@@ -4,6 +4,7 @@ All functions are side-effect-free (no I/O, no MLflow logging).
 NaN/Inf in predictions are treated as 0-error to avoid metric explosion;
 the rollout engine handles divergence detection separately.
 """
+
 from __future__ import annotations
 
 import torch

@@ -126,6 +126,8 @@ def test_patch_center_coords_mm_origin_offset() -> None:
         origins_shifted, model_patch_size, grid_attrs, token_grid, torch.device("cpu")
     )
 
-    expected_shift_mm = 8 * grid_attrs["dy_m"] * 1000.0
+    # Function returns discrete patch indices, not physical mm.
+    # An 8-voxel shift with patch_size=4 → 8/4 = 2.0 patch index units.
+    expected_shift = origins_shifted[0, 1].item() / model_patch_size  # = 2.0
     diff = (coords_shifted - coords_zero)[0, :, 1]
-    assert torch.allclose(diff, torch.full_like(diff, expected_shift_mm), atol=1e-5)
+    assert torch.allclose(diff, torch.full_like(diff, expected_shift), atol=1e-5)

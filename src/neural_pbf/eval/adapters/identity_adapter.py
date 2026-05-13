@@ -1,4 +1,5 @@
 """IdentityAdapter — returns the input state unchanged (regression baseline)."""
+
 from __future__ import annotations
 
 from typing import Any

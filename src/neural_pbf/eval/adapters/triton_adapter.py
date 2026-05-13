@@ -1,4 +1,5 @@
 """TritonAdapter — wraps TimeStepper.step_adaptive as a BaseStepper."""
+
 from __future__ import annotations
 
 from typing import Any
