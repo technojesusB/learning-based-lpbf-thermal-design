@@ -1,4 +1,5 @@
 """Markdown report builder for evaluation results."""
+
 from __future__ import annotations
 
 from pathlib import Path

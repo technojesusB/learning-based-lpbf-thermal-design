@@ -1,4 +1,5 @@
 """Temporal trajectory plots: peak tracking, thermocouple probes, error evolution."""
+
 from __future__ import annotations
 
 from pathlib import Path

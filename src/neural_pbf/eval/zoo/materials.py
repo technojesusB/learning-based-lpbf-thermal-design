@@ -1,4 +1,5 @@
 """MaterialZoo — a registry of named material presets with ID/OOD tagging."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,4 +1,5 @@
 """High-level composer: generate all figures for a RolloutResult."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,4 +1,5 @@
 """Zoo benchmark driver: sweep a stepper across multiple materials."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
