@@ -41,8 +41,6 @@ class PlotConfig(BaseModel):
     alpha_line: float = 0.8
 
     # Multi-Model Palette (Ordered for consistency)
-    # 0: Red (Baseline), 1: Blue, 2: Gold, 3: Cyan (Hero), 4: Purple,
-    # 5: Orange, 6: Green, 7: Gray
     color_palette: list[str] = [
         "#e74c3c",  # 0: Red (Baseline)
         "#3498db",  # 1: Blue
