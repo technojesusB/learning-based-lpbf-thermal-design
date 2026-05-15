@@ -10,6 +10,8 @@ import matplotlib.figure
 import numpy as np
 import torch
 
+from neural_pbf.schemas.viz import THEME
+
 # Only switch to Agg when no interactive display is available and the backend
 # hasn't already been configured by the caller (e.g. a GUI or notebook session).
 if matplotlib.get_backend().lower() in {"tkagg", "qt5agg", "qt4agg", "wxagg", "macosx"}:
@@ -195,10 +197,10 @@ def gallery_evolution(
         fig, axes = plt.subplots(2, n_cols, figsize=(22, 7))
         plt.subplots_adjust(left=0.06, bottom=0.08, top=0.90, right=0.98)
 
-        axes[0, 0].imshow(gt_xy, vmin=0, vmax=1, cmap="magma")
+        axes[0, 0].imshow(gt_xy, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[0, 0].set_title("GT Surface", fontsize=10)
         axes[0, 0].axis("off")
-        axes[1, 0].imshow(gt_xz, vmin=0, vmax=1, cmap="magma")
+        axes[1, 0].imshow(gt_xz, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[1, 0].set_title("GT Depth", fontsize=10)
         axes[1, 0].axis("off")
 
@@ -212,10 +214,10 @@ def gallery_evolution(
             label = (
                 epoch_labels[hist_idx] if epoch_labels is not None else f"Ep {hist_idx}"
             )
-            axes[0, col].imshow(pred_xy, vmin=0, vmax=1, cmap="magma")
+            axes[0, col].imshow(pred_xy, vmin=0, vmax=1, cmap="magma", origin="lower")
             axes[0, col].set_title(label, fontsize=10)
             axes[0, col].axis("off")
-            axes[1, col].imshow(pred_xz, vmin=0, vmax=1, cmap="magma")
+            axes[1, col].imshow(pred_xz, vmin=0, vmax=1, cmap="magma", origin="lower")
             axes[1, col].set_title(label, fontsize=10)
             axes[1, col].axis("off")
 
@@ -285,6 +287,7 @@ def gallery_test(
 
     with plt.style.context("dark_background"):
         fig, axes = plt.subplots(2, 10, figsize=(22, 7))
+        fig.patch.set_facecolor(THEME.spatial.bg_figure)
         plt.subplots_adjust(left=0.06, bottom=0.08, top=0.90, right=0.98)
 
         for i, (T_gt_s, T_pred_s) in enumerate(samples):
@@ -296,22 +299,97 @@ def gallery_test(
             label = titles[i] if titles else f"S{i + 1}"
             gt_col, pred_col = 2 * i, 2 * i + 1
 
-            axes[0, gt_col].imshow(gt_xy, vmin=0, vmax=1, cmap="magma")
-            axes[0, gt_col].set_title(f"GT {label}", fontsize=10, pad=10, color="gray")
-            axes[0, gt_col].axis("off")
-            axes[0, pred_col].imshow(pred_xy, vmin=0, vmax=1, cmap="magma")
+            axes[0, gt_col].imshow(
+                gt_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
+            )
+            axes[0, gt_col].set_title(
+                f"GT {label}",
+                fontsize=THEME.spatial.font_size_gallery,
+                pad=THEME.spatial.title_pad_gallery,
+                color=THEME.spatial.color_gt,
+                fontweight=THEME.spatial.font_weight_title,
+            )
+            axes[0, gt_col].tick_params(
+                left=False, bottom=False, labelleft=False, labelbottom=False
+            )
+            if THEME.spatial.grid.enabled:
+                axes[0, gt_col].grid(
+                    True,
+                    which=THEME.spatial.grid.which,
+                    axis=THEME.spatial.grid.axis,
+                    linestyle=THEME.spatial.grid.linestyle,
+                    alpha=THEME.spatial.grid.alpha,
+                    color=THEME.spatial.grid.color,
+                )
+
+            axes[0, pred_col].imshow(
+                pred_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
+            )
             axes[0, pred_col].set_title(
-                f"Pred {label}", fontsize=10, pad=10, color="gray"
+                f"Pred {label}",
+                fontsize=THEME.spatial.font_size_gallery,
+                pad=THEME.spatial.title_pad_gallery,
+                color=THEME.spatial.color_gt,
+                fontweight=THEME.spatial.font_weight_title,
             )
-            axes[0, pred_col].axis("off")
-            axes[1, gt_col].imshow(gt_xz, vmin=0, vmax=1, cmap="magma")
-            axes[1, gt_col].set_title(f"GT {label}", fontsize=10, pad=10, color="gray")
-            axes[1, gt_col].axis("off")
-            axes[1, pred_col].imshow(pred_xz, vmin=0, vmax=1, cmap="magma")
+            axes[0, pred_col].tick_params(
+                left=False, bottom=False, labelleft=False, labelbottom=False
+            )
+            if THEME.spatial.grid.enabled:
+                axes[0, pred_col].grid(
+                    True,
+                    which=THEME.spatial.grid.which,
+                    axis=THEME.spatial.grid.axis,
+                    linestyle=THEME.spatial.grid.linestyle,
+                    alpha=THEME.spatial.grid.alpha,
+                    color=THEME.spatial.grid.color,
+                )
+
+            axes[1, gt_col].imshow(
+                gt_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
+            )
+            axes[1, gt_col].set_title(
+                f"GT {label}",
+                fontsize=THEME.spatial.font_size_gallery,
+                pad=THEME.spatial.title_pad_gallery,
+                color=THEME.spatial.color_gt,
+                fontweight=THEME.spatial.font_weight_title,
+            )
+            axes[1, gt_col].tick_params(
+                left=False, bottom=False, labelleft=False, labelbottom=False
+            )
+            if THEME.spatial.grid.enabled:
+                axes[1, gt_col].grid(
+                    True,
+                    which=THEME.spatial.grid.which,
+                    axis=THEME.spatial.grid.axis,
+                    linestyle=THEME.spatial.grid.linestyle,
+                    alpha=THEME.spatial.grid.alpha,
+                    color=THEME.spatial.grid.color,
+                )
+
+            axes[1, pred_col].imshow(
+                pred_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
+            )
             axes[1, pred_col].set_title(
-                f"Pred {label}", fontsize=10, pad=10, color="gray"
+                f"Pred {label}",
+                fontsize=THEME.spatial.font_size_gallery,
+                pad=THEME.spatial.title_pad_gallery,
+                color=THEME.spatial.color_gt,
+                fontweight=THEME.spatial.font_weight_title,
             )
-            axes[1, pred_col].axis("off")
+            axes[1, pred_col].tick_params(
+                left=False, bottom=False, labelleft=False, labelbottom=False
+            )
+            if THEME.spatial.grid.enabled:
+                axes[1, pred_col].grid(
+                    True,
+                    which=THEME.spatial.grid.which,
+                    axis=THEME.spatial.grid.axis,
+                    linestyle=THEME.spatial.grid.linestyle,
+                    alpha=THEME.spatial.grid.alpha,
+                    color=THEME.spatial.grid.color,
+                )
 
         # Hide unused columns when fewer than 5 samples provided
         for i in range(n, 5):
@@ -389,19 +467,19 @@ def val_grid_2x2(
     with plt.style.context("dark_background"):
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-        axes[0, 0].imshow(gt_xy, vmin=0, vmax=1, cmap="magma")
+        axes[0, 0].imshow(gt_xy, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[0, 0].set_title("GT Surface (XY)")
         axes[0, 0].axis("off")
 
-        axes[0, 1].imshow(pred_xy, vmin=0, vmax=1, cmap="magma")
+        axes[0, 1].imshow(pred_xy, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[0, 1].set_title(f"Pred Surface (Ep {epoch})")
         axes[0, 1].axis("off")
 
-        axes[1, 0].imshow(gt_xz, vmin=0, vmax=1, cmap="magma")
+        axes[1, 0].imshow(gt_xz, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[1, 0].set_title("GT Depth (XZ)")
         axes[1, 0].axis("off")
 
-        axes[1, 1].imshow(pred_xz, vmin=0, vmax=1, cmap="magma")
+        axes[1, 1].imshow(pred_xz, vmin=0, vmax=1, cmap="magma", origin="lower")
         axes[1, 1].set_title(f"Pred Depth (Ep {epoch})")
         axes[1, 1].axis("off")
 

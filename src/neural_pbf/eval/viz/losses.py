@@ -9,6 +9,8 @@ import matplotlib
 import matplotlib.figure
 import matplotlib.pyplot as plt
 
+from neural_pbf.schemas.viz import THEME
+
 if matplotlib.get_backend().lower() in {"tkagg", "qt5agg", "qt4agg", "wxagg", "macosx"}:
     import os as _os
 
@@ -29,9 +31,17 @@ def _moving_avg(values: Sequence[float], window: int) -> list[float]:
 
 
 def _apply_dark_theme(fig: matplotlib.figure.Figure, ax: matplotlib.axes.Axes) -> None:
-    fig.patch.set_facecolor("#121212")
-    ax.set_facecolor("#1e1e1e")
-    ax.grid(True, linestyle="--", alpha=0.2, color="#333333")
+    fig.patch.set_facecolor(THEME.base.bg_figure)
+    ax.set_facecolor(THEME.base.bg_axis)
+    if THEME.base.grid.enabled:
+        ax.grid(
+            True,
+            which=THEME.base.grid.which,
+            axis=THEME.base.grid.axis,
+            linestyle=THEME.base.grid.linestyle,
+            alpha=THEME.base.grid.alpha,
+            color=THEME.base.grid.color,
+        )
 
 
 def loss_panel(
@@ -152,7 +162,7 @@ def _loss_panel_standard(
             epochs,
             train_losses,
             color="#2e7d32",
-            alpha=0.3,
+            alpha=THEME.base.alpha_raw,
             linewidth=1,
             label="Train (raw)",
         )
@@ -160,16 +170,24 @@ def _loss_panel_standard(
             epochs,
             val_losses,
             color="#c62828",
-            alpha=0.3,
+            alpha=THEME.base.alpha_raw,
             linewidth=1,
             label="Val (raw)",
         )
         # MA-5 (foreground)
         ax_loss.plot(
-            epochs, train_ma5, color="#2ecc71", linewidth=2.5, label="Train (MA-5)"
+            epochs,
+            train_ma5,
+            color=THEME.base.color_train,
+            linewidth=THEME.base.line_width_main,
+            label="Train (MA-5)",
         )
         ax_loss.plot(
-            epochs, val_ma5, color="#e74c3c", linewidth=2.5, label="Val (MA-5)"
+            epochs,
+            val_ma5,
+            color=THEME.base.color_val,
+            linewidth=THEME.base.line_width_main,
+            label="Val (MA-5)",
         )
 
         ax_loss.set_yscale("log")
@@ -182,12 +200,16 @@ def _loss_panel_standard(
             )
         )
         ax_loss.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-        ax_loss.grid(True, which="both", linestyle="--", alpha=0.1, color="#333333")
+        ax_loss.grid(True, which="both", linestyle="--", alpha=0.4, color="#666666")
 
         ax_loss.set_xlabel("Epoch", fontsize=10)
         ax_loss.set_ylabel("Loss (log)", fontsize=11, fontweight="bold")
         ax_loss.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%d"))
-        ax_loss.legend(facecolor="#1e1e1e", edgecolor="#333333", loc="upper right")
+        ax_loss.legend(
+            facecolor=THEME.base.bg_axis,
+            edgecolor=THEME.base.grid.color,
+            loc="upper right",
+        )
         if title:
             ax_loss.set_title(title)
 
@@ -206,7 +228,15 @@ def _loss_panel_standard(
                 matplotlib.ticker.LogLocator(base=10.0, numticks=10)
             )
             ax_lam.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-            ax_lam.grid(True, which="both", linestyle="--", alpha=0.1, color="#333333")
+            if THEME.base.grid.enabled:
+                ax_lam.grid(
+                    True,
+                    which=THEME.base.grid.which,
+                    axis=THEME.base.grid.axis,
+                    linestyle=THEME.base.grid.linestyle,
+                    alpha=THEME.base.grid.alpha,
+                    color=THEME.base.grid.color,
+                )
             ax_lam.set_xlabel("Epoch", fontsize=10)
             ax_lam.set_ylabel(
                 r"ReLoBRaLo $\lambda_{phys}$ (log)", fontsize=11, fontweight="bold"
@@ -240,11 +270,19 @@ def _loss_panel_detailed(
 
     with plt.style.context("dark_background"):
         fig, (ax_loss, ax_lam) = plt.subplots(2, 1, figsize=(14, 12), sharex=True)
-        fig.patch.set_facecolor("#121212")
+        fig.patch.set_facecolor(THEME.base.bg_figure)
 
         # --- Panel 1: sub-loss breakdown ---
-        ax_loss.set_facecolor("#1e1e1e")
-        ax_loss.grid(True, linestyle="--", alpha=0.2, color="#333333")
+        ax_loss.set_facecolor(THEME.base.bg_axis)
+        if THEME.base.grid.enabled:
+            ax_loss.grid(
+                True,
+                which=THEME.base.grid.which,
+                axis=THEME.base.grid.axis,
+                linestyle=THEME.base.grid.linestyle,
+                alpha=THEME.base.grid.alpha,
+                color=THEME.base.grid.color,
+            )
 
         ax_loss.plot(
             epochs,
@@ -257,16 +295,16 @@ def _loss_panel_detailed(
         ax_loss.plot(
             epochs,
             fm_ma5,
-            color="#3498db",
-            linewidth=1.5,
+            color=THEME.base.color_fm,
+            linewidth=THEME.base.line_width_sub,
             alpha=0.8,
             label="FM Data Loss (MA-5)",
         )
         ax_loss.plot(
             epochs,
             pde_ma5,
-            color="#e74c3c",
-            linewidth=1.5,
+            color=THEME.base.color_pde,
+            linewidth=THEME.base.line_width_sub,
             alpha=0.8,
             label="PDE Residual (MA-5)",
         )
@@ -290,27 +328,46 @@ def _loss_panel_detailed(
             )
         )
         ax_loss.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-        ax_loss.grid(True, which="both", linestyle="--", alpha=0.1, color="#333333")
+        ax_loss.grid(True, which="both", linestyle="--", alpha=0.4, color="#666666")
 
         ax_loss.set_ylabel("Loss (log)", fontsize=11, fontweight="bold")
         ax_loss.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%d"))
-        ax_loss.legend(facecolor="#1e1e1e", edgecolor="#333333", loc="upper right")
+        ax_loss.legend(
+            facecolor=THEME.base.bg_axis,
+            edgecolor=THEME.base.grid.color,
+            loc="upper right",
+        )
         if title:
-            ax_loss.set_title(title)
+            ax_loss.set_title(
+                title,
+                fontsize=THEME.base.font_size_title,
+                fontweight=THEME.base.font_weight_title,
+                pad=THEME.base.title_pad,
+            )
 
         # --- Panel 2: lambda_phys ---
-        ax_lam.set_facecolor("#1e1e1e")
-        ax_lam.grid(True, which="both", linestyle="--", alpha=0.1, color="#333333")
+        ax_lam.set_facecolor(THEME.base.bg_axis)
+        if THEME.base.grid.enabled:
+            ax_lam.grid(
+                True,
+                which=THEME.base.grid.which,
+                axis=THEME.base.grid.axis,
+                linestyle=THEME.base.grid.linestyle,
+                alpha=THEME.base.grid.alpha,
+                color=THEME.base.grid.color,
+            )
 
         lam_vals = lambda_hist if lambda_hist is not None else [1.0] * len(epochs)
         ax_lam.plot(
             epochs,
             lam_vals,
-            color="#9b59b6",
-            linewidth=2,
+            color=THEME.base.color_lambda,
+            linewidth=THEME.base.line_width_sub + 0.5,
             label="Physics Weight lambda_phys",
         )
-        ax_lam.fill_between(epochs, 0, lam_vals, color="#9b59b6", alpha=0.2)
+        ax_lam.fill_between(
+            epochs, 0, lam_vals, color=THEME.base.color_lambda, alpha=0.2
+        )
         ax_lam.set_yscale("log")
         ax_lam.yaxis.set_major_locator(
             matplotlib.ticker.LogLocator(base=10.0, numticks=10)

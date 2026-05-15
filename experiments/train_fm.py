@@ -131,13 +131,13 @@ def _log_validation_image(model, cond_encoder, batch, epoch, device, cfg):
     err_slice = np.abs(gt_slice - pred_slice)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    im0 = axes[0].imshow(gt_slice, vmin=0, vmax=1, cmap="magma")
+    im0 = axes[0].imshow(gt_slice, vmin=0, vmax=1, cmap="magma", origin="lower")
     axes[0].set_title("Ground Truth (Norm)")
     fig.colorbar(im0, ax=axes[0])
-    im1 = axes[1].imshow(pred_slice, vmin=0, vmax=1, cmap="magma")
+    im1 = axes[1].imshow(pred_slice, vmin=0, vmax=1, cmap="magma", origin="lower")
     axes[1].set_title("Prediction (Norm)")
     fig.colorbar(im1, ax=axes[1])
-    im2 = axes[2].imshow(err_slice, vmin=0, vmax=0.2, cmap="Reds")
+    im2 = axes[2].imshow(err_slice, vmin=0, vmax=0.2, cmap="Reds", origin="lower")
     axes[2].set_title("Absolute Error")
     fig.colorbar(im2, ax=axes[2])
 

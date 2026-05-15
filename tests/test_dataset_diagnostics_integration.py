@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "generate_offline_dataset.py"
+_SCRIPT_PATH = Path(__file__).parent.parent / "experiments" / "generate_offline_dataset.py"
 
 
 def _load_script() -> object:

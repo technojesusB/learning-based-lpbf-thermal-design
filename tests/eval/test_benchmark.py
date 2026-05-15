@@ -85,9 +85,9 @@ def test_run_physical_fidelity_benchmark_returns_correct_columns(tmp_path):
         },
     ]
 
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", return_value=mock_metrics):
+    with patch("neural_pbf.eval.benchmark._legacy._run_model_benchmark", return_value=(mock_metrics, {})):
         out = tmp_path / "fidelity.png"
-        df = run_physical_fidelity_benchmark(
+        df, _ = run_physical_fidelity_benchmark(
             models=[("M1", "fake_path.pt", "dit")],
             ds_cfg=MagicMock(),
             device=torch.device("cpu"),
@@ -101,29 +101,28 @@ def test_run_physical_fidelity_benchmark_returns_correct_columns(tmp_path):
 
 @pytest.mark.unit
 def test_run_physical_fidelity_benchmark_writes_file(tmp_path):
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", return_value=[]):
-        out = tmp_path / "out.png"
-        run_physical_fidelity_benchmark(
-            models=[],
-            ds_cfg=MagicMock(),
-            device=torch.device("cpu"),
-            output_path=out,
-        )
+    out = tmp_path / "out.png"
+    run_physical_fidelity_benchmark(
+        models=[],
+        ds_cfg=MagicMock(),
+        device=torch.device("cpu"),
+        output_path=out,
+    )
     assert out.exists() and out.stat().st_size > 0
 
 
 @pytest.mark.unit
 def test_run_physical_fidelity_benchmark_empty_models_empty_df(tmp_path):
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", return_value=[]):
-        out = tmp_path / "out.png"
-        df = run_physical_fidelity_benchmark(
-            models=[],
-            ds_cfg=MagicMock(),
-            device=torch.device("cpu"),
-            output_path=out,
-        )
+    out = tmp_path / "out.png"
+    df, vols = run_physical_fidelity_benchmark(
+        models=[],
+        ds_cfg=MagicMock(),
+        device=torch.device("cpu"),
+        output_path=out,
+    )
     assert isinstance(df, pd.DataFrame)
     assert len(df) == 0
+    assert isinstance(vols, dict)
 
 
 @pytest.mark.unit
@@ -134,12 +133,12 @@ def test_run_physical_fidelity_benchmark_multiple_models(tmp_path):
         for i in range(3)
     ]
 
-    def side_effect(name, ckpt_path, model_type, ds_cfg, device):
-        return mock_row_factory
+    def side_effect(name, ckpt_path, model_type, ds_cfg, device, **kwargs):
+        return (mock_row_factory, {})
 
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", side_effect=side_effect):
+    with patch("neural_pbf.eval.benchmark._legacy._run_model_benchmark", side_effect=side_effect):
         out = tmp_path / "multi.png"
-        df = run_physical_fidelity_benchmark(
+        df, _ = run_physical_fidelity_benchmark(
             models=[("M1", "p1.pt", "net"), ("M2", "p2.pt", "dit")],
             ds_cfg=MagicMock(),
             device=torch.device("cpu"),
@@ -152,29 +151,32 @@ def test_run_physical_fidelity_benchmark_multiple_models(tmp_path):
 @pytest.mark.unit
 def test_run_physical_fidelity_benchmark_creates_parent_dirs(tmp_path):
     nested_path = tmp_path / "deep" / "nested" / "out.png"
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", return_value=[]):
-        run_physical_fidelity_benchmark(
-            models=[],
-            ds_cfg=MagicMock(),
-            device=torch.device("cpu"),
-            output_path=nested_path,
-        )
+    run_physical_fidelity_benchmark(
+        models=[],
+        ds_cfg=MagicMock(),
+        device=torch.device("cpu"),
+        output_path=nested_path,
+    )
     assert nested_path.exists()
 
 
 # ── _rollout_sample ───────────────────────────────────────────────────────────
 
 def _make_fake_batch(B: int = 1, C: int = 1, D: int = 4, H: int = 4, W: int = 4,
-                     device: torch.device = torch.device("cpu")) -> dict:
+                     device: torch.device = torch.device("cpu"),
+                     include_patch_origin: bool = False) -> dict:
     """Create a minimal batch dict with tensors for rollout testing."""
     shape = (B, C, D, H, W)
-    return {
+    batch = {
         "T_in": torch.rand(*shape, device=device),
         "mask": torch.zeros(*shape, device=device),
         "Q": torch.zeros(*shape, device=device),
         "conditioning": torch.zeros(B, 4, device=device),
         "T_target": torch.rand(*shape, device=device),
     }
+    if include_patch_origin:
+        batch["patch_origin"] = torch.zeros(B, 3, dtype=torch.long, device=device)
+    return batch
 
 
 class _TrivialVelocityNet(nn.Module):
@@ -209,7 +211,7 @@ def test_rollout_sample_returns_tensor_net_type():
     cond_enc = _TrivialCondEnc()
     out = _rollout_sample(model, cond_enc, batch, model_type="net", device=device, n_steps=2)
     assert isinstance(out, torch.Tensor)
-    assert out.shape == batch["T_target"].squeeze(1).shape
+    assert out.shape == batch["T_in"].shape  # rollout returns same shape as T_in (5D)
 
 
 @pytest.mark.unit
@@ -225,25 +227,40 @@ def test_rollout_sample_returns_tensor_dit_type():
 @pytest.mark.unit
 def test_rollout_sample_returns_tensor_rope_type():
     device = torch.device("cpu")
-    batch = _make_fake_batch(device=device)
+    # rope path calls _euler_rollout_rope which expects 6D tensors (B,1,1,D,H,W)
+    B, D, H, W = 1, 4, 4, 4
+    rope_shape = (B, 1, 1, D, H, W)
+    batch = {
+        "T_in": torch.rand(*rope_shape, device=device),
+        "mask": torch.zeros(*rope_shape, device=device),
+        "Q": torch.zeros(*rope_shape, device=device),
+        "conditioning": torch.zeros(B, 12, device=device),
+        "T_target": torch.rand(*rope_shape, device=device),
+        "patch_origin": torch.zeros(B, 3, dtype=torch.long, device=device),
+    }
     model = _TrivialVelocityNetRoPE()
     cond_enc = _TrivialCondEnc()
-    out = _rollout_sample(model, cond_enc, batch, model_type="rope", device=device, n_steps=2)
+    grid_attrs = {"dx_m": 1.5e-5, "dy_m": 1.5e-5, "dz_m": 1.5e-5}
+    out = _rollout_sample(
+        model, cond_enc, batch, model_type="rope", device=device, n_steps=2,
+        grid_attrs=grid_attrs,
+    )
     assert isinstance(out, torch.Tensor)
 
 
 # ── _run_model_benchmark ──────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_run_model_benchmark_returns_list():
-    result = _run_model_benchmark(
+def test_run_model_benchmark_returns_tuple_of_list_and_dict():
+    rows, vols = _run_model_benchmark(
         name="test_model",
         ckpt_path="nonexistent.pt",
         model_type="net",
         ds_cfg=MagicMock(),
         device=torch.device("cpu"),
     )
-    assert isinstance(result, list)
+    assert isinstance(rows, list)
+    assert isinstance(vols, dict)
 
 
 # ── run_system_comparison with data ──────────────────────────────────────────
@@ -274,10 +291,10 @@ def test_run_physical_fidelity_benchmark_mlflow_logging(tmp_path):
         {"Model": "M1", "Sample": "s0", "IoU": 0.8, "Depth_GT": 5.0,
          "Depth_Pred": 4.5, "T_max_Error": 50.0, "Offset_vox": 1.0},
     ]
-    with patch("neural_pbf.eval.benchmark._run_model_benchmark", return_value=mock_metrics):
+    with patch("neural_pbf.eval.benchmark._legacy._run_model_benchmark", return_value=(mock_metrics, {})):
         with patch("mlflow.log_artifact") as mock_log:
             out = tmp_path / "fidelity_mlflow.png"
-            df = run_physical_fidelity_benchmark(
+            df, _ = run_physical_fidelity_benchmark(
                 models=[("M1", "fake_path.pt", "dit")],
                 ds_cfg=MagicMock(),
                 device=torch.device("cpu"),
@@ -304,26 +321,28 @@ def test_run_system_comparison_mlflow_logging(tmp_path):
 
 @pytest.mark.unit
 def test_run_model_benchmark_returns_empty_on_missing_ckpt(tmp_path):
-    """Missing checkpoint file → returns [] without raising."""
+    """Missing checkpoint file → returns ([], {}) without raising."""
     ds_cfg = MagicMock()
-    result = _run_model_benchmark(
+    rows, vols = _run_model_benchmark(
         "m", str(tmp_path / "nonexistent.pt"), "net", ds_cfg, torch.device("cpu")
     )
-    assert result == []
+    assert rows == []
+    assert vols == {}
 
 
 @pytest.mark.unit
 def test_run_model_benchmark_returns_empty_on_unknown_model_type(tmp_path):
-    """Unknown model_type string → returns [] without raising."""
+    """Unknown model_type string → returns ([], {}) without raising."""
     ckpt_path = tmp_path / "fake.pt"
     torch.save(
         {"model_state": {}, "cond_encoder_state": {}, "fm_cfg": {}}, ckpt_path
     )
     ds_cfg = MagicMock()
-    result = _run_model_benchmark(
+    rows, vols = _run_model_benchmark(
         "m", str(ckpt_path), "totally_unknown_type", ds_cfg, torch.device("cpu")
     )
-    assert result == []
+    assert rows == []
+    assert vols == {}
 
 
 # ── real run_system_comparison with MLflow ────────────────────────────────────
@@ -346,7 +365,7 @@ def test_run_system_comparison_uses_mlflow_when_available(tmp_path):
     mock_client.get_run.return_value = mock_run
     mock_client.get_metric_history.return_value = [_m, _m2]
 
-    with patch("neural_pbf.eval.benchmark.MlflowClient", return_value=mock_client):
+    with patch("neural_pbf.eval.benchmark._legacy.MlflowClient", return_value=mock_client):
         df = run_system_comparison(
             {"v1": "run_id_abc123"},
             output_path=out,
@@ -366,7 +385,7 @@ def test_run_system_comparison_falls_back_to_nan_on_mlflow_error(tmp_path):
     mock_client = MagicMock()
     mock_client.get_run.side_effect = Exception("DB not found")
 
-    with patch("neural_pbf.eval.benchmark.MlflowClient", return_value=mock_client):
+    with patch("neural_pbf.eval.benchmark._legacy.MlflowClient", return_value=mock_client):
         df = run_system_comparison({"v1": "run123"}, output_path=out)
 
     assert len(df) == 1

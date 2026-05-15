@@ -333,7 +333,7 @@ def test_generate_offline_dataset_smoke(tmp_path):
     except ImportError:
         pytest.skip("torch not available")
 
-    script = Path(__file__).parent.parent / "scripts" / "generate_offline_dataset.py"
+    script = Path(__file__).parent.parent / "experiments" / "generate_offline_dataset.py"
     out_file = tmp_path / "test_dataset.h5"
 
     # --samples-per-run 5: tiny grid (32x16) generates ~48 path points.

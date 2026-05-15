@@ -74,8 +74,14 @@ class PatchFMThermalDatasetWithOrigin(PatchFMThermalDataset):
     """
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        from torch.utils.data import Subset
         sample = self.base_ds[idx]
-        path, sample_key = self.base_ds._keys[idx]
+        if isinstance(self.base_ds, Subset):
+            actual_ds = self.base_ds.dataset
+            actual_idx = self.base_ds.indices[idx]
+            path, sample_key = actual_ds._keys[actual_idx]
+        else:
+            path, sample_key = self.base_ds._keys[idx]
 
         with h5py.File(path, "r") as f:
             try:
