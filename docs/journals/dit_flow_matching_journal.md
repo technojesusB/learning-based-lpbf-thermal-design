@@ -1,10 +1,4 @@
-# Hi Black Forest Labs :) Glad you are here!
-
-As I really wanna work with you I thought to myself to go on a little sidequest, eventough my first babysteps on the surrogate training in this repository are just done, and see how the flow matching approach could work with my Laser Powder Bed Fusion Simulation. As FM is one of the things that made you famous (and it is elegant af!), I wanna give it a go and see how it can be transfered.
-
-Now! I found the guts to apply to this awesome vacancy. And then I thought: "Well, I have a solver, I walked my first surrogate steps, I understand the Conditional Flow Matching method, lets marry my surrogate ambitions with generative powers.". Why this could be a match? The beauty of FM lies in the deterministic coupling. By guiding the vector field with the previous state as an conditional anchor, we maintain physical consistency without sacrificing the generative flexibility of the FM approach. In other words: We don't just jump between plausible snapshots, but follow a physically consistent trajectory.
-
----
+# The Diffusion Transformer Journey
 
 > Note for transparency: While the core architectural decisions, physics formulations, dataset generation strategy, and debugging logic are my own, I heavily leveraged Claude Code via CLI to rapidly implement boilerplate, refactor PyTorch modules (like the FlashAttention/RoPE blocks), and optimize scripts. This allows me to iterate fast and keep focus on the model dynamics.
 
@@ -52,12 +46,12 @@ uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
 
 # TL;DR
 
-- **Hardware Grit**: I (almost) melted my eGPU to predict how metal melts. From 100% fan-speed engineering to literal carpet removal from my laptop's cooling system, I did what was necessary (and cried a little) to generate a stable 3D dataset using my own Triton-based solver [generate_offline_dataset.py](experiments/generate_offline_dataset.py)).
+- **Hardware Grit**: I (almost) melted my eGPU to predict how metal melts. From 100% fan-speed engineering to literal carpet removal from my laptop's cooling system, I did what was necessary (and cried a little) to generate a stable 3D dataset using my own Triton-based solver [generate_offline_dataset.py](../../experiments/generate_offline_dataset.py)).
 - **Systematic Ablation**: Evolved the architecture iteratively from a U-Net baseline to a high-fidelity 3D-RoPE Diffusion Transformer (DiT). I rigorously ablated each choice (RoPE, OneCycleLR) to ensure I’m building on empirical evidence, not just chasing incremental tweaks. (Even though I was looking in the direction of your core innovations and balanced scientific rigor with creating a work sample.)
 - **Physics-Informed Training**: Enforced the Heat Equation via a custom ReLoBRaLo-balanced PDE loss, weighting the PDE Loss with a dynamic weight. I solved the "floating point war story" where $10^{30}$ residuals were crashing bf16 training by de-normalizing to SI units and reference scaling.
-- **Custom Triton Kernels**: To maximize throughput on my 16GB VRAM (on my laptop.. so maybe not the best "choice" hardware wise), I implemented custom forward and backward Triton kernels ([triton_pde_loss.py](src/neural_pbf/physics/triton_pde_loss.py)) to fuse the PDE-loss calculations, demonstrating that I can navigate the full stack from physics to hardware-level optimization.
+- **Custom Triton Kernels**: To maximize throughput on my 16GB VRAM (on my laptop.. so maybe not the best "choice" hardware wise), I implemented custom forward and backward Triton kernels ([triton_pde_loss.py](../../src/neural_pbf/physics/triton_pde_loss.py)) to fuse the PDE-loss calculations, demonstrating that I can navigate the full stack from physics to hardware-level optimization.
 - **Domain-Specific Metrics**: I trust my Physical Fidelity Benchmark (Meltpool IoU, Depth Error, Hotspot Offset) over standard MSE. If the liquidus-isotherm isn't physically consistent, the model isn't production-ready, regardless of how low the pixel loss goes.
-- **Scaling to "Hero Run" (v5)**: Finalized training on the full 650-sample dataset using **Accelerate**, **bf16** precision, **TF32**, a batch size of **32**, and custom **Triton forward/backward kernels** for the PDE loss (see [train_fm_dit_triton.py](experiments/train_fm_dit_triton.py)). Fusing physics directly into the training step, squeezing every bit of throughput out of my 16GB VRAM (I push a batch size of 32 and utilize 98.4% of my VRAM. Yeah, close to the edge. What's that? Why aren't I using my 49-inch ultra-wide monitor right now? None of your business... ).
+- **Scaling to "Hero Run" (v5)**: Finalized training on the full 650-sample dataset using **Accelerate**, **bf16** precision, **TF32**, a batch size of **32**, and custom **Triton forward/backward kernels** for the PDE loss (see [train_fm_dit_triton.py](../../experiments/train_fm_dit_triton.py)). Fusing physics directly into the training step, squeezing every bit of throughput out of my 16GB VRAM (I push a batch size of 32 and utilize 98.4% of my VRAM. Yeah, close to the edge. What's that? Why aren't I using my 49-inch ultra-wide monitor right now? None of your business... ).
 
 ---
 
@@ -66,9 +60,9 @@ uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
 <summary><i>Recap: FDM Solver, Triton Optimization & Replay Buffer</i></summary>
 
 For you to be able to follow my journey propperly, here is a little recap on what is done allready:
-1. I implemented a Finite-Differences Method solver ([stepper.py](src/neural_pbf/integrator/stepper.py)) with PyTorch. Why? Differential Physics <3. I started with a simple moving gaussian heat source and stepwise improved with material lookup tabels (LUTs) and phase change maps. 
-2. After that was done I tried to enhance the performance with Triton ([triton_ops.py](src/neural_pbf/physics/triton_ops.py)) and this brought improvements of **~10.6x** in speed and reduces peak VRAM usage by **70%** (1.76 GB -> 0.53 GB) by fusing intermediate tensor fields (conductivity, melt fraction, indices). I only work on my local machine, a laptop with an 16GB vRAM eGPU running on windows (won't buy one of those again..) so a little speed and memory efficiency comes in handy. I decided on using WSL, as Triton requires Linux (well, it seems there are some trys to port it to Windows, but everything i read about it seemed like pure pain).
-3. Based on this simulation I trained my first surrogate model, a basic Unet ([surrogate.py](src/neural_pbf/models/surrogate.py)). As my SSD is, lets say, tight, I descided on an experience buffer ([replay_buffer.py](src/neural_pbf/models/replay_buffer.py)) (after making the mistake to go with online learning, resp. simulating a step with my solver after each training step, this had multiple disadvantages besides a very slow training). Meaning I simulate some 80 steps and store it in my RAM. During training I randomly grab those samples and train my model. The results were okay'ish for the baseline.
+1. I implemented a Finite-Differences Method solver ([stepper.py](../../src/neural_pbf/integrator/stepper.py)) with PyTorch. Why? Differential Physics <3. I started with a simple moving gaussian heat source and stepwise improved with material lookup tabels (LUTs) and phase change maps. 
+2. After that was done I tried to enhance the performance with Triton ([triton_ops.py](../../src/neural_pbf/physics/triton_ops.py)) and this brought improvements of **~10.6x** in speed and reduces peak VRAM usage by **70%** (1.76 GB -> 0.53 GB) by fusing intermediate tensor fields (conductivity, melt fraction, indices). I only work on my local machine, a laptop with an 16GB vRAM eGPU running on windows (won't buy one of those again..) so a little speed and memory efficiency comes in handy. I decided on using WSL, as Triton requires Linux (well, it seems there are some trys to port it to Windows, but everything i read about it seemed like pure pain).
+3. Based on this simulation I trained my first surrogate model, a basic Unet ([surrogate.py](../../src/neural_pbf/models/surrogate.py)). As my SSD is, lets say, tight, I descided on an experience buffer ([replay_buffer.py](../../src/neural_pbf/models/replay_buffer.py)) (after making the mistake to go with online learning, resp. simulating a step with my solver after each training step, this had multiple disadvantages besides a very slow training). Meaning I simulate some 80 steps and store it in my RAM. During training I randomly grab those samples and train my model. The results were okay'ish for the baseline.
 
 </details>
 
@@ -185,7 +179,7 @@ Now I have my sweet data from the 10 randomized test runs, yielding 500 samples 
 ### 3.2. Representative Sample Preview (Mid-Hatch State)
 The following visualization (Sample 125 of the smaller 150 sample dataset) showcases a mid-layer state where the island scan strategy is roughly 50% complete.
 
-![Dataset Preview](docs/assets/data_sample.png)
+![Dataset Preview](../assets/data_sample.png)
 
 ### 3.3. Physics-Based Features & Normalization
 To ensure training stability and physical consistency, the dataset utilizes a multi-modal feature set:
@@ -205,7 +199,7 @@ The simulation incorporates non-linear material behavior, in the following the s
 *   **Latent Heat of Fusion (L):** 263 kJ/kg
 *   **Solidus/Liquidus:** 1638 K / 1658 K
 
-![T-dependent Material Parameters s316l](docs/assets/materials/ss316l_refined.png)
+![T-dependent Material Parameters s316l](../assets/materials/ss316l_refined.png)
 
 ### 3.5. Interpreting the Data
 When taking a look at the temperature field, respectively the phase change map, you would assume that there must be, due to the extrem high cooling rates characteristic for this procedure, much more solidified areas. Because of the current state of my implementation and its simplification we basically shooting heat into an adiabatic box (Homogeneous Neumann Boundary Condition (Zero Flux)). In other words: No heat goes out. In reality you would have a substrate plate (intenionally heated or not) where the powder is placed on, having an impact on the thermal flux and thus the temperature field. Additional cooling also happens through the shielding gas flow. In my solver right now, there are no surface conditions. Furthermore the powder is assumed to be insulating due to the point contact, which is why the heat does not actually spread throughout the volume. So the heat source is heating up the exposure point, jumps to the next one and heating this one up again. The thermal energy does not disperse because there are no actual temperature gradients. But for now, the data is sufficient for its purpose. 
@@ -216,8 +210,8 @@ When taking a look at the temperature field, respectively the phase change map, 
 > [!NOTE]
 > **Enforcing Zero Flux (Adiabatic Condition)**
 > To model the insulated build chamber (Adiabatic Box), the Homogeneous Neumann Boundary Condition ($\nabla T \cdot \mathbf{n} = 0$) is implemented across two different abstraction layers:
-> - **PyTorch Reference ([`ops.py`](src/neural_pbf/physics/ops.py#L60-L67)):** Uses global `replicate` padding to ensure that the finite-difference stencil sees identical neighbors at the edges.
-> - **Triton High-Performance Kernel ([`triton_pde_loss.py`](src/neural_pbf/physics/triton_pde_loss.py#L96-L101)):** Uses on-the-fly index clamping via `tl.maximum(ix - 1, 0)`, avoiding any additional memory allocation and minimizing HBM traffic—a significantly more elegant approach for high-resolution 3D grids.
+> - **PyTorch Reference ([`ops.py`](../../src/neural_pbf/physics/ops.py#L60-L67)):** Uses global `replicate` padding to ensure that the finite-difference stencil sees identical neighbors at the edges.
+> - **Triton High-Performance Kernel ([`triton_pde_loss.py`](../../src/neural_pbf/physics/triton_pde_loss.py#L96-L101)):** Uses on-the-fly index clamping via `tl.maximum(ix - 1, 0)`, avoiding any additional memory allocation and minimizing HBM traffic—a significantly more elegant approach for high-resolution 3D grids.
 
 </details>
 
@@ -256,14 +250,14 @@ uv run experiments/train_fm_patches.py \
 ```
 </details>
 
-I soon aknowledged, that the grid resolution results in a way to high memory consumption, hence I decided to go again with 64x64x64 patches including the surface, cut out around the hottest area. The loss showing rapid reduction the first 10 epochs, where the model quickly learns the basic structure. You can find the baseline experiment [here](experiments/train-fm-patches.py) and a training sample over the epochs [here](docs/assets/FM-Baseline-trainsamples.png).
+I soon aknowledged, that the grid resolution results in a way to high memory consumption, hence I decided to go again with 64x64x64 patches including the surface, cut out around the hottest area. The loss showing rapid reduction the first 10 epochs, where the model quickly learns the basic structure. You can find the baseline experiment [here](../../experiments/train_fm_patches.py) and a training sample over the epochs [here](../assets/FM-Baseline-trainsamples.png).
 
-![FM-Baseline Loss](docs/assets/FM-Baseline-losses.png)
+![FM-Baseline Loss](../assets/FM-Baseline-losses.png)
 
 The loss curve shows rapid reduction in the first 10 epochs, where the model's CNN-based inductive bias (locality and translation invariance) quickly captures the fundamental spatial relationships (as also highlighted by the comparative failure of non-local absolute encodings in [^10]). Convergence remains stable, hitting its optimal validation state at **epoch 79**.
 
-![FM-Baseline Test Results (best)](docs/assets/FM-Baseline-testsamples.png)
-Even without an explicit Physics Loss, the baseline achieves remarkable structural fidelity by implicitly learning the 'statistical physics' of the system. To the human eye, the reconstructed meltpool geometry follows physical gradients with high consistency. By conditioning on the instantaneous heat source ($Q$), the phase map, and material parameters, the model reconstructs the thermal manifold on unseen test samples with high precision. While the UNet-based baseline is surprisingly effective, it is inherently limited by its local inductive bias. To explore the potential of long-range spatial dependencies and to leverage the superior scalability of attention-based architectures, specifically their capacity to maintain stable training while scaling both in **depth (model parameters)** and **sequence length (3D grid resolution)** [^30][^36] (a choice that seems natural to me, given Black Forest Labs' success with the DiT), I decided to transition to a 3D-DiT. The goal: seeing if a more expressive model can capture the intricate thermal interactions across the entire grid without the rigid constraints of a convolutional backbone.
+![FM-Baseline Test Results (best)](../assets/FM-Baseline-testsamples.png)
+Even without an explicit Physics Loss, the baseline achieves remarkable structural fidelity by implicitly learning the 'statistical physics' of the system. To the human eye, the reconstructed meltpool geometry follows physical gradients with high consistency. By conditioning on the instantaneous heat source ($Q$), the phase map, and material parameters, the model reconstructs the thermal manifold on unseen test samples with high precision. While the UNet-based baseline is surprisingly effective, it is inherently limited by its local inductive bias. To explore the potential of long-range spatial dependencies and to leverage the superior scalability of attention-based architectures, specifically their capacity to maintain stable training while scaling both in **depth (model parameters)** and **sequence length (3D grid resolution)** [^30][^36] (a choice that seems natural to me, given the company's - i wanna apply for - success with the DiT), I decided to transition to a 3D-DiT. The goal: seeing if a more expressive model can capture the intricate thermal interactions across the entire grid without the rigid constraints of a convolutional backbone.
 
 <details>
 <summary><i>Scientific Context: Trajectory Consistency & Anchoring</i></summary>
@@ -300,11 +294,11 @@ In the first iteration of the 3D-DiT (v1), I aimed for a 'vanilla' implementatio
 
 While the loss drops initially, it hits a hard plateau at ~0.05 MSE. The extreme, high-frequency oscillation in the loss curves highlights the optimization turbulence caused by forcing a sequence of 4,096 tokens into a batch size of 2.
 
-![DiT v1 Loss](docs/assets/DiT-v1-losses.png)
+![DiT v1 Loss](../assets/DiT-v1-losses.png)
 
 These mathematical shortcomings translated directly into the physical domain: the predicted temperature fields exhibited severe fragmentation and "checkerboard" artifacts. Instead of a coherent field, the model effectively learned a localized mapping (e.g., $T \approx f(Q)$), optimizing patches in isolation.
 
-![DiT v1 Testsamples](docs/assets/DiT-v1-testsamples.png)
+![DiT v1 Testsamples](../assets/DiT-v1-testsamples.png)
 
 <details>
 <summary><i>The APE Failure</i></summary>
@@ -315,7 +309,7 @@ These mathematical shortcomings translated directly into the physical domain: th
 </details>
 
 ### 5.2. Second Iteration: Fixed 3D sinusoidal embeddings
-To enforce spatial coherence without overwhelming the model's capacity, I adjusted the tokenization strategy. First, the token count was reduced by increasing the `patch_size` to 8 (yielding only 512 tokens), which significantly simplified the global learning task. Initially, I experimented with overlapping patches (`kernel=12`) to enforce local continuity, but this inflated the input layer parameters from ~65k to over 1.4 million. This caused the model to output high-frequency noise and drastically slowed down convergence. By reverting to a standard, non-overlapping convolution (`kernel=8`), I kept the parameter count manageable. The critical adjustment for spatial coherence is the transition to fixed 3D sinusoidal embeddings, which provide the model with a predefined coordinate system to globally "stitch" the patches together via Self-Attention (see [experiment 2](experiments/train_fm_dit.py)).
+To enforce spatial coherence without overwhelming the model's capacity, I adjusted the tokenization strategy. First, the token count was reduced by increasing the `patch_size` to 8 (yielding only 512 tokens), which significantly simplified the global learning task. Initially, I experimented with overlapping patches (`kernel=12`) to enforce local continuity, but this inflated the input layer parameters from ~65k to over 1.4 million. This caused the model to output high-frequency noise and drastically slowed down convergence. By reverting to a standard, non-overlapping convolution (`kernel=8`), I kept the parameter count manageable. The critical adjustment for spatial coherence is the transition to fixed 3D sinusoidal embeddings, which provide the model with a predefined coordinate system to globally "stitch" the patches together via Self-Attention (see [experiment 2](../../experiments/train_fm_dit.py)).
 
 <details>
 <summary><i>Technical Specs & Context (DiT v2)</i></summary>
@@ -330,9 +324,9 @@ To enforce spatial coherence without overwhelming the model's capacity, I adjust
 
 </details>
 
-While the transition to non-overlapping patches and fixed sinusoidal embeddings successfully eliminated the checkerboard fragmentation, the training progress stalled. After 100 epochs, the [loss curve](docs/assets/DiT-v2-losses.png) slowly but surely began moving horizontally (flattening around ~0.64). Although a rough shape of the heat source started emerging from the noise, the model lacked the "momentum" to fully converge.
+While the transition to non-overlapping patches and fixed sinusoidal embeddings successfully eliminated the checkerboard fragmentation, the training progress stalled. After 100 epochs, the [loss curve](../assets/DiT-v2-losses.png) slowly but surely began moving horizontally (flattening around ~0.64). Although a rough shape of the heat source started emerging from the noise, the model lacked the "momentum" to fully converge.
 
-![DiT v2 Testsamples](docs/assets/DiT-v2-testsamples.png)
+![DiT v2 Testsamples](../assets/DiT-v2-testsamples.png)
 
 This is a classic symptom of training Transformers from scratch: the `adaLN-zero` initialization safely anchors the model at the start, but a constant learning rate (`1e-4`) fails to overcome the initial optimization plateau and lacks the finesse for deep convergence later on [^33].
 
@@ -359,9 +353,9 @@ uv run experiments/train_fm_dit.py \
 </details>
 
 ### 5. 3. Third Iteration: The Pragmatic Pivot - Jumping to 3D-RoPE
-From a purely academic standpoint, the correct next step would be to train the V2 architecture for 500–1000 epochs with a tuned learning rate scheduler to establish a rigorous baseline. However, since this repository serves as an applied engineering sample and considering that Black Forest Labs heavily relies on Rotary Positional Embeddings (RoPE) in architectures like Flux, I decided to take a more pragmatic approach. Instead of burning compute on optimizing an older embedding paradigm, I am directly upgrading to the current State of the Art. If BFL uses RoPE for FLUX, I might as well use it for thermal fluxes. For the third iteration, I implemented the following upgrades:
+From a purely academic standpoint, the correct next step would be to train the V2 architecture for 500–1000 epochs with a tuned learning rate scheduler to establish a rigorous baseline. However, since this repository serves as an applied engineering sample and considering that the company of my interest (where I want to apply with this sidequest) heavily relies on Rotary Positional Embeddings (RoPE) in architectures like Flux, I decided to take a more pragmatic approach. Instead of burning compute on optimizing an older embedding paradigm, I am directly upgrading to the current State of the Art. If BFL uses RoPE for FLUX, I might as well use it for thermal fluxes. For the third iteration, I implemented the following upgrades:
 
-1. **True 3D-RoPE Integration & Return to p=4:** I implemented physical 3D Rotary Positional Embeddings (see [train_fm_dit_rope.py](experiments/train_fm_dit_rope.py)) and returned to the higher-resolution **4x4x4 tokenization**. By carefully splitting the `embed_dim` (288) into three spatial axes (36 dims per head), the rotation is applied purely multiplicatively to the Queries ($Q$) and Keys ($K$) *inside* the Self-Attention mechanism, strictly enforcing relative spatial awareness. Crucially, the 3D-RoPE coordinates are mapped to discrete patch-grid indices ($0, 1, 2 \dots$) rather than physical SI units (mm) to prevent the rotation angles from collapsing near zero at the micro-scale of the melt pool, ensuring the model successfully learns global spatial relationships.
+1. **True 3D-RoPE Integration & Return to p=4:** I implemented physical 3D Rotary Positional Embeddings (see [train_fm_dit_rope.py](../../experiments/train_fm_dit_rope.py)) and returned to the higher-resolution **4x4x4 tokenization**. By carefully splitting the `embed_dim` (288) into three spatial axes (36 dims per head), the rotation is applied purely multiplicatively to the Queries ($Q$) and Keys ($K$) *inside* the Self-Attention mechanism, strictly enforcing relative spatial awareness. Crucially, the 3D-RoPE coordinates are mapped to discrete patch-grid indices ($0, 1, 2 \dots$) rather than physical SI units (mm) to prevent the rotation angles from collapsing near zero at the micro-scale of the melt pool, ensuring the model successfully learns global spatial relationships.
 2. **FlashAttention Backend:** To cleanly inject RoPE while maximizing throughput, I stripped out PyTorch's default `nn.MultiheadAttention`. I built a custom Attention block utilizing `F.scaled_dot_product_attention`, natively leveraging hardware-accelerated FlashAttention.
 3. **OneCycleLR Scheduler:** To solve the convergence stall, I integrated a `OneCycleLR` scheduler. A 10% linear warmup safely breaks the `adaLN-zero` symmetry without exploding gradients, followed by a cosine decay from an aggressive peak learning rate of `3e-4`.
 4. **Extended Training Horizon:** Acknowledging the data-hungry nature of global attention, the epoch count was scaled to 500 to give the scheduler sufficient runway.
@@ -380,13 +374,13 @@ From a purely academic standpoint, the correct next step would be to train the V
 
 The results after 240 epochs showed a significant improvement in detail, with the melt pool boundaries becoming much sharper than in v2. While V3 achieved numerical parity with the baseline, the training process revealed significant loss variance. This jitter appears visually amplified in the final third of the training: as the base loss drops toward 0.01, small absolute errors that were negligible during the initial "macro-learning" phase are magnified by the logarithmic Y-axis. At this level of precision, the model is no longer optimizing for the primary heat source location but is competing over "micro" thermal gradients and boundary details that vary significantly between individual samples, resulting in a high-frequency "tug-of-war" in the gradients [^33][^34].
 
-![DiT v3 Loss](docs/assets/DiT-v3-losses.png)
+![DiT v3 Loss](../assets/DiT-v3-losses.png)
 
 Second, because the run was interrupted at epoch 247 of a planned 500-epoch schedule, the model was saved while the learning rate was still at roughly 50% of its peak value. This prevented the final annealing phase, leaving the model in a "hot" optimization state that explains the fine spectral aliasing (the visible grid) in the samples [^33].
 
-![DiT v3 Testsamples (Final Evaluation)](docs/assets/DiT-v3-testsamples.png)
+![DiT v3 Testsamples (Final Evaluation)](../assets/DiT-v3-testsamples.png)
 
- While I could have reintroduced the heuristic TV-loss from V2 to smooth these out, I chose the more rigorous path: replacing mathematical smoothing with physical consistency through a PDE-residual loss in V4 (see [train_fm_dit_accelerate.py](experiments/train_fm_dit_accelerate.py)).
+ While I could have reintroduced the heuristic TV-loss from V2 to smooth these out, I chose the more rigorous path: replacing mathematical smoothing with physical consistency through a PDE-residual loss in V4 (see [train_fm_dit_accelerate.py](../../experiments/train_fm_dit_accelerate.py)).
 
  <details>
 <summary>▶️ Reproduce Experiment v3 (DiT-RoPE)</summary>
@@ -421,15 +415,15 @@ Now as the v3 run got interrupted at ~250 epochs, late at night I thought: *Hmhh
 
 As seen in the training dynamics, the physics weight $\lambda_{phys}$ acts as a thermodynamic "thermostat," fluctuating over four orders of magnitude ($10^{-3}$ to $10^1$). This erratic balancing is key: while the optimizer minimizes a single joint loss, ReLoBRaLo treats the components as separate indicators of progress, ensuring the physics constraint never "blinds" the generative learning. This dual-objective training also explains why the **Validation Loss** (measuring pure generative fidelity) remains glued to the **FM Data Loss** (blue line) and consistently stays below the **Total Loss** (yellow line). The model is essentially paying a "physics tax" during training—a small sacrifice in total loss to guarantee that the sharp predictions aren't just pixel-perfect, but physically consistent. 
 
-![DiT v4 Loss](docs/assets/DiT-v4-losses-detailed.png)
+![DiT v4 Loss](../assets/DiT-v4-losses-detailed.png)
 
 Comparing the test samples of v3 and v4 reveals a subtle but crucial shift. While v4 still exhibits the characteristic "patch-grid" artifacts, the underlying thermal field is clearly more regularized. Looking at the depth cross-sections, v4 achieves a 11% reduction in Meltpool Depth Error (6.5 vox) compared to v3. This suggests that while the generative part is still fighting the $4 \times 4$ tokenization, the PDE residual is successfully enforcing a more realistic heat flux into the material.
 
 The persistence of the grid artifacts in v4 also provides a fascinating look into Schedule Dynamics. While both runs lasted 250 epochs, their "thermal history" was different: v3 was interrupted halfway through a 500-epoch cycle (staying in a high-LR exploration state), while v4 completed a compressed 250-epoch cycle. This observation points toward a "shock-freezing" effect: in v4, the rapid learning rate decay forced the weights to exploit the physical global minimum (correct depth) but "locked" the high-frequency patch boundaries before they could be refined. The model was essentially caught in a state where it was physically more honest than v3, but visually less polished due to the accelerated weight cooling (pure assumptions though!).
 
-![DiT v4 Testsamples](docs/assets/DiT-v4-testsamples.png)
+![DiT v4 Testsamples](../assets/DiT-v4-testsamples.png)
 
-The result was a three-order-of-magnitude drop in the PDE residual, providing the necessary stability for the upcoming final scale-up: a full-dataset run with a custom **Triton-accelerated physics backward pass** (see [train_fm_dit_triton.py](experiments/train_fm_dit_triton.py)) (big dreams, let's see if I don't drive myself insane in the process).
+The result was a three-order-of-magnitude drop in the PDE residual, providing the necessary stability for the upcoming final scale-up: a full-dataset run with a custom **Triton-accelerated physics backward pass** (see [train_fm_dit_triton.py](../../experiments/train_fm_dit_triton.py)) (big dreams, let's see if I don't drive myself insane in the process).
 
 > [!IMPORTANT]
 > **Current Status (Iteration 5):**
@@ -453,7 +447,7 @@ uv run accelerate launch --num_processes 1 \
 For v5, I scaled the architecture to its hardware limit. This "Hero Run" is designed to marrying all previous insights into one high-performance pipeline while adding the triton PDE loss:
 
 1. **Full Scale Data:** Trained on the complete 650-sample corpus (70/20/10 - train/val/test - with seed 42, the answer to life, the universe, and everything), providing the highest physical variance seen by the model yet.
-2. **Custom Triton Physics Backend:** For the physics-informed training, this time, I utilized my custom triton PDE loss (see [triton_pde_loss.py](src/neural_pbf/physics/triton_pde_loss.py)) forward/backward kernels. This fuses the finite-difference stencils into single hardware calls [^8], allowing the model to "feel" the heat equation during every single gradient update without the usual Autodiff bottleneck.
+2. **Custom Triton Physics Backend:** For the physics-informed training, this time, I utilized my custom triton PDE loss (see [triton_pde_loss.py](../../src/neural_pbf/physics/triton_pde_loss.py)) forward/backward kernels. This fuses the finite-difference stencils into single hardware calls [^8], allowing the model to "feel" the heat equation during every single gradient update without the usual Autodiff bottleneck.
 3. **Hardware to the Edge:** Using **HuggingFace Accelerate**, **bf16** precision with a **batch size of 32** and enabling TF32 (TensorFloat-32) for any remaining float32 operations. This ensures maximum throughput on Ampere architecture (98.4% VRAM utilization) while maintaining numerical stability for the physics residuals.
 4. **Optimized Learning Dynamics:** Employs a full 500-epoch `OneCycleLR` schedule with proper cosine annealing and **ReLoBRaLo** dynamic weighting for the PDE loss.
 
@@ -463,21 +457,21 @@ For v5, I scaled the architecture to its hardware limit. This "Hero Run" is desi
 To ensure that the custom Triton physics kernels are not just fast, but mathematically exact and numerically stable in **bf16**, I implemented a validation pipeline:
 
 - **Double-Precision Cross-Validation**: Every custom Triton kernel (Forward & Backward) is verified against a **`float64` PyTorch reference**. I enforced a relative error tolerance of < 1% for values.
-  - *Reference:* [`experiments/train_fm_dit_triton.py` (L131–141)](experiments/train_fm_dit_triton.py#L131-L141)
+  - *Reference:* [`experiments/train_fm_dit_triton.py` (L131–141)](../../experiments/train_fm_dit_triton.py#L131-L141)
 - **Gradient Checking (Finite Differences)**: I validate the custom Triton backward pass by comparing the analytical gradients against numerical finite differences. This ensures the physics-informed gradients $\frac{\partial \mathcal{L}_{pde}}{\partial \theta}$ are mathematically correct.
-  - *Reference:* [`experiments/train_fm_dit_triton.py` (L143–166)](experiments/train_fm_dit_triton.py#L143-L166)
+  - *Reference:* [`experiments/train_fm_dit_triton.py` (L143–166)](../../experiments/train_fm_dit_triton.py#L143-L166)
 - **Physics Scaling & Stability**: To prevent the $10^{30}$ overflow in reduced precision (**bf16**), I implemented domain-specific scaling. Residuals are de-normalizing to SI units and re-scaled by $Q_{ref} \approx 1.35 \times 10^{15} \, W/m^3$, mapping the physics loss to $\mathcal{O}(1)$. By fusing stencils in Triton, the **Arithmetic Intensity (AI)** is maximized by keeping intermediate results in fast registers, effectively bypassing the HBM bandwidth bottleneck [^8].
-  - *Reference:* [`src/neural_pbf/physics/triton_pde_loss.py` (L341–345)](src/neural_pbf/physics/triton_pde_loss.py#L341-L345)
+  - *Reference:* [`src/neural_pbf/physics/triton_pde_loss.py` (L341–345)](../../src/neural_pbf/physics/triton_pde_loss.py#L341-L345)
 
 </details>
 
 The Hero Run (v5) utilizes ReLoBRaLo for dynamic physics weighting. The following breakdown shows the stable convergence of both the Flow Matching (FM) data loss and the PDE residual. Note how increasingly less aggressive the PDE loss weighting becomes. When the residual is large, the weighting factor $\lambda_{phys}$ is suppressed to maintain numerical stability and prevent gradient explosions. As the residual converges and enters a manageable range, the weighting becomes less 'aggressive,' allowing the physics-informed regularization to smoothly guide the final convergence. This self-regulating mechanism ensures a stable co-existence of physics and data-driven learning without manual scheduling of the loss weights.
 
-![V5 Loss Analytics](docs/assets/DiT-v5-hero-losses-detailed.png)
+![V5 Loss Analytics](../assets/DiT-v5-hero-losses-detailed.png)
 
-As can be seen in the following gallery, the "Hero Run" (v5) reduced the aliasing and checkerboard artifacts compared to v4 (see 5.4. [Iteration 4 testsamples](docs/assets/DiT-v4-testsamples.png)), but they are still present in subtle forms. The model performs well in regions with sharp thermal gradients but shows some spectral bias in smoother transition zones (see samples 3 and 5). While literature identifies the introduction of stochasticity (SDEs) as essential for capturing micro-scale fluctuations and preventing bias in smooth fields [^4][^5][^7], my strategy is to first exhaust deterministic improvements. Specifically, I hypothesize that the remaining artifacts are primarily due to a lack of temporal grounding; introducing **v6 (Explicit $T_{in}$ context)** will act as a conditional anchor to stabilize the trajectory [^17][^28] before I consider adding the complexity of stochastic noise.
+As can be seen in the following gallery, the "Hero Run" (v5) reduced the aliasing and checkerboard artifacts compared to v4 (see 5.4. [Iteration 4 testsamples](../assets/DiT-v4-testsamples.png)), but they are still present in subtle forms. The model performs well in regions with sharp thermal gradients but shows some spectral bias in smoother transition zones (see samples 3 and 5). While literature identifies the introduction of stochasticity (SDEs) as essential for capturing micro-scale fluctuations and preventing bias in smooth fields [^4][^5][^7], my strategy is to first exhaust deterministic improvements. Specifically, I hypothesize that the remaining artifacts are primarily due to a lack of temporal grounding; introducing **v6 (Explicit $T_{in}$ context)** will act as a conditional anchor to stabilize the trajectory [^17][^28] before I consider adding the complexity of stochastic noise.
 
-![V5 Gallery Test](docs/assets/DiT-v5-hero-testsamples.png)
+![V5 Gallery Test](../assets/DiT-v5-hero-testsamples.png)
 
 <details>
 <summary>▶️ Reproduce Experiment v5 (DiT-Triton-Hero)</summary>
@@ -508,7 +502,7 @@ These metrics evaluate how well the model captures the non-linear phase-change b
 *   **Meltpool IoU (Intersection over Union):**
     Quantifies the volumetric overlap of the predicted vs. ground truth liquidus regions ($T > T_{liquidus}$).
     $$\text{IoU} = \frac{|V_{pred} \cap V_{gt}|}{|V_{pred} \cup V_{gt}|}$$
-    *Implementation:* [`geometry.py:iou_melt_volumes`](src/neural_pbf/eval/metrics/geometry.py)
+    *Implementation:* [`geometry.py:iou_melt_volumes`](../../src/neural_pbf/eval/metrics/geometry.py)
 *   **Meltpool Depth Error:**
     The absolute difference in the maximum vertical penetration of the meltpool. This is critical for predicting keyhole stability.
     $$\Delta Z_{depth} = |z_{max, pred} - z_{max, gt}|$$
@@ -517,19 +511,19 @@ These metrics evaluate how well the model captures the non-linear phase-change b
     $$\text{Offset} = \sqrt{(\Delta x)^2 + (\Delta y)^2 + (\Delta z)^2}$$
 *   **Tmax Error:**
     Accuracy of the peak temperature prediction, essential for vaporisation modeling.
-    *Implementation:* [`geometry.py:evaluate_physical_metrics`](src/neural_pbf/eval/metrics/geometry.py)
+    *Implementation:* [`geometry.py:evaluate_physical_metrics`](../../src/neural_pbf/eval/metrics/geometry.py)
 
 #### 2. Structural and Spectral Fidelity (The "Aliasing" Benchmark)
 These metrics quantify high-frequency artifacts (the "checkerboard" effect) typical for patch-based Transformers.
 *   **Power Spectral Density (PSD):**
     We perform a 3D Fast Fourier Transform (FFT) and compute the radial average of the power spectrum to identify unwanted energy spikes at the patch-grid frequencies ($1/patch\_size$).
-    *Implementation:* [`spectral.py:compute_radial_psd`](src/neural_pbf/eval/metrics/spectral.py)
+    *Implementation:* [`spectral.py:compute_radial_psd`](../../src/neural_pbf/eval/metrics/spectral.py)
 *   **Total Variation (TV) Error:**
     Measures the "graininess" or noise floor of the predicted field. v5 uses a PDE-regularized loss to minimize this.
     $$TV(T) = \sum_{i,j,k} |\nabla T_{i,j,k}|$$
 *   **Patchiness Boundary Discontinuity (PBD):**
     Our custom "Aliasing Index". It measures the ratio of the average gradient at patch boundaries versus the patch interior. A value of 1.0 represents a perfectly smooth, seamless transition.
-    *Implementation:* [`spectral.py:calculate_boundary_discontinuity`](src/neural_pbf/eval/metrics/spectral.py)
+    *Implementation:* [`spectral.py:calculate_boundary_discontinuity`](../../src/neural_pbf/eval/metrics/spectral.py)
 
 #### 3. System Performance
 *   **Training Throughput:**
@@ -568,7 +562,7 @@ The observed error of ~617 K in v5 represents a **50% improvement** over the bas
 
 </details>
 
-![Physical Performance Dashboard](docs/assets/benchmark_dashboard_physics.png)
+![Physical Performance Dashboard](../assets/benchmark_dashboard_physics.png)
 
 ---
 
@@ -588,8 +582,8 @@ These metrics quantify high-frequency artifacts (the "checkerboard" effect) typi
 **Interpretation:**
 By fusing Triton-accelerated PDE kernels with high-resolution tokenization ($p=4$), v5 achieves a significant reduction in structural noise. The **Total Variation (TV) deviation was cut from >160% (v4) to 60% (v5)**. While grid artifacts remain visible, this ~2.7x improvement in spectral purity represents the first successful stabilization of the thermal field via direct hardware-fused PDE regularization.
 
-![Structural Noise & Aliasing Analysis](docs/assets/benchmark_structural_metrics.png)
-![Spectral Density Analysis](docs/assets/benchmark_spectral_analysis.png)
+![Structural Noise & Aliasing Analysis](../assets/benchmark_structural_metrics.png)
+![Spectral Density Analysis](../assets/benchmark_spectral_analysis.png)
 
 > [!NOTE]
 > **Spectral Analysis:** The vertical lines in the plots indicate the frequencies $f = 1/patch\_size$ (0.125 and 0.25). Deviations here identify "Patchiness" artifacts. v5 successfully suppresses these "spikes" compared to v4, especially in the high-frequency tail.
@@ -635,7 +629,7 @@ To ensure that the Triton infrastructure does not cause regressions, I compared 
 
 **Conclusion:** Profiling confirms that **v5 is actually more efficient on the GPU**. The higher GPU utilization reflects better hardware saturation (Compute-bound) enabled by **TF32** and optimized kernel dispatch, while the increased memory footprint is a trade-off for using 32-bit storage to maintain thermodynamic stability.
 
-![System Resource & Throughput Comparison](docs/assets/benchmark_system_comparison.png)
+![System Resource & Throughput Comparison](../assets/benchmark_system_comparison.png)
 
 </details>
 
@@ -659,8 +653,6 @@ Other concepts currently occupying my mind:
 - **High-Fidelity Multi-Physics Expansion:** Scaling the solver logic to incorporate surface convection, radiation losses, and domain decomposition for multi-scale build simulations.
 - **Zero-Shot Scale Extrapolation:** Leveraging 3D-RoPE's coordinate parameterization to predict thermal fields on build-chambers 10x larger than the training domain without retraining [^10].
 
-## Why BFL?
-What's missing? A massive compute cluster and the brains and spirit of Black Forest Labs. I've shown that I can navigate the full stack — from custom Triton kernels to dynamic loss balancing. Now I want to learn, invent and play with you guys!
 
 ## References
 [^1]: Li, K.; Wan, C.; Qu, Z.; Lim, K.; Grandgirard, V.; Garbet, X.; Ong, Y. S. (2026). [Optimal-Transport-Guided Functional Flow Matching for Turbulent Field Generation in Hilbert Space](https://arxiv.org/abs/2604.05700). ArXiv.

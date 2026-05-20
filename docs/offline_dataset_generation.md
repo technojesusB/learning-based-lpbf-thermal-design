@@ -51,7 +51,7 @@ Due to the intensive nature of high-resolution simulations on eGPU/WSL2 setups, 
 Run the orchestrated simulation with auto-detected WSL-safety and MLflow diagnostics:
 
 ```bash
-nohup uv run python3 scripts/generate_offline_dataset.py \
+nohup uv run experiments/generate_offline_dataset.py \
     --materials "SS316L,Ti64,IN718" \
     --runs 20 \
     --out data/universal_offline_dataset.h5 \

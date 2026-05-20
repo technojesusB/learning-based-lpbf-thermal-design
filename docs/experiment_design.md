@@ -41,3 +41,15 @@ The goal is to develop a surrogate model that is:
     *   Train on SS316L.
     *   Inference on Ti-6Al-4V (using different $k(T)$ and $c_p(T)$ in the PDE loss).
 *   **Success Metric**: Meaningful prediction of melt pool shape differences between materials without retraining.
+
+---
+
+## Experiment 5: Generative CFM & 3D Diffusion Transformers
+*   **Objective**: Benchmark direct regression surrogates against generative Conditional Flow Matching (CFM) with 3D attention.
+*   **Design**:
+    *   **Baseline**: Direct U-Net regression.
+    *   **DiT v1**: $4^3$ patches with absolute learnable position encodings.
+    *   **DiT v2**: $8^3$ patches with sinusoidal position encodings.
+    *   **DiT v3**: $4^3$ patches with 3D Rotary Position Encodings (3D-RoPE).
+    *   **DiT v4 & v5**: PINN-regularized 3D-RoPE DiT with dynamic ReLoBRaLo loss weighting and Triton-fused stencil kernels.
+*   **Success Metric**: Achieving patch-boundary continuity (PBD) $\approx 1.0$, low Spectral TV error, and accurate meltpool geometry IoU ($> 85\%$) compared to high-fidelity solver data.

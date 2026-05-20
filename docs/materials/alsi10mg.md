@@ -26,7 +26,7 @@ Reference: Akwaboa et al. [1].
 | 400 | 673 | 155.2 | 758 | 76.4 | As-Built |
 
 ## Visualization
-![AlSi10Mg Properties](/docs/assets/materials/alsi10mg_refined.png)
+![AlSi10Mg Properties](../assets/materials/alsi10mg_refined.png)
 
 ---
 

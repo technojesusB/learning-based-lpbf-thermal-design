@@ -25,7 +25,7 @@ Reference: NIST / Carpenter Technology.
 | 1941 | 1668| 32.0 | 1200 | 5.91 |
 
 ## Visualization
-![CP-Ti Properties](/docs/assets/materials/cp_ti_refined.png)
+![CP-Ti Properties](../assets/materials/cp_ti_refined.png)
 
 ---
 

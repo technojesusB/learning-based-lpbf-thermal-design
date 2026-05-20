@@ -25,7 +25,7 @@ Compiled from Renishaw and academic literature.
 | 1430 | 1703 | 31.0 | 450 | 8.50 |
 
 ## Visualization
-![Maraging Properties](/docs/assets/materials/maraging_refined.png)
+![Maraging Properties](../assets/materials/maraging_refined.png)
 
 ---
 

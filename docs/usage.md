@@ -84,10 +84,10 @@ plot_temperature_field(state, sim_cfg)
 ### Generate an Offline HDF5 Dataset
 ```bash
 # Default: 10 runs × 15 snapshots on CUDA, output to data/offline_dataset.h5
-uv run python scripts/generate_offline_dataset.py
+uv run experiments/generate_offline_dataset.py
 
 # Custom: 50 runs, 128³ grid, CPU fallback
-uv run python scripts/generate_offline_dataset.py \
+uv run experiments/generate_offline_dataset.py \
     --runs 50 --nx 128 --ny 64 --nz 16 \
     --out data/my_dataset.h5 --device cpu
 ```
@@ -96,12 +96,15 @@ Each HDF5 sample group contains `T_in`, `Q`, `T_target`, `T_lf` (fp16), `mask` (
 
 ### Train the Surrogate
 ```bash
-uv run python scripts/train_surrogate.py
+uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
 ```
 
-### Visualise a Trained Surrogate
+### Evaluate and Visualize a Trained Surrogate
 ```bash
-uv run python scripts/viz_surrogate.py
+uv run experiments/benchmark_suite.py \
+    --models "Hero Run (v5)" \
+    --metrics physics system \
+    --dataset data/offline_dataset.h5
 ```
 
 ---

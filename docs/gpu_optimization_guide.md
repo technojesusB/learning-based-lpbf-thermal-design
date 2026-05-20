@@ -90,13 +90,13 @@ WSL2 detected — enabling --wsl-safe automatically (pass --no-wsl-safe to opt o
 **Usage:**
 ```bash
 # Automatic on WSL2 (no flags needed):
-uv run python scripts/generate_offline_dataset.py --runs 20
+uv run experiments/generate_offline_dataset.py --runs 20
 
 # Explicit on non-WSL2:
-uv run python scripts/generate_offline_dataset.py --wsl-safe --runs 20
+uv run experiments/generate_offline_dataset.py --wsl-safe --runs 20
 
 # Opt out of auto-detection on WSL2 (advanced use only):
-uv run python scripts/generate_offline_dataset.py --no-wsl-safe --runs 20
+uv run experiments/generate_offline_dataset.py --no-wsl-safe --runs 20
 ```
 
 ### 4.2 HDF5 File Locking (prevents BlockingIOError)
@@ -138,10 +138,10 @@ After any failed subprocess, the orchestrator sleeps before the next attempt, gi
 
 ```bash
 # Default: 30-second cooldown after each failure
-uv run python scripts/generate_offline_dataset.py --runs 20
+uv run experiments/generate_offline_dataset.py --runs 20
 
 # Reduce for faster iteration (risky on TDR-prone setups):
-uv run python scripts/generate_offline_dataset.py --post-failure-delay 10 --runs 20
+uv run experiments/generate_offline_dataset.py --post-failure-delay 10 --runs 20
 ```
 
 The sleep is linearly scaled per retry attempt: the first retry waits 1×delay, the second waits 2×delay, etc.
@@ -152,10 +152,10 @@ Before marking a run as permanently failed, the orchestrator retries it up to `-
 
 ```bash
 # Default: up to 2 retries per run
-uv run python scripts/generate_offline_dataset.py --runs 20
+uv run experiments/generate_offline_dataset.py --runs 20
 
 # Disable retries (fail fast):
-uv run python scripts/generate_offline_dataset.py --max-retries 0 --runs 20
+uv run experiments/generate_offline_dataset.py --max-retries 0 --runs 20
 ```
 
 **3. Defensive sample-write guard**
