@@ -38,16 +38,12 @@ class ScanEvent(BaseModel):
     dwell_time: float = Field(0.0, description="Dwell time [s] if speed is 0.")
 
     # Laser status
-    laser_on: bool = Field(
-        True, description="Whether the laser is active emitting power."
-    )
+    laser_on: bool = Field(True, description="Whether the laser is active emitting power.")
 
     @property
     def is_point(self) -> bool:
         """Check if the event is a point dwell (zero distance)."""
-        dist = math.sqrt(
-            (self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2
-        )
+        dist = math.sqrt((self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2)
         return dist < 1e-9
 
     @property
@@ -60,9 +56,7 @@ class ScanEvent(BaseModel):
         if self.is_point:
             return self.dwell_time
         elif self.speed > 0:
-            dist = math.sqrt(
-                (self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2
-            )
+            dist = math.sqrt((self.x_end - self.x_start) ** 2 + (self.y_end - self.y_start) ** 2)
             return dist / self.speed
         else:
             return 0.0
@@ -75,9 +69,7 @@ class ScanPathGenerator:
     """
 
     @staticmethod
-    def line(
-        start: tuple[float, float], end: tuple[float, float], power: float, speed: float
-    ) -> list[ScanEvent]:
+    def line(start: tuple[float, float], end: tuple[float, float], power: float, speed: float) -> list[ScanEvent]:
         """
         Generate a single linear scan vector.
 

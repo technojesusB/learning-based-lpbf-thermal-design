@@ -37,9 +37,7 @@ class ArtifactBuilder(abc.ABC):
             path.mkdir(parents=True, exist_ok=True)
 
     @abc.abstractmethod
-    def on_snapshot(
-        self, step_idx: int, state: Any, meta: dict[str, Any]
-    ) -> list[Path]:
+    def on_snapshot(self, step_idx: int, state: Any, meta: dict[str, Any]) -> list[Path]:
         """Called periodically to generate artifacts from state."""
         pass
 

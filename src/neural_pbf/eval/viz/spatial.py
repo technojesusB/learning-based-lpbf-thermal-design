@@ -120,12 +120,8 @@ def isotherm_overlay(
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.imshow(gt, cmap="inferno", origin="lower", alpha=0.4)
     try:
-        ax.contour(
-            gt, levels=[T_iso], colors=["blue"], linestyles=["-"], linewidths=[2]
-        )
-        ax.contour(
-            pred, levels=[T_iso], colors=["red"], linestyles=["--"], linewidths=[2]
-        )
+        ax.contour(gt, levels=[T_iso], colors=["blue"], linestyles=["-"], linewidths=[2])
+        ax.contour(pred, levels=[T_iso], colors=["red"], linestyles=["--"], linewidths=[2])
     except ValueError:
         pass  # contour() raises ValueError when no level intersects the field
 
@@ -176,15 +172,11 @@ def gallery_evolution(
         raise ValueError("T_pred_history must not be empty.")
     if epoch_labels is not None and len(epoch_labels) != len(T_pred_history):
         raise ValueError(
-            f"epoch_labels length ({len(epoch_labels)}) must match "
-            f"T_pred_history length ({len(T_pred_history)})."
+            f"epoch_labels length ({len(epoch_labels)}) must match T_pred_history length ({len(T_pred_history)})."
         )
 
     N = len(T_pred_history)
-    if N > 9:
-        indices = [int(round(i * (N - 1) / 8)) for i in range(9)]
-    else:
-        indices = list(range(N))
+    indices = [int(round(i * (N - 1) / 8)) for i in range(9)] if N > 9 else list(range(N))
 
     selected_preds = [T_pred_history[i] for i in indices]
     n_cols = 1 + len(selected_preds)
@@ -204,16 +196,12 @@ def gallery_evolution(
         axes[1, 0].set_title("GT Depth", fontsize=10)
         axes[1, 0].axis("off")
 
-        for col_offset, (pred_tensor, hist_idx) in enumerate(
-            zip(selected_preds, indices, strict=False)
-        ):
+        for col_offset, (pred_tensor, hist_idx) in enumerate(zip(selected_preds, indices, strict=False)):
             pred = _squeeze_to_3d(pred_tensor)
             pred_xy = pred[-1, :, :]
             pred_xz = pred[:, pred.shape[1] // 2, :]
             col = col_offset + 1
-            label = (
-                epoch_labels[hist_idx] if epoch_labels is not None else f"Ep {hist_idx}"
-            )
+            label = epoch_labels[hist_idx] if epoch_labels is not None else f"Ep {hist_idx}"
             axes[0, col].imshow(pred_xy, vmin=0, vmax=1, cmap="magma", origin="lower")
             axes[0, col].set_title(label, fontsize=10)
             axes[0, col].axis("off")
@@ -299,9 +287,7 @@ def gallery_test(
             label = titles[i] if titles else f"S{i + 1}"
             gt_col, pred_col = 2 * i, 2 * i + 1
 
-            axes[0, gt_col].imshow(
-                gt_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
-            )
+            axes[0, gt_col].imshow(gt_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower")
             axes[0, gt_col].set_title(
                 f"GT {label}",
                 fontsize=THEME.spatial.font_size_gallery,
@@ -309,9 +295,7 @@ def gallery_test(
                 color=THEME.spatial.color_gt,
                 fontweight=THEME.spatial.font_weight_title,
             )
-            axes[0, gt_col].tick_params(
-                left=False, bottom=False, labelleft=False, labelbottom=False
-            )
+            axes[0, gt_col].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             if THEME.spatial.grid.enabled:
                 axes[0, gt_col].grid(
                     True,
@@ -322,9 +306,7 @@ def gallery_test(
                     color=THEME.spatial.grid.color,
                 )
 
-            axes[0, pred_col].imshow(
-                pred_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
-            )
+            axes[0, pred_col].imshow(pred_xy, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower")
             axes[0, pred_col].set_title(
                 f"Pred {label}",
                 fontsize=THEME.spatial.font_size_gallery,
@@ -332,9 +314,7 @@ def gallery_test(
                 color=THEME.spatial.color_gt,
                 fontweight=THEME.spatial.font_weight_title,
             )
-            axes[0, pred_col].tick_params(
-                left=False, bottom=False, labelleft=False, labelbottom=False
-            )
+            axes[0, pred_col].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             if THEME.spatial.grid.enabled:
                 axes[0, pred_col].grid(
                     True,
@@ -345,9 +325,7 @@ def gallery_test(
                     color=THEME.spatial.grid.color,
                 )
 
-            axes[1, gt_col].imshow(
-                gt_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
-            )
+            axes[1, gt_col].imshow(gt_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower")
             axes[1, gt_col].set_title(
                 f"GT {label}",
                 fontsize=THEME.spatial.font_size_gallery,
@@ -355,9 +333,7 @@ def gallery_test(
                 color=THEME.spatial.color_gt,
                 fontweight=THEME.spatial.font_weight_title,
             )
-            axes[1, gt_col].tick_params(
-                left=False, bottom=False, labelleft=False, labelbottom=False
-            )
+            axes[1, gt_col].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             if THEME.spatial.grid.enabled:
                 axes[1, gt_col].grid(
                     True,
@@ -368,9 +344,7 @@ def gallery_test(
                     color=THEME.spatial.grid.color,
                 )
 
-            axes[1, pred_col].imshow(
-                pred_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower"
-            )
+            axes[1, pred_col].imshow(pred_xz, vmin=0, vmax=1, cmap=THEME.spatial.cmap, origin="lower")
             axes[1, pred_col].set_title(
                 f"Pred {label}",
                 fontsize=THEME.spatial.font_size_gallery,
@@ -378,9 +352,7 @@ def gallery_test(
                 color=THEME.spatial.color_gt,
                 fontweight=THEME.spatial.font_weight_title,
             )
-            axes[1, pred_col].tick_params(
-                left=False, bottom=False, labelleft=False, labelbottom=False
-            )
+            axes[1, pred_col].tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             if THEME.spatial.grid.enabled:
                 axes[1, pred_col].grid(
                     True,
@@ -514,9 +486,7 @@ def _squeeze_to_3d(T: torch.Tensor) -> np.ndarray:
     if arr.ndim == 2:
         arr = arr[np.newaxis, ...]  # treat as (1, H, W)
     if arr.ndim != 3:
-        raise ValueError(
-            f"Expected 3D array after squeezing, got {arr.ndim}D from {tuple(T.shape)}"
-        )
+        raise ValueError(f"Expected 3D array after squeezing, got {arr.ndim}D from {tuple(T.shape)}")
     return arr
 
 

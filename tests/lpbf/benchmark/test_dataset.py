@@ -46,7 +46,7 @@ def test_build_test_dataset_rope_returns_dataset():
 @pytest.mark.unit
 def test_build_test_dataset_rope_wraps_with_origin_class():
     """rope/triton must use PatchFMThermalDatasetWithOrigin (has patch_origin logic)."""
-    from experiments.train_fm_dit_rope import PatchFMThermalDatasetWithOrigin
+    from neural_pbf.data.patch_dataset import PatchFMThermalDatasetWithOrigin
 
     base = _SyntheticBase(n=4, vol_size=8)
     ds = build_test_dataset(base, patch_size=4, model_type="rope")
@@ -56,7 +56,7 @@ def test_build_test_dataset_rope_wraps_with_origin_class():
 @pytest.mark.unit
 def test_build_test_dataset_net_wraps_with_standard_class():
     """net/dit must use PatchFMThermalDataset (no origin overhead)."""
-    from experiments.train_fm_patches import PatchFMThermalDataset
+    from neural_pbf.data.patch_dataset import PatchFMThermalDataset
 
     base = _SyntheticBase(n=4, vol_size=8)
     ds = build_test_dataset(base, patch_size=4, model_type="net")
@@ -65,7 +65,7 @@ def test_build_test_dataset_net_wraps_with_standard_class():
 
 @pytest.mark.unit
 def test_build_test_dataset_triton_wraps_with_origin_class():
-    from experiments.train_fm_dit_rope import PatchFMThermalDatasetWithOrigin
+    from neural_pbf.data.patch_dataset import PatchFMThermalDatasetWithOrigin
 
     base = _SyntheticBase(n=4, vol_size=8)
     ds = build_test_dataset(base, patch_size=4, model_type="triton")

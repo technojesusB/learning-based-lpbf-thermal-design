@@ -44,9 +44,7 @@ def save_trajectory(traj: Trajectory, path: Path | str) -> None:
             grp.attrs["t"] = snap.t
             grp.attrs["dt"] = snap.dt
             if snap.Q_ext is not None:
-                grp.create_dataset(
-                    "Q_ext", data=snap.Q_ext.detach().cpu().float().numpy()
-                )
+                grp.create_dataset("Q_ext", data=snap.Q_ext.detach().cpu().float().numpy())
             if snap.material_mask is not None:
                 grp.create_dataset(
                     "material_mask",
@@ -72,9 +70,7 @@ def load_trajectory(
         snapshots: list[Snapshot] = []
         for key in keys:
             item = f[key]
-            assert isinstance(
-                item, h5py.Group
-            ), f"Expected HDF5 Group, got {type(item)}"
+            assert isinstance(item, h5py.Group), f"Expected HDF5 Group, got {type(item)}"
             grp: h5py.Group = item
             T = torch.tensor(grp["T"][()], device=target, dtype=torch.float32)  # type: ignore[arg-type]
             t = float(grp.attrs["t"])  # type: ignore[arg-type]
@@ -82,15 +78,9 @@ def load_trajectory(
             Q_ext: torch.Tensor | None = None
             material_mask: torch.Tensor | None = None
             if "Q_ext" in grp:
-                Q_ext = torch.tensor(
-                    grp["Q_ext"][()], device=target, dtype=torch.float32
-                )  # type: ignore[arg-type]
+                Q_ext = torch.tensor(grp["Q_ext"][()], device=target, dtype=torch.float32)  # type: ignore[arg-type]
             if "material_mask" in grp:
                 material_mask = torch.tensor(grp["material_mask"][()], device=target)  # type: ignore[arg-type]
-            snapshots.append(
-                Snapshot(T=T, t=t, dt=dt, Q_ext=Q_ext, material_mask=material_mask)
-            )
+            snapshots.append(Snapshot(T=T, t=t, dt=dt, Q_ext=Q_ext, material_mask=material_mask))
 
-    return Trajectory(
-        snapshots=snapshots, sim_cfg=sim_cfg, mat_cfg=mat_cfg, metadata=metadata
-    )
+    return Trajectory(snapshots=snapshots, sim_cfg=sim_cfg, mat_cfg=mat_cfg, metadata=metadata)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from experiments.train_fm_dit import DiTBlock, sinusoidal_time_embedding
+from neural_pbf.models.generative.fm.dit import DiTBlock, sinusoidal_time_embedding
 
 
 # ---------------------------------------------------------------------------

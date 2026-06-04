@@ -74,9 +74,7 @@ def run_zoo_benchmark(
                 mean_mae=summary.get("mean_mae", float("nan")),
                 final_mae=summary.get("final_mae", float("nan")),
                 peak_mae=summary.get("peak_mae", float("nan")),
-                mean_latency_ms=1000.0 * sum(result.latencies_s) / n
-                if n > 0
-                else float("nan"),
+                mean_latency_ms=1000.0 * sum(result.latencies_s) / n if n > 0 else float("nan"),
                 vram_peak_mb=result.vram_peak_bytes / 1e6,
                 diverged=result.diverged_at_step is not None,
             )

@@ -179,15 +179,9 @@ class TimeStepper:
             if self.mat.use_lut and self.mat.T_lut is not None:
                 if dev_key not in self._lut_tensors:
                     self._lut_tensors[dev_key] = {
-                        "T_lut": torch.tensor(
-                            self.mat.T_lut, device=T.device, dtype=T.dtype
-                        ),
-                        "k_lut": torch.tensor(
-                            self.mat.k_lut, device=T.device, dtype=T.dtype
-                        ),
-                        "cp_lut": torch.tensor(
-                            self.mat.cp_lut, device=T.device, dtype=T.dtype
-                        ),
+                        "T_lut": torch.tensor(self.mat.T_lut, device=T.device, dtype=T.dtype),
+                        "k_lut": torch.tensor(self.mat.k_lut, device=T.device, dtype=T.dtype),
+                        "cp_lut": torch.tensor(self.mat.cp_lut, device=T.device, dtype=T.dtype),
                     }
                 lut_cache = self._lut_tensors[dev_key]
 
@@ -310,9 +304,7 @@ class TimeStepper:
         """
         # Conservative estimates (max k, min cp)
         k_max = max(self.mat.k_powder, self.mat.k_solid, self.mat.k_liquid)
-        cp_min = (
-            self.mat.cp_base
-        )  # ignore latent heat effective cp for stability bound (safety)
+        cp_min = self.mat.cp_base  # ignore latent heat effective cp for stability bound (safety)
         rho = self.mat.rho
 
         alpha_max = k_max / (rho * cp_min)
@@ -379,9 +371,7 @@ class TimeStepper:
         for _ in range(n_sub):
             # Apply identical Q_ext at each sub-step
             # Note: explicit Euler handles the Q unit normalization internally now.
-            state = self.step_explicit_euler(
-                state, dt_sub, Q_ext, use_triton=use_triton
-            )
+            state = self.step_explicit_euler(state, dt_sub, Q_ext, use_triton=use_triton)
 
         # 4. Single macro-step mask update — promotes voxels that reached or
         #    crossed T_solidus during this macro-step.  Doing this once per

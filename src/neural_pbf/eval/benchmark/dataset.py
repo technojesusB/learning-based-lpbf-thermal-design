@@ -1,8 +1,4 @@
-"""Dataset factory for the benchmark pipeline.
-
-Wraps a base FMThermalDataset into the appropriate patch-based dataset
-depending on model_type, so the caller doesn't need to branch.
-"""
+"""Dataset factory for the benchmark pipeline."""
 
 from __future__ import annotations
 
@@ -18,31 +14,20 @@ def build_test_dataset(
 ) -> Dataset:
     """Wrap *base_ds* in the correct patch dataset for *model_type*.
 
-    - ``"net"`` / ``"dit"`` → ``PatchFMThermalDataset`` (standard patches)
+    - ``"net"`` / ``"dit"`` → ``PatchFMThermalDataset``
     - ``"rope"`` / ``"triton"`` → ``PatchFMThermalDatasetWithOrigin``
-      (same patches but also exposes ``patch_origin`` for 3D-RoPE)
-
-    Args:
-        base_ds:    An already-instantiated base dataset (e.g. FMThermalDataset).
-        patch_size: Spatial edge length of each patch (default: PATCH_SIZE = 64).
-        model_type: Architecture key — controls which wrapper is used.
-
-    Returns:
-        Wrapped patch dataset.
 
     Raises:
         ValueError: Unknown model_type.
     """
     if model_type in ("rope", "triton"):
-        from experiments.train_fm_dit_rope import PatchFMThermalDatasetWithOrigin
+        from neural_pbf.data.patch_dataset import PatchFMThermalDatasetWithOrigin
 
         return PatchFMThermalDatasetWithOrigin(base_ds, patch_size=patch_size)  # type: ignore[arg-type]
 
     if model_type in ("net", "dit"):
-        from experiments.train_fm_patches import PatchFMThermalDataset
+        from neural_pbf.data.patch_dataset import PatchFMThermalDataset
 
         return PatchFMThermalDataset(base_ds, patch_size=patch_size)  # type: ignore[arg-type]
 
-    raise ValueError(
-        f"Unknown model_type {model_type!r}. Supported: 'net', 'dit', 'rope', 'triton'."
-    )
+    raise ValueError(f"Unknown model_type {model_type!r}. Supported: 'net', 'dit', 'rope', 'triton'.")

@@ -24,10 +24,7 @@ from neural_pbf.eval.benchmark.rollout import run_euler_rollout
 logger = logging.getLogger(__name__)
 
 # Type alias: (name, model, cond_enc, model_type, optional grid_attrs)
-ModelEntry = (
-    tuple[str, nn.Module, nn.Module, str]
-    | tuple[str, nn.Module, nn.Module, str, dict[str, Any]]
-)
+ModelEntry = tuple[str, nn.Module, nn.Module, str] | tuple[str, nn.Module, nn.Module, str, dict[str, Any]]
 
 
 def run_physics_sweep(
@@ -37,9 +34,7 @@ def run_physics_sweep(
     test_indices: list[int] | None = None,
     collect_indices: list[int] | None = None,
     n_steps: int = N_EULER_STEPS,
-) -> tuple[
-    pd.DataFrame, dict[str, dict[int, torch.Tensor]], dict[str, dict[str, float]]
-]:
+) -> tuple[pd.DataFrame, dict[str, dict[int, torch.Tensor]], dict[str, dict[str, float]]]:
     """Evaluate models over *test_indices* of *dataset*, computing physics metrics.
 
     Pure function — does NOT write files, does NOT call MLflow.
@@ -86,10 +81,7 @@ def run_physics_sweep(
         for i in tqdm(test_indices, desc=f"Sweep {name}", leave=False):
             try:
                 sample = dataset[i]
-                batch = {
-                    k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v
-                    for k, v in sample.items()
-                }
+                batch = {k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
                 T_pred = run_euler_rollout(
                     model,
                     cond_enc,

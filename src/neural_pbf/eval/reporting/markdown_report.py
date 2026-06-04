@@ -18,14 +18,8 @@ def build_markdown_report(
     """
     summary = ar_summary(result)
     n_eval = len(result.per_step_metrics)
-    div_note = (
-        f"Yes (step {result.diverged_at_step})"
-        if result.diverged_at_step is not None
-        else "No"
-    )
-    mean_latency_ms = (
-        1000.0 * sum(result.latencies_s) / n_eval if n_eval > 0 else float("nan")
-    )
+    div_note = f"Yes (step {result.diverged_at_step})" if result.diverged_at_step is not None else "No"
+    mean_latency_ms = 1000.0 * sum(result.latencies_s) / n_eval if n_eval > 0 else float("nan")
 
     lines: list[str] = [
         f"# Evaluation Report — {result.stepper_name}",
@@ -60,10 +54,7 @@ def build_markdown_report(
             "|---|---|---|---|",
         ]
         for i, m in enumerate(result.per_step_metrics):
-            val_str = (
-                f"| {i} | {m['mae_global']:.4f} | "
-                f"{m['max_error']:.4f} | {m['iou_melt']:.4f} |"
-            )
+            val_str = f"| {i} | {m['mae_global']:.4f} | {m['max_error']:.4f} | {m['iou_melt']:.4f} |"
             lines.append(val_str)
 
     return "\n".join(lines)

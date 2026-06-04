@@ -104,7 +104,7 @@ def test_run_euler_rollout_rope_raises_without_grid_attrs():
 
     class _RoPEModel(nn.Module):
         patch_size = 4
-        def forward(self, x, tau, cond_emb, coords_mm):
+        def forward(self, x, tau, cond_emb, coords_idx):
             return torch.zeros_like(x[:, :1])
 
     with pytest.raises(ValueError, match="grid_attrs"):

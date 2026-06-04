@@ -58,9 +58,7 @@ def heuristic_sample_indices(n_steps: int, n_samples: int = 50) -> set[int]:
     mid_indices = np.linspace(early_end, late_start - 1, n_mid).astype(int)
     late_indices = np.linspace(late_start, n_steps - 1, n_late).astype(int)
 
-    result: set[int] = set(
-        int(i) for i in np.concatenate([early_indices, mid_indices, late_indices])
-    )
+    result: set[int] = set(int(i) for i in np.concatenate([early_indices, mid_indices, late_indices]))
     return result
 
 
@@ -96,10 +94,7 @@ def _topup_sample_indices(
     if len(available) < need:
         return set(sample_indices)
 
-    if rng is not None:
-        extras = rng.sample(available, need)
-    else:
-        extras = random.sample(available, need)
+    extras = rng.sample(available, need) if rng is not None else random.sample(available, need)
 
     return set(sample_indices) | set(extras)
 

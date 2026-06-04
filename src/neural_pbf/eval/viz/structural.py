@@ -15,9 +15,7 @@ matplotlib.use("Agg")
 logger = logging.getLogger(__name__)
 
 
-def _palette(
-    names: list[str], color_map: dict[str, str] | None = None
-) -> dict[str, str]:
+def _palette(names: list[str], color_map: dict[str, str] | None = None) -> dict[str, str]:
     """Dynamically assign colors, prioritizing the provided color_map."""
     if color_map:
         return {n: color_map[n] for n in names if n in color_map}
@@ -61,19 +59,13 @@ def plot_tv_pbd_comparison(
             colors = [pal.get(m, "#ffffff") for m in df["Model"]]
 
             # [0] TV Bar
-            axes[0].bar(
-                df["Model"], df["TV"], color=colors, alpha=THEME.system.alpha_bar
-            )
-            axes[0].set_title(
-                "Total Variation (TV)", fontsize=THEME.spectral.font_size_title
-            )
+            axes[0].bar(df["Model"], df["TV"], color=colors, alpha=THEME.system.alpha_bar)
+            axes[0].set_title("Total Variation (TV)", fontsize=THEME.spectral.font_size_title)
             axes[0].set_ylabel("TV", fontsize=THEME.spectral.font_size_label)
             axes[0].tick_params(axis="x", rotation=0)
 
             # [1] PBD Bar
-            axes[1].bar(
-                df["Model"], df["PBD"], color=colors, alpha=THEME.system.alpha_bar
-            )
+            axes[1].bar(df["Model"], df["PBD"], color=colors, alpha=THEME.system.alpha_bar)
             axes[1].set_title(
                 "Patch Border Discontinuity (PBD)",
                 fontsize=THEME.spectral.font_size_title,

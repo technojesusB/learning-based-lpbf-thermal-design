@@ -23,15 +23,9 @@ class MaterialConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     # Conductivity [W/(m K)]
-    k_powder: float = Field(
-        ..., gt=0.0, description="Thermal conductivity of the powder bed [W/(m K)]"
-    )
-    k_solid: float = Field(
-        ..., gt=0.0, description="Thermal conductivity of the solid material [W/(m K)]"
-    )
-    k_liquid: float = Field(
-        ..., gt=0.0, description="Thermal conductivity of the liquid material [W/(m K)]"
-    )
+    k_powder: float = Field(..., gt=0.0, description="Thermal conductivity of the powder bed [W/(m K)]")
+    k_solid: float = Field(..., gt=0.0, description="Thermal conductivity of the solid material [W/(m K)]")
+    k_liquid: float = Field(..., gt=0.0, description="Thermal conductivity of the liquid material [W/(m K)]")
 
     # Heat Capacity [J/(kg K)]
     cp_base: float = Field(
@@ -41,31 +35,20 @@ class MaterialConfig(BaseModel):
     )
 
     # Density [kg/m^3]
-    rho: float = Field(
-        ..., gt=0.0, description="Material density [kg/m^3] (assumed constant)"
-    )
+    rho: float = Field(..., gt=0.0, description="Material density [kg/m^3] (assumed constant)")
 
     # Phase Change Temperatures [K]
-    T_solidus: float = Field(
-        ..., gt=0.0, description="Solidus temperature (start of melting) [K]"
-    )
-    T_liquidus: float = Field(
-        ..., gt=0.0, description="Liquidus temperature (end of melting) [K]"
-    )
+    T_solidus: float = Field(..., gt=0.0, description="Solidus temperature (start of melting) [K]")
+    T_liquidus: float = Field(..., gt=0.0, description="Liquidus temperature (end of melting) [K]")
 
     # Latent Heat [J/kg]
-    latent_heat_L: float = Field(
-        ..., ge=0.0, description="Latent heat of fusion [J/kg]"
-    )
+    latent_heat_L: float = Field(..., ge=0.0, description="Latent heat of fusion [J/kg]")
 
     # Numerical parameters
     transition_sharpness: float = Field(
         default=5.0,
         gt=0.0,
-        description=(
-            "Sharpness parameter for the sigmoid phase transition smoothing "
-            "[dimensionless]."
-        ),
+        description=("Sharpness parameter for the sigmoid phase transition smoothing [dimensionless]."),
     )
 
     # --- Phase 3: Temperature Dependency (Optional) ---
@@ -96,17 +79,11 @@ class MaterialConfig(BaseModel):
     # --- Lookup Table (LUT) support ---
     use_lut: bool = Field(
         default=False,
-        description=(
-            "Use Lookup Tables (LUT) for material properties instead of "
-            "linear coefficients."
-        ),
+        description=("Use Lookup Tables (LUT) for material properties instead of linear coefficients."),
     )
     T_lut: list[float] | None = Field(
         default=None,
-        description=(
-            "Temperature points for the lookup table [K]. "
-            "Must be monotonically increasing."
-        ),
+        description=("Temperature points for the lookup table [K]. Must be monotonically increasing."),
     )
     k_lut: list[float] | None = Field(
         default=None,
@@ -341,9 +318,7 @@ class MaterialConfig(BaseModel):
         )
 
 
-def interpolate_1d(
-    T: torch.Tensor, T_lut: list[float], V_lut: list[float]
-) -> torch.Tensor:
+def interpolate_1d(T: torch.Tensor, T_lut: list[float], V_lut: list[float]) -> torch.Tensor:
     """
     Perform 1D linear interpolation on a temperature field.
 
@@ -375,9 +350,7 @@ def interpolate_1d(
     # Interpolation factor
     # Handle cases where t1 == t0 (should not happen in valid LUT)
     denom = t1 - t0
-    denom = torch.where(
-        denom < 1e-9, torch.tensor(1.0, device=T.device, dtype=T.dtype), denom
-    )
+    denom = torch.where(denom < 1e-9, torch.tensor(1.0, device=T.device, dtype=T.dtype), denom)
 
     alpha = (T - t0) / denom
 

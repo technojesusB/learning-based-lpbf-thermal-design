@@ -66,9 +66,7 @@ def plot_interactive_volume(
     return fig
 
 
-def plot_interactive_composite(
-    T: np.ndarray, dx: float, dy: float, dz: float, step: int
-):
+def plot_interactive_composite(T: np.ndarray, dx: float, dy: float, dz: float, step: int):
     """
     Generate an interactive Plotly dashboard with 4 panels:
     - 3D Volume (Top Left)
@@ -107,34 +105,26 @@ def plot_interactive_composite(
 
     # 2. XY Heatmap: T[zi, :, :] shape (NY, NX) → x=X, y=Y
     fig.add_trace(
-        go.Heatmap(
-            x=x_coords, y=y_coords, z=T[zi, :, :], colorscale="Jet", showscale=False
-        ),
+        go.Heatmap(x=x_coords, y=y_coords, z=T[zi, :, :], colorscale="Jet", showscale=False),
         row=1,
         col=2,
     )
 
     # 3. XZ Heatmap: T[:, yi, :] shape (NZ, NX) → x=X, y=Z
     fig.add_trace(
-        go.Heatmap(
-            x=x_coords, y=z_coords, z=T[:, yi, :], colorscale="Jet", showscale=False
-        ),
+        go.Heatmap(x=x_coords, y=z_coords, z=T[:, yi, :], colorscale="Jet", showscale=False),
         row=2,
         col=1,
     )
 
     # 4. YZ Heatmap: T[:, :, xi] shape (NZ, NY) → x=Y, y=Z
     fig.add_trace(
-        go.Heatmap(
-            x=y_coords, y=z_coords, z=T[:, :, xi], colorscale="Jet", showscale=True
-        ),
+        go.Heatmap(x=y_coords, y=z_coords, z=T[:, :, xi], colorscale="Jet", showscale=True),
         row=2,
         col=2,
     )
 
-    fig.update_layout(
-        height=800, width=1000, title_text=f"Thermal Composite Dashboard - Step {step}"
-    )
+    fig.update_layout(height=800, width=1000, title_text=f"Thermal Composite Dashboard - Step {step}")
     return fig
 
 
@@ -160,11 +150,7 @@ def plot_interactive_heatmap(
     nx, ny = T.shape
     x = np.linspace(0, nx * dx * 1000, nx)
     y = np.linspace(0, ny * dy * 1000, ny)
-    fig = go.Figure(
-        data=go.Heatmap(
-            x=x, y=y, z=T.T, colorscale="Jet", zmin=vmin, zmax=vmax, showscale=True
-        )
-    )
+    fig = go.Figure(data=go.Heatmap(x=x, y=y, z=T.T, colorscale="Jet", zmin=vmin, zmax=vmax, showscale=True))
     fig.update_layout(title=f"2D Interactive Heatmap - Step {step}")
     return fig
 
@@ -343,9 +329,7 @@ def plot_composite_thermal_view(
 ):
     """Combined view with 3D block on top and XY/XZ/YZ cross-sections below."""
     T = np.asarray(T)
-    gs = GridSpec(
-        2, 4, figure=fig, width_ratios=[0.12, 1, 1, 1], height_ratios=[2.5, 1]
-    )
+    gs = GridSpec(2, 4, figure=fig, width_ratios=[0.12, 1, 1, 1], height_ratios=[2.5, 1])
 
     ax_cb = fig.add_subplot(gs[0, 0])
     ax_cb.set_axis_off()
@@ -424,9 +408,7 @@ def plot_composite_thermal_view(
     cb.ax.set_ylabel("Temperature [K]", fontsize=12, labelpad=10)
     cb.ax.tick_params(labelsize=10)
 
-    fig.subplots_adjust(
-        left=0.02, right=0.95, top=0.98, bottom=0.05, wspace=0.5, hspace=0.1
-    )
+    fig.subplots_adjust(left=0.02, right=0.95, top=0.98, bottom=0.05, wspace=0.5, hspace=0.1)
 
 
 def plot_3d_block_mpl_ax(  # type: ignore[no-untyped-def]
@@ -590,9 +572,7 @@ def plot_phase_sections(
     deltas = [(dx, dy), (dx, dz), (dy, dz)]
     labels = [("X", "Y"), ("X", "Z"), ("Y", "Z")]
 
-    for i, (s, (d1, d2), (lx, ly)) in enumerate(
-        zip(slices, deltas, labels, strict=False)
-    ):
+    for i, (s, (d1, d2), (lx, ly)) in enumerate(zip(slices, deltas, labels, strict=False)):
         ax = fig.add_subplot(gs[row, i])
         plot_surface_heatmap_mpl(
             ax,
@@ -649,9 +629,7 @@ def plot_dual_thermal_phase_view(
     deltas = [(dx, dy), (dx, dz), (dy, dz)]
     labels = [("X", "Y"), ("X", "Z"), ("Y", "Z")]
 
-    for i, (s, (d1, d2), (lx, ly)) in enumerate(
-        zip(slices_t, deltas, labels, strict=False)
-    ):
+    for i, (s, (d1, d2), (lx, ly)) in enumerate(zip(slices_t, deltas, labels, strict=False)):
         ax = fig.add_subplot(gs[0, i])
         plot_surface_heatmap_mpl(
             ax,

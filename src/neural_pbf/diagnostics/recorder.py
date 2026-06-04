@@ -50,10 +50,7 @@ class DiagnosticsRecorder:
             return {}
 
         # Extract T
-        if isinstance(state, dict):
-            T = state.get("T", state.get("temperature"))
-        else:
-            T = state
+        T = state.get("T", state.get("temperature")) if isinstance(state, dict) else state
 
         if T is None:
             return {}
@@ -84,9 +81,7 @@ class DiagnosticsRecorder:
             metrics["stability/inf_count"] = inf_count
 
             if self.cfg.strict and (nan_count > 0 or inf_count > 0):
-                raise RuntimeError(
-                    f"Stability check failed: NaN={nan_count}, Inf={inf_count}"
-                )
+                raise RuntimeError(f"Stability check failed: NaN={nan_count}, Inf={inf_count}")
 
         # Dynamics / Residuals
         if prev_state_T is not None:
@@ -126,9 +121,7 @@ class DiagnosticsRecorder:
                 warn_flag = 1
                 logger.warning(f"Metric {name} exceeded threshold: {val} > {limit}")
                 if self.cfg.strict:
-                    raise RuntimeError(
-                        f"Metric {name} exceeded threshold: {val} > {limit}"
-                    )
+                    raise RuntimeError(f"Metric {name} exceeded threshold: {val} > {limit}")
 
         metrics["stability/warn_flag"] = float(warn_flag)
 

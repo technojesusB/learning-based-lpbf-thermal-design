@@ -62,29 +62,17 @@ def _thermal_step_3d_kernel(
 
     # Loads
     Txl = tl.load(T_ptr + (xl * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all)
-    mxl = tl.load(
-        mask_ptr + (xl * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all
-    ).to(tl.float32)
+    mxl = tl.load(mask_ptr + (xl * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all).to(tl.float32)
     Txr = tl.load(T_ptr + (xr * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all)
-    mxr = tl.load(
-        mask_ptr + (xr * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all
-    ).to(tl.float32)
+    mxr = tl.load(mask_ptr + (xr * stride_x + o_y * stride_y + o_z * stride_z), mask=m_all).to(tl.float32)
     Tyu = tl.load(T_ptr + (o_x * stride_x + yu * stride_y + o_z * stride_z), mask=m_all)
-    myu = tl.load(
-        mask_ptr + (o_x * stride_x + yu * stride_y + o_z * stride_z), mask=m_all
-    ).to(tl.float32)
+    myu = tl.load(mask_ptr + (o_x * stride_x + yu * stride_y + o_z * stride_z), mask=m_all).to(tl.float32)
     Tyd = tl.load(T_ptr + (o_x * stride_x + yd * stride_y + o_z * stride_z), mask=m_all)
-    myd = tl.load(
-        mask_ptr + (o_x * stride_x + yd * stride_y + o_z * stride_z), mask=m_all
-    ).to(tl.float32)
+    myd = tl.load(mask_ptr + (o_x * stride_x + yd * stride_y + o_z * stride_z), mask=m_all).to(tl.float32)
     Tzf = tl.load(T_ptr + (o_x * stride_x + o_y * stride_y + zf * stride_z), mask=m_all)
-    mzf = tl.load(
-        mask_ptr + (o_x * stride_x + o_y * stride_y + zf * stride_z), mask=m_all
-    ).to(tl.float32)
+    mzf = tl.load(mask_ptr + (o_x * stride_x + o_y * stride_y + zf * stride_z), mask=m_all).to(tl.float32)
     Tzb = tl.load(T_ptr + (o_x * stride_x + o_y * stride_y + zb * stride_z), mask=m_all)
-    mzb = tl.load(
-        mask_ptr + (o_x * stride_x + o_y * stride_y + zb * stride_z), mask=m_all
-    ).to(tl.float32)
+    mzb = tl.load(mask_ptr + (o_x * stride_x + o_y * stride_y + zb * stride_z), mask=m_all).to(tl.float32)
 
     # ---------------------------------------------------------------------------
     # Dynamic phase-transition overrides (register-only).
@@ -132,12 +120,8 @@ def _thermal_step_3d_kernel(
     # 1. K-Center & CP-Center
     phi_c = tl.sigmoid((Tc - mid) * inv_hw * sharpness)
     if use_lut:
-        rk = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
-        rc = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), cp_lo_v, dtype=tl.float32
-        )
+        rk = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
+        rc = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), cp_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -147,17 +131,13 @@ def _thermal_step_3d_kernel(
                 al = (Tc - t0) / (t1 - t0 + 1e-9)
                 rk = tl.where(m_in, vk0 + al * (vk1 - vk0), rk)
                 rc = tl.where(m_in, vc0 + al * (vc1 - vc0), rc)
-        kc = (1.0 - mc) * k_powder + mc * tl.where(
-            Tc <= k_lo_t, k_lo_v, tl.where(Tc >= k_hi_t, k_hi_v, rk)
-        )
+        kc = (1.0 - mc) * k_powder + mc * tl.where(Tc <= k_lo_t, k_lo_v, tl.where(Tc >= k_hi_t, k_hi_v, rk))
         cp_base_c = tl.where(Tc <= k_lo_t, cp_lo_v, tl.where(Tc >= k_hi_t, cp_hi_v, rc))
     else:
         ks_c = tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tc - T_ref)), k_solid)
         kl_c = tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tc - T_ref)), k_liquid)
         kc = (1.0 - mc) * k_powder + mc * ((1.0 - phi_c) * ks_c + phi_c * kl_c)
-        cp_base_c = tl.where(
-            use_t_dep, cp_base * (1.0 + cp_coeff * (Tc - T_ref)), cp_base
-        )
+        cp_base_c = tl.where(use_t_dep, cp_base * (1.0 + cp_coeff * (Tc - T_ref)), cp_base)
 
     cp_total = cp_base_c + L * (sharpness * phi_c * (1.0 - phi_c)) * inv_hw
 
@@ -166,9 +146,7 @@ def _thermal_step_3d_kernel(
 
     # XL
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -178,23 +156,17 @@ def _thermal_step_3d_kernel(
                     v0 + (Txl - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_xl = (1.0 - mxl) * k_powder + mxl * tl.where(
-            Txl <= k_lo_t, k_lo_v, tl.where(Txl >= k_hi_t, k_hi_v, r)
-        )
+        k_xl = (1.0 - mxl) * k_powder + mxl * tl.where(Txl <= k_lo_t, k_lo_v, tl.where(Txl >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Txl - mid) * inv_hw * sharpness)
         k_xl = (1.0 - mxl) * k_powder + mxl * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Txl - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Txl - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Txl - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Txl - T_ref)), k_liquid)
         )
 
     # XR
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -204,23 +176,17 @@ def _thermal_step_3d_kernel(
                     v0 + (Txr - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_xr = (1.0 - mxr) * k_powder + mxr * tl.where(
-            Txr <= k_lo_t, k_lo_v, tl.where(Txr >= k_hi_t, k_hi_v, r)
-        )
+        k_xr = (1.0 - mxr) * k_powder + mxr * tl.where(Txr <= k_lo_t, k_lo_v, tl.where(Txr >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Txr - mid) * inv_hw * sharpness)
         k_xr = (1.0 - mxr) * k_powder + mxr * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Txr - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Txr - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Txr - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Txr - T_ref)), k_liquid)
         )
 
     # YU
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -230,23 +196,17 @@ def _thermal_step_3d_kernel(
                     v0 + (Tyu - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_yu = (1.0 - myu) * k_powder + myu * tl.where(
-            Tyu <= k_lo_t, k_lo_v, tl.where(Tyu >= k_hi_t, k_hi_v, r)
-        )
+        k_yu = (1.0 - myu) * k_powder + myu * tl.where(Tyu <= k_lo_t, k_lo_v, tl.where(Tyu >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Tyu - mid) * inv_hw * sharpness)
         k_yu = (1.0 - myu) * k_powder + myu * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tyu - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tyu - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tyu - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tyu - T_ref)), k_liquid)
         )
 
     # YD
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -256,23 +216,17 @@ def _thermal_step_3d_kernel(
                     v0 + (Tyd - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_yd = (1.0 - myd) * k_powder + myd * tl.where(
-            Tyd <= k_lo_t, k_lo_v, tl.where(Tyd >= k_hi_t, k_hi_v, r)
-        )
+        k_yd = (1.0 - myd) * k_powder + myd * tl.where(Tyd <= k_lo_t, k_lo_v, tl.where(Tyd >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Tyd - mid) * inv_hw * sharpness)
         k_yd = (1.0 - myd) * k_powder + myd * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tyd - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tyd - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tyd - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tyd - T_ref)), k_liquid)
         )
 
     # ZF
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -282,23 +236,17 @@ def _thermal_step_3d_kernel(
                     v0 + (Tzf - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_zf = (1.0 - mzf) * k_powder + mzf * tl.where(
-            Tzf <= k_lo_t, k_lo_v, tl.where(Tzf >= k_hi_t, k_hi_v, r)
-        )
+        k_zf = (1.0 - mzf) * k_powder + mzf * tl.where(Tzf <= k_lo_t, k_lo_v, tl.where(Tzf >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Tzf - mid) * inv_hw * sharpness)
         k_zf = (1.0 - mzf) * k_powder + mzf * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tzf - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tzf - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tzf - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tzf - T_ref)), k_liquid)
         )
 
     # ZB
     if use_lut:
-        r = tl.full(
-            (BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32
-        )
+        r = tl.full((BLOCK_SIZE_X, BLOCK_SIZE_Y, BLOCK_SIZE_Z), k_lo_v, dtype=tl.float32)
         for i in range(16):
             if i < n_lut - 1:
                 t0, t1 = tl.load(T_lut_ptr + i), tl.load(T_lut_ptr + i + 1)
@@ -308,30 +256,23 @@ def _thermal_step_3d_kernel(
                     v0 + (Tzb - t0) / (t1 - t0 + 1e-9) * (v1 - v0),
                     r,
                 )
-        k_zb = (1.0 - mzb) * k_powder + mzb * tl.where(
-            Tzb <= k_lo_t, k_lo_v, tl.where(Tzb >= k_hi_t, k_hi_v, r)
-        )
+        k_zb = (1.0 - mzb) * k_powder + mzb * tl.where(Tzb <= k_lo_t, k_lo_v, tl.where(Tzb >= k_hi_t, k_hi_v, r))
     else:
         p = tl.sigmoid((Tzb - mid) * inv_hw * sharpness)
         k_zb = (1.0 - mzb) * k_powder + mzb * (
-            (1.0 - p)
-            * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tzb - T_ref)), k_solid)
-            + p
-            * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tzb - T_ref)), k_liquid)
+            (1.0 - p) * tl.where(use_t_dep, k_solid * (1.0 + ks_coeff * (Tzb - T_ref)), k_solid)
+            + p * tl.where(use_t_dep, k_liquid * (1.0 + kl_coeff * (Tzb - T_ref)), k_liquid)
         )
 
     # Divergence
     div_x = (
-        (2.0 * kc * k_xr) / (kc + k_xr + 1e-12) * (Txr - Tc)
-        - (2.0 * kc * k_xl) / (kc + k_xl + 1e-12) * (Tc - Txl)
+        (2.0 * kc * k_xr) / (kc + k_xr + 1e-12) * (Txr - Tc) - (2.0 * kc * k_xl) / (kc + k_xl + 1e-12) * (Tc - Txl)
     ) / (dx * dx)
     div_y = (
-        (2.0 * kc * k_yd) / (kc + k_yd + 1e-12) * (Tyd - Tc)
-        - (2.0 * kc * k_yu) / (kc + k_yu + 1e-12) * (Tc - Tyu)
+        (2.0 * kc * k_yd) / (kc + k_yd + 1e-12) * (Tyd - Tc) - (2.0 * kc * k_yu) / (kc + k_yu + 1e-12) * (Tc - Tyu)
     ) / (dy * dy)
     div_z = (
-        (2.0 * kc * k_zb) / (kc + k_zb + 1e-12) * (Tzb - Tc)
-        - (2.0 * kc * k_zf) / (kc + k_zf + 1e-12) * (Tc - Tzf)
+        (2.0 * kc * k_zb) / (kc + k_zb + 1e-12) * (Tzb - Tc) - (2.0 * kc * k_zf) / (kc + k_zf + 1e-12) * (Tc - Tzf)
     ) / (dz * dz)
 
     Qc = tl.load(Q_ptr + idx_c, mask=m_all)
@@ -380,10 +321,7 @@ def run_thermal_step_3d_triton(
         n_lut = len(mat_cfg.T_lut)
         # MEDIUM guard: kernel loop is hard-coded to range(16)
         if n_lut > 16:
-            raise ValueError(
-                f"LUT has {n_lut} entries; kernel supports at most 16. "
-                "Use fewer LUT points."
-            )
+            raise ValueError(f"LUT has {n_lut} entries; kernel supports at most 16. Use fewer LUT points.")
         # HIGH-1: use pre-built tensors if provided to avoid CPU→GPU copies
         if lut_tensors is not None:
             T_lut = lut_tensors["T_lut"]

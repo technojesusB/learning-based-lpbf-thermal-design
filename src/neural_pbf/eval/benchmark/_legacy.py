@@ -28,7 +28,7 @@ import torch.nn as nn
 from mlflow.client import MlflowClient
 from tqdm import tqdm
 
-from experiments.train_fm_patches import PatchFMThermalDataset
+from neural_pbf.data.patch_dataset import PatchFMThermalDataset
 from neural_pbf.eval.metrics.spectral import (
     compute_radial_psd,
     plot_spectral_comparison,
@@ -85,16 +85,12 @@ def _rollout_sample(
     """
     with torch.no_grad():
         if model_type in ("rope", "triton"):
-            from experiments.train_fm_dit_rope import _euler_rollout_rope
+            from neural_pbf.integrator.fm_stepper import euler_rollout_rope
 
-            # Default patch_size 4 if not in model
             ps = getattr(model, "patch_size", 4)
             if grid_attrs is None:
-                # Fallback to some default if grid_attrs missing, but it shouldn't be
                 grid_attrs = {"dx_m": 1.5e-5, "dy_m": 1.5e-5, "dz_m": 1.5e-5}
-            return _euler_rollout_rope(
-                model, cond_enc, batch, n_steps, device, grid_attrs, ps
-            )
+            return euler_rollout_rope(model, cond_enc, batch, n_steps, device, grid_attrs, ps)
 
         # Legacy path for non-rope models
         T_in = batch["T_in"]
@@ -177,11 +173,9 @@ def _run_model_benchmark(
         if model_type == "net":
             fm_cfg = FMConfig(**ckpt["fm_cfg"])
             model = VelocityNet(fm_cfg).to(device)
-            cond_enc = ConditioningEncoder(fm_cfg.cond_dim, fm_cfg.cond_embed_dim).to(
-                device
-            )
+            cond_enc = ConditioningEncoder(fm_cfg.cond_dim, fm_cfg.cond_embed_dim).to(device)
         elif model_type == "dit":
-            from experiments.train_fm_dit import VelocityDiT
+            from neural_pbf.models.generative.fm.dit import VelocityDiT
 
             for p_size in [4, 8]:
                 try:
@@ -201,7 +195,7 @@ def _run_model_benchmark(
                     continue
             cond_enc = ConditioningEncoder(12, 128).to(device)
         elif model_type in ("rope", "triton"):
-            from experiments.train_fm_dit_rope import VelocityDiTRoPE
+            from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE
 
             for p_size in [4, 8]:
                 try:
@@ -230,9 +224,7 @@ def _run_model_benchmark(
         cond_enc.load_state_dict(ckpt["cond_encoder_state"])
         model.eval()
         cond_enc.eval()
-        logger.info(
-            "Loaded %s (type=%s, patch_size=%d)", name, model_type, model_patch_size
-        )
+        logger.info("Loaded %s (type=%s, patch_size=%d)", name, model_type, model_patch_size)
     except Exception as exc:
         logger.error("Failed to build/load model %s (%s): %s", name, model_type, exc)
         return [], {}
@@ -241,7 +233,7 @@ def _run_model_benchmark(
     try:
         base_ds = FMThermalDataset(ds_cfg)
         if model_type in ("rope", "triton"):
-            from experiments.train_fm_dit_rope import PatchFMThermalDatasetWithOrigin
+            from neural_pbf.data.patch_dataset import PatchFMThermalDatasetWithOrigin
 
             ds = PatchFMThermalDatasetWithOrigin(base_ds, patch_size=64)
             logger.info("Using PatchFMThermalDatasetWithOrigin for %s", name)
@@ -277,10 +269,7 @@ def _run_model_benchmark(
 
         try:
             sample = ds[i]
-            batch = {
-                k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in sample.items()
-            }
+            batch = {k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
             T_pred = _rollout_sample(
                 model,
                 cond_enc,
@@ -609,20 +598,12 @@ def run_system_comparison(
                 end_ms = run.info.end_time or start_ms
                 row["Duration (h)"] = round((end_ms - start_ms) / 3_600_000.0, 3)
 
-                util_hist = client.get_metric_history(
-                    run_id, "system/gpu_0_utilization_percentage"
-                )
-                mem_hist = client.get_metric_history(
-                    run_id, "system/gpu_0_memory_usage_megabytes"
-                )
+                util_hist = client.get_metric_history(run_id, "system/gpu_0_utilization_percentage")
+                mem_hist = client.get_metric_history(run_id, "system/gpu_0_memory_usage_megabytes")
                 if util_hist:
-                    row["GPU Util (%)"] = round(
-                        float(np.mean([m.value for m in util_hist])), 1
-                    )
+                    row["GPU Util (%)"] = round(float(np.mean([m.value for m in util_hist])), 1)
                 if mem_hist:
-                    row["GPU Mem (MB)"] = round(
-                        float(np.mean([m.value for m in mem_hist])), 1
-                    )
+                    row["GPU Mem (MB)"] = round(float(np.mean([m.value for m in mem_hist])), 1)
 
                 loss_hist = client.get_metric_history(run_id, "train_loss")
                 if len(loss_hist) > 1:
@@ -635,13 +616,9 @@ def run_system_comparison(
                         its = max(n_train // batch_size, 1)
                         row["s/it"] = round(s_per_epoch / its, 4)
 
-                row["Final Loss"] = run.data.metrics.get(
-                    "val_loss", run.data.metrics.get("train_loss", float("nan"))
-                )
+                row["Final Loss"] = run.data.metrics.get("val_loss", run.data.metrics.get("train_loss", float("nan")))
             except Exception as exc:
-                logger.warning(
-                    "Could not fetch MLflow run %r for %s: %s", run_id, version, exc
-                )
+                logger.warning("Could not fetch MLflow run %r for %s: %s", run_id, version, exc)
             rows.append(row)
         df = pd.DataFrame(rows)
 
@@ -656,9 +633,7 @@ def run_system_comparison(
             ax0 = axes[0]
             valid_dur = df["Duration (h)"].dropna()
             if not valid_dur.empty:
-                ax0.bar(
-                    df["Version"], df["Duration (h)"].fillna(0), color=colors, alpha=0.8
-                )
+                ax0.bar(df["Version"], df["Duration (h)"].fillna(0), color=colors, alpha=0.8)
             ax0.set_title("Training Duration and Step Timing")
             ax0.set_ylabel("Duration (h)")
             ax0_twin = ax0.twinx()
@@ -683,9 +658,7 @@ def run_system_comparison(
                     mem = row["GPU Mem (MB)"]
                     version = row["Version"]
                     if not (np.isnan(util) or np.isnan(mem)):
-                        ax1.scatter(
-                            util, mem, color=palette[str(version)], s=100, zorder=5
-                        )
+                        ax1.scatter(util, mem, color=palette[str(version)], s=100, zorder=5)
                         ax1.annotate(
                             str(version),
                             (util, mem),
@@ -738,8 +711,7 @@ def run_spectral_benchmark(
     Generates a log-log PSD plot comparing models to Ground Truth.
     """
     warnings.warn(
-        "run_spectral_benchmark is deprecated — use the spectral pipeline in "
-        "experiments/benchmark_suite.py instead.",
+        "run_spectral_benchmark is deprecated — use the spectral pipeline in experiments/benchmark_suite.py instead.",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -775,13 +747,11 @@ def run_spectral_benchmark(
                 fm_cfg = FMConfig(**ckpt["fm_cfg"])
                 model = VelocityNet(fm_cfg).to(device)
             elif model_type == "dit":
-                from experiments.train_fm_dit import VelocityDiT
+                from neural_pbf.models.generative.fm.dit import VelocityDiT
 
-                model = VelocityDiT(
-                    depth=6, embed_dim=256, num_heads=8, patch_size=8, input_size=64
-                ).to(device)
+                model = VelocityDiT(depth=6, embed_dim=256, num_heads=8, patch_size=8, input_size=64).to(device)
             elif model_type in ("rope", "triton"):
-                from experiments.train_fm_dit_rope import VelocityDiTRoPE
+                from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE
 
                 # v3/v4 used patch_size 8, v5 used patch_size 4
                 p_size = 4 if "triton" in model_type else 8
@@ -804,10 +774,7 @@ def run_spectral_benchmark(
             model.eval()
             cond_enc.eval()
 
-            batch = {
-                k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in sample.items()
-            }
+            batch = {k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
             T_pred = _rollout_sample(model, cond_enc, batch, model_type, device)
 
             freqs, psd = compute_radial_psd(T_pred[0])

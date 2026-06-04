@@ -95,7 +95,7 @@ def evaluate_sample(model, cond_encoder, batch, patch_size=4):
     Q = force_5d(batch["Q"]).to(DEVICE)
     cond = batch["conditioning"].to(DEVICE)
     
-    # Generate tokenized coords_mm if needed
+    # Generate tokenized coords_idx if needed
     # (B, 3, 64, 64, 64) -> (B, N_tokens, 3)
     B = T_target.shape[0]
     p = patch_size
@@ -104,10 +104,10 @@ def evaluate_sample(model, cond_encoder, batch, patch_size=4):
     # Mock coords for the 64x64x64 patch (assuming 25um spacing)
     # Technically we should use the real origin, but for benchmarking RoPE/Triton, 
     # as long as the shape is correct, it will run.
-    coords_mm_grid = torch.zeros(B, 3, 64, 64, 64, device=DEVICE) 
+    coords_idx_grid = torch.zeros(B, 3, 64, 64, 64, device=DEVICE) 
     # Average over p x p x p blocks
-    coords_mm_tokens = F_avg_pool3d(coords_mm_grid, kernel_size=p, stride=p) # (B, 3, grid, grid, grid)
-    coords_mm_tokens = coords_mm_tokens.flatten(2).transpose(1, 2) # (B, N_tokens, 3)
+    coords_idx_tokens = F_avg_pool3d(coords_idx_grid, kernel_size=p, stride=p) # (B, 3, grid, grid, grid)
+    coords_idx_tokens = coords_idx_tokens.flatten(2).transpose(1, 2) # (B, N_tokens, 3)
 
     x_tau = sample_noise(T_target).to(DEVICE)
     cond_emb = cond_encoder(cond)
@@ -130,7 +130,7 @@ def evaluate_sample(model, cond_encoder, batch, patch_size=4):
         if "t" in params: args["t"] = t_tensor
         if "tau" in params: args["tau"] = t_tensor
         if "cond" in params: args["cond"] = cond_emb
-        if "coords_mm" in params: args["coords_mm"] = coords_mm_tokens
+        if "coords_idx" in params: args["coords_idx"] = coords_idx_tokens
         
         v = model(**args)
         x = x + v * dt

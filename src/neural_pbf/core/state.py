@@ -98,10 +98,7 @@ class SimulationState:
         """
         fill_value: float = T_initial if T_initial is not None else sim_cfg.T_ambient
 
-        if sim_cfg.is_3d:
-            shape = (1, 1, sim_cfg.Nz, sim_cfg.Ny, sim_cfg.Nx)
-        else:
-            shape = (1, 1, sim_cfg.Ny, sim_cfg.Nx)
+        shape = (1, 1, sim_cfg.Nz, sim_cfg.Ny, sim_cfg.Nx) if sim_cfg.is_3d else (1, 1, sim_cfg.Ny, sim_cfg.Nx)
 
         T = torch.full(shape, fill_value, dtype=dtype, device=device)
         max_T = T.clone()
@@ -129,12 +126,8 @@ class SimulationState:
             t=self.t,
             step=self.step,
             max_T=self.max_T.clone() if self.max_T is not None else None,
-            cooling_rate=self.cooling_rate.clone()
-            if self.cooling_rate is not None
-            else None,
-            material_mask=self.material_mask.clone()
-            if self.material_mask is not None
-            else None,
+            cooling_rate=self.cooling_rate.clone() if self.cooling_rate is not None else None,
+            material_mask=self.material_mask.clone() if self.material_mask is not None else None,
             T_prev=self.T_prev.clone() if self.T_prev is not None else None,
             last_n_sub=self.last_n_sub,
         )

@@ -137,12 +137,6 @@ class SurrogateConfig(BaseModel):
     T_ambient: float = Field(default=300.0, ge=0.0)
 
     # Physics-context normalisation references
-    k_ref: float = Field(
-        default=200.0, gt=0.0, description="k_eff normalisation reference [W/(m·K)]."
-    )
-    cp_ref: float = Field(
-        default=1000.0, gt=0.0, description="cp_eff normalisation reference [J/(kg·K)]."
-    )
-    rho_ref: float = Field(
-        default=8500.0, gt=0.0, description="Density normalisation reference [kg/m³]."
-    )
+    k_ref: float = Field(default=200.0, gt=0.0, description="k_eff normalisation reference [W/(m·K)].")
+    cp_ref: float = Field(default=1000.0, gt=0.0, description="cp_eff normalisation reference [J/(kg·K)].")
+    rho_ref: float = Field(default=8500.0, gt=0.0, description="Density normalisation reference [kg/m³].")

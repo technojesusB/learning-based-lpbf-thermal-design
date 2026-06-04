@@ -195,9 +195,9 @@ class _TrivialCondEnc(nn.Module):
 
 
 class _TrivialVelocityNetRoPE(nn.Module):
-    """Velocity net that accepts coords_mm (RoPE variant)."""
+    """Velocity net that accepts coords_idx (RoPE variant)."""
     def forward(self, x: torch.Tensor, tau: torch.Tensor,
-                cond_emb: torch.Tensor, coords_mm: torch.Tensor) -> torch.Tensor:
+                cond_emb: torch.Tensor, coords_idx: torch.Tensor) -> torch.Tensor:
         out_shape = list(x.shape)
         out_shape[1] = 1
         return torch.zeros(*out_shape, device=x.device)

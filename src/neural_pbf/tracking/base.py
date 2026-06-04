@@ -5,9 +5,7 @@ from typing import Any, Literal, Protocol
 class ExperimentTracker(Protocol):
     """Protocol for experiment trackers."""
 
-    def start_run(
-        self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]
-    ) -> Any:
+    def start_run(self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]) -> Any:
         """Start a new run. Returns a context manager or self."""
         ...
 
@@ -35,9 +33,7 @@ class ExperimentTracker(Protocol):
         """Flush logging queue."""
         ...
 
-    def end_run(
-        self, status: Literal["FINISHED", "FAILED", "KILLED"] = "FINISHED"
-    ) -> None:
+    def end_run(self, status: Literal["FINISHED", "FAILED", "KILLED"] = "FINISHED") -> None:
         """End the current run."""
         ...
 
@@ -46,9 +42,7 @@ class NullTracker:
     """No-op tracker implementation."""
 
     @contextmanager
-    def start_run(
-        self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]
-    ):
+    def start_run(self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]):
         yield self
 
     def log_params(self, params: dict[str, Any]) -> None:
@@ -69,7 +63,5 @@ class NullTracker:
     def flush(self) -> None:
         pass
 
-    def end_run(
-        self, status: Literal["FINISHED", "FAILED", "KILLED"] = "FINISHED"
-    ) -> None:
+    def end_run(self, status: Literal["FINISHED", "FAILED", "KILLED"] = "FINISHED") -> None:
         pass

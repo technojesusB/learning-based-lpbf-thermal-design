@@ -103,12 +103,8 @@ def prepare_trajectory(
 
     path_points = generate_pulsed_path(**path_kwargs)
 
-    sample_indices_list = heuristic_sample_indices(
-        len(path_points), args.samples_per_run
-    )
-    sample_indices_list = _topup_sample_indices(
-        sample_indices_list, len(path_points), args.samples_per_run
-    )
+    sample_indices_list = heuristic_sample_indices(len(path_points), args.samples_per_run)
+    sample_indices_list = _topup_sample_indices(sample_indices_list, len(path_points), args.samples_per_run)
 
     beam_cfg = GaussianSourceConfig(power=power, eta=0.4, sigma=sigma, depth=1.0e-4)
 
@@ -158,8 +154,7 @@ def save_path_preview(
     ax.set_xlabel("X [mm]")
     ax.set_ylabel("Y [mm]")
     ax.set_title(
-        f"Run {plan.run_idx} — {plan.mat_key} | {plan.pattern} | "
-        f"P={plan.power:.0f}W σ={plan.sigma * 1e6:.0f}µm"
+        f"Run {plan.run_idx} — {plan.mat_key} | {plan.pattern} | P={plan.power:.0f}W σ={plan.sigma * 1e6:.0f}µm"
     )
     ax.grid(True, alpha=0.3)
     out_path.parent.mkdir(parents=True, exist_ok=True)

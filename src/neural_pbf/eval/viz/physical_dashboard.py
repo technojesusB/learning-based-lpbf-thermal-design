@@ -16,9 +16,7 @@ matplotlib.use("Agg")
 logger = logging.getLogger(__name__)
 
 
-def _palette(
-    names: list[str], color_map: dict[str, str] | None = None
-) -> dict[str, str]:
+def _palette(names: list[str], color_map: dict[str, str] | None = None) -> dict[str, str]:
     """Dynamically assign colors, prioritizing the provided color_map."""
     if color_map:
         # Filter map to only include requested names
@@ -71,18 +69,12 @@ def plot_physical_dashboard(
         logger.warning("Empty DataFrame passed to plot_physical_dashboard.")
 
     # Pre-calculate depth error if not present
-    if (
-        "Depth_Error" not in df.columns
-        and "Depth_Pred" in df.columns
-        and "Depth_GT" in df.columns
-    ):
+    if "Depth_Error" not in df.columns and "Depth_Pred" in df.columns and "Depth_GT" in df.columns:
         df["Depth_Error"] = df["Depth_Pred"] - df["Depth_GT"]
 
     # --- Setup ---
     plt.style.use("dark_background")
-    fig, axes = plt.subplots(
-        2, 3, figsize=THEME.physical.figsize, dpi=THEME.physical.dpi
-    )
+    fig, axes = plt.subplots(2, 3, figsize=THEME.physical.figsize, dpi=THEME.physical.dpi)
     fig.patch.set_facecolor(THEME.physical.bg_figure)
 
     # Sort models for stable color assignment
@@ -218,9 +210,7 @@ def plot_physical_dashboard(
 
     # --- Row 2: Thermal & Localization Focus ---
     draw_dist(axes[1, 0], "Offset_vox", "Hotspot Offset Distribution", "Offset [vox]")
-    tmax_error_col = (
-        "$T_{max}$ Error Distribution" if "$T_{max}$" in df.columns else "T_max_Error"
-    )
+    tmax_error_col = "$T_{max}$ Error Distribution" if "$T_{max}$" in df.columns else "T_max_Error"
     draw_dist(
         axes[1, 1],
         tmax_error_col,

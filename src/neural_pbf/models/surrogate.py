@@ -88,9 +88,7 @@ class ThermalSurrogate3D(nn.Module):
         for i in reversed(range(depth)):
             skip_ch = enc_channels[i]
             up_out_ch = skip_ch  # after transpose conv, match skip channel count
-            self.upconvs.append(
-                nn.ConvTranspose3d(ch, up_out_ch, kernel_size=2, stride=2)
-            )
+            self.upconvs.append(nn.ConvTranspose3d(ch, up_out_ch, kernel_size=2, stride=2))
             self.decoders.append(DoubleConv3d(up_out_ch + skip_ch, skip_ch))
             ch = skip_ch
 
@@ -153,9 +151,7 @@ class ThermalSurrogate3D(nn.Module):
 
         if self.cfg.use_physics_context:
             if physics_ctx is None:
-                raise ValueError(
-                    "physics_ctx must be provided when use_physics_context=True."
-                )
+                raise ValueError("physics_ctx must be provided when use_physics_context=True.")
             # physics_ctx is already normalised by the caller (k/k_ref, cp/cp_ref, etc.)
             x = torch.cat([x, physics_ctx], dim=1)
 
@@ -170,9 +166,7 @@ class ThermalSurrogate3D(nn.Module):
         x = self.bottleneck(x)
 
         # Decoder pass — upsample + skip concatenation
-        for upconv, dec, skip in zip(
-            self.upconvs, self.decoders, reversed(skips), strict=False
-        ):
+        for upconv, dec, skip in zip(self.upconvs, self.decoders, reversed(skips), strict=False):
             x = upconv(x)
             # Handle size mismatches from odd spatial dims via centre-crop
             if x.shape != skip.shape:

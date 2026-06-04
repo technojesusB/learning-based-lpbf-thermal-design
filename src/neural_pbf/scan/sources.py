@@ -31,14 +31,12 @@ class GaussianSourceConfig(HeatSourceConfig):
     sigma: float = Field(
         ...,
         gt=0.0,
-        description="Gaussian standard deviation (radius) [m]. Related to D4sigma "
-        "diameter by D4s = 4 * sigma.",
+        description="Gaussian standard deviation (radius) [m]. Related to D4sigma diameter by D4s = 4 * sigma.",
     )
     depth: float | None = Field(
         None,
         gt=0.0,
-        description="Optical penetration depth [m] for volumetric source. If "
-        "None, acts as a surface flux [W/m^2].",
+        description="Optical penetration depth [m] for volumetric source. If None, acts as a surface flux [W/m^2].",
     )
 
 
@@ -179,8 +177,7 @@ class GaussianBeam(HeatSource):
             # easily without numerical delta functions.
             # It should be handled by the Boundary Condition logic.
             raise NotImplementedError(
-                "Surface flux in 3D volume requires implementation via "
-                "Boundary Conditions, not Source Term Q."
+                "Surface flux in 3D volume requires implementation via Boundary Conditions, not Source Term Q."
             )
 
         else:

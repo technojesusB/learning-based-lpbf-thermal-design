@@ -17,37 +17,33 @@ import logging
 import os
 import sys
 import tempfile
-from pathlib import Path
 from typing import Any
 
 import mlflow
 import torch
-import torch.nn as nn
 from accelerate import Accelerator
 from torch.profiler import ProfilerActivity
-from torch.utils.data import DataLoader, random_split
-from tqdm import tqdm
+from torch import Tensor
+from torch.utils.data import DataLoader
 
-from experiments.train_fm_dit_accelerate import (
-    _log_val_image_rope_accel,
-    _run_test_phase_accel,
-    _run_val_epoch_accel,
-    _save_best_checkpoint_accel,
-)
-from experiments.train_fm_dit_rope import (
-    PatchFMThermalDatasetWithOrigin,
-    VelocityDiTRoPE,
-    _collate_with_strings,
-    denorm_cond_batch,
-    patch_center_coords_mm,
-    read_grid_attrs,
-)
-from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+from neural_pbf.data.patch_dataset import read_grid_attrs
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
+from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE, patch_center_coords_idx
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
+from neural_pbf.physics.fm_physics import denorm_cond_batch
 from neural_pbf.physics.triton_pde_loss import PDEResidualLoss, _pde_residual_pytorch
-from neural_pbf.schemas.tracking import TrackingConfig
-from neural_pbf.tracking.factory import build_tracker
+from neural_pbf.training import (
+    TrainHistory,
+    build_patch_data,
+    load_checkpoint,
+    log_val_image_rope,
+    run_test_phase,
+    run_train_epoch,
+    run_train_loop,
+    run_val_epoch,
+    save_checkpoint,
+    setup_run,
+)
 from neural_pbf.training.relobralo import ReLoBRaLoWeighter
 
 logger = logging.getLogger(__name__)
@@ -80,13 +76,12 @@ def _parse_args() -> argparse.Namespace:
                         choices=["no", "fp16", "bf16"])
     parser.add_argument("--dt_s", type=float, default=5e-6,
                         help="Physical time step for the PDE residual [s].")
-    parser.add_argument("--physics_loss_weight", type=float, default=1.0,
-                        help="Base weight for physics residual (ReLoBRaLo adapts it dynamically).")
+    parser.add_argument("--physics_loss_weight", type=float, default=1.0)
     parser.add_argument("--relobralo_alpha", type=float, default=0.999)
     parser.add_argument("--relobralo_beta", type=float, default=0.9)
     parser.add_argument("--relobralo_epsilon", type=float, default=1e-8)
     parser.add_argument("--test-kernel", action="store_true",
-                        help="Run Triton kernel unit test (compare against PyTorch float64) and exit.")
+                        help="Run Triton kernel unit test and exit.")
     return parser.parse_args()
 
 
@@ -96,11 +91,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _run_kernel_test() -> None:
-    """Unit-test: Triton PDEResidualLoss vs PyTorch float64 reference.
-
-    Checks both forward value agreement (< 1% relative error) and backward
-    gradient agreement (< 2% relative error via finite difference).
-    """
+    """Unit-test: Triton PDEResidualLoss vs PyTorch float64 reference."""
     print("=== Triton kernel unit test ===")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
@@ -119,7 +110,6 @@ def _run_kernel_test() -> None:
     cp64 = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64, device=device)
     k64 = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64, device=device)
 
-    # --- forward value test ---
     ref_val = _pde_residual_pytorch(v64, x64.detach(), tau64, T_in64, Q64, rho64, cp64, k64, **phys).item()
     got_val = PDEResidualLoss.apply(
         v64.float(), x64.float().detach(), tau64.float(), T_in64.float(), Q64.float(),
@@ -131,9 +121,6 @@ def _run_kernel_test() -> None:
     fwd_ok = fwd_rel < 0.01 or abs(ref_val) < 1e-12
     print(f"Forward  — ref={ref_val:.6e}  got={got_val:.6e}  rel_err={fwd_rel:.4f}  {'PASS' if fwd_ok else 'FAIL'}")
 
-    # --- gradient test: PDEResidualLoss.apply backward vs finite difference of reference ---
-    # Uses PDEResidualLoss.apply (not _pde_residual_pytorch directly) so the custom
-    # backward (including the Triton _pde_bwd_kernel on GPU) is actually exercised.
     eps = 1e-4
     v32 = v64.float()
     v_apply = v32.clone().requires_grad_(True)
@@ -165,292 +152,57 @@ def _run_kernel_test() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Training batch (Triton PDE loss variant — script-specific)
 # ---------------------------------------------------------------------------
 
 
-def _build_data(args: argparse.Namespace) -> tuple[
-    FMDatasetConfig, FMThermalDataset, Any,
-    DataLoader, DataLoader, DataLoader, int, int, int,
-]:
-    ds_cfg = FMDatasetConfig(h5_paths=args.h5, Q_ref=1.35e15)
-    full_ds = FMThermalDataset(ds_cfg)
-    patch_ds = PatchFMThermalDatasetWithOrigin(full_ds, patch_size=64)
-    n_train = int(len(patch_ds) * 0.7)
-    n_val = int(len(patch_ds) * 0.2)
-    n_test = len(patch_ds) - n_train - n_val
-    train_ds, val_ds, test_ds = random_split(
-        patch_ds, [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(args.seed),
-    )
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=_collate_with_strings)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size,
-                            collate_fn=_collate_with_strings)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False,
-                             collate_fn=_collate_with_strings)
-    logger.info("Dataset split — train: %d  val: %d  test: %d", n_train, n_val, n_test)
-    return ds_cfg, full_ds, test_ds, train_loader, val_loader, test_loader, n_train, n_val, n_test
+def _make_train_batch_fn(
+    model: Any, cond_encoder: Any, optimizer: Any,
+    accelerator: Accelerator, args: argparse.Namespace,
+    grid_attrs: dict[str, float], ds_cfg: Any,
+    weighter: ReLoBRaLoWeighter, scheduler: Any,
+) -> Any:
+    """Return the Triton-specific _train_batch closure."""
 
-
-# ---------------------------------------------------------------------------
-# Model & optimizer
-# ---------------------------------------------------------------------------
-
-
-def _build_models(
-    args: argparse.Namespace, ds_cfg: FMDatasetConfig
-) -> tuple[VelocityDiTRoPE, ConditioningEncoder, torch.optim.Optimizer]:
-    cond_dim = len(ds_cfg.conditioning_keys)
-    cond_embed_dim = 128
-    model = VelocityDiTRoPE(
-        patch_size=_MODEL_PATCH_SIZE,
-        in_channels=3,
-        embed_dim=_DEFAULT_EMBED_DIM,
-        depth=_MODEL_DEPTH,
-        num_heads=_MODEL_HEADS,
-        cond_embed_dim=cond_embed_dim,
-    )
-    cond_encoder = ConditioningEncoder(cond_dim, cond_embed_dim)
-    optimizer = torch.optim.AdamW(
-        list(model.parameters()) + list(cond_encoder.parameters()), lr=args.lr
-    )
-    return model, cond_encoder, optimizer
-
-
-# ---------------------------------------------------------------------------
-# MLflow setup + full traceability
-# ---------------------------------------------------------------------------
-
-
-def _setup_tracking(args: argparse.Namespace) -> tuple[Path, Any]:
-    mlflow.set_tracking_uri(args.mlflow_uri)
-    mlflow.set_experiment(args.mlflow_experiment)
-    ckpt_dir = Path(args.checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    tracker = build_tracker(TrackingConfig(
-        enabled=True, backend="mlflow",
-        experiment_name=args.mlflow_experiment,
-        mlflow_tracking_uri=args.mlflow_uri,
-    ))
-    return ckpt_dir, tracker
-
-
-def _log_all_params(
-    args: argparse.Namespace,
-    n_train: int, n_val: int, n_test: int,
-) -> None:
-    mlflow.log_params(vars(args))
-    mlflow.log_params({
-        "data_n_total": n_train + n_val + n_test,
-        "data_n_train": n_train,
-        "data_n_val": n_val,
-        "data_n_test": n_test,
-        "data_seed": args.seed,
-        "model_embed_dim": _DEFAULT_EMBED_DIM,
-        "model_depth": _MODEL_DEPTH,
-        "model_num_heads": _MODEL_HEADS,
-        "model_patch_size": _MODEL_PATCH_SIZE,
-    })
-
-
-# ---------------------------------------------------------------------------
-# Training batch
-# ---------------------------------------------------------------------------
-
-
-def _train_batch_triton(
-    batch: dict[str, Any],
-    model: VelocityDiTRoPE,
-    cond_encoder: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    accelerator: Accelerator,
-    args: argparse.Namespace,
-    grid_attrs: dict[str, float],
-    ds_cfg: FMDatasetConfig,
-    weighter: ReLoBRaLoWeighter,
-    scheduler: torch.optim.lr_scheduler.OneCycleLR,
-) -> tuple[float, float, float, float]:
-    T_tgt = batch["T_target"].squeeze(1)
-    T_in = batch["T_in"].squeeze(1)
-    mask = batch["mask"].squeeze(1)
-    Q = batch["Q"].squeeze(1)
-    cond = batch["conditioning"]
-    patch_origins = batch["patch_origin"]
-
-    B, _, D, H, W = T_tgt.shape
-    coords_mm = patch_center_coords_mm(
-        patch_origins, _MODEL_PATCH_SIZE, grid_attrs,
-        (D // _MODEL_PATCH_SIZE, H // _MODEL_PATCH_SIZE, W // _MODEL_PATCH_SIZE),
-        accelerator.device,
-    )
-    cond_emb = cond_encoder(cond)
-    noise = sample_noise(T_tgt)
-    tau = torch.rand(B, device=accelerator.device)
-    x_tau = interpolate(noise, T_tgt, tau)
-    v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_mm)
-
-    loss_fm = fm_loss(v_pred, noise, T_tgt)
-
-    rho = denorm_cond_batch(cond, ds_cfg, "rho")
-    cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
-    k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
-
-    phys = PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q,
-        rho, cp_val, k_val,
-        grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
-        ds_cfg.T_ref, ds_cfg.T_ambient, ds_cfg.Q_ref, args.dt_s,
-    )
-
-    # All-reduce before extracting scalars so ReLoBRaLo sees the same values on every process.
-    loss_fm_reduced = accelerator.gather(loss_fm.detach()).mean()
-    phys_reduced = accelerator.gather(phys.detach()).mean()
-    loss_fm_val = loss_fm_reduced.item()
-    phys_val = phys_reduced.item()
-    lambda_phys = weighter.step(loss_fm_val, phys_val)
-
-    loss = loss_fm + lambda_phys * phys
-
-    optimizer.zero_grad()
-    accelerator.backward(loss)
-    optimizer.step()
-    scheduler.step()
-
-    return loss.detach().cpu().item(), loss_fm_val, phys_val, lambda_phys
-
-
-# ---------------------------------------------------------------------------
-# Training epoch (with optional profiler)
-# ---------------------------------------------------------------------------
-
-
-def _run_train_epoch(
-    model: VelocityDiTRoPE,
-    cond_encoder: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    loader: DataLoader,
-    epoch: int,
-    args: argparse.Namespace,
-    grid_attrs: dict[str, float],
-    ds_cfg: FMDatasetConfig,
-    scheduler: torch.optim.lr_scheduler.OneCycleLR,
-    accelerator: Accelerator,
-    weighter: ReLoBRaLoWeighter,
-    profiler: Any = None,
-) -> None:
-    model.train()
-    cond_encoder.train()
-    loss_total = loss_fm_total = phys_total = 0.0
-    n = 0
-    for batch in tqdm(loader, desc=f"Train {epoch}", leave=False,
-                      disable=not accelerator.is_main_process):
-        lt, lf, ph, lam = _train_batch_triton(
-            batch, model, cond_encoder, optimizer, accelerator,
-            args, grid_attrs, ds_cfg, weighter, scheduler,
+    def _train_batch_triton(batch: dict[str, Any]) -> float:
+        T_tgt = batch["T_target"].squeeze(1)
+        T_in = batch["T_in"].squeeze(1)
+        mask = batch["mask"].squeeze(1)
+        Q = batch["Q"].squeeze(1)
+        cond = batch["conditioning"]
+        patch_origins = batch["patch_origin"]
+        B, _, D, H, W = T_tgt.shape
+        coords_idx = patch_center_coords_idx(
+            patch_origins, _MODEL_PATCH_SIZE, grid_attrs,
+            (D // _MODEL_PATCH_SIZE, H // _MODEL_PATCH_SIZE, W // _MODEL_PATCH_SIZE),
+            accelerator.device,
         )
-        loss_total += lt
-        loss_fm_total += lf
-        phys_total += ph
-        n += 1
-        if profiler is not None:
-            profiler.step()
-
-    if accelerator.is_main_process and n > 0:
-        mlflow.log_metric("train_loss", loss_total / n, step=epoch)
-        mlflow.log_metric("train_loss_fm", loss_fm_total / n, step=epoch)
-        mlflow.log_metric("physics_residual", phys_total / n, step=epoch)
-        mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
-
-
-# ---------------------------------------------------------------------------
-# Main training loop
-# ---------------------------------------------------------------------------
-
-
-def _train_loop(
-    model: VelocityDiTRoPE,
-    cond_encoder: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    args: argparse.Namespace,
-    ckpt_dir: Path,
-    run: Any,
-    grid_attrs: dict[str, float],
-    ds_cfg: FMDatasetConfig,
-    accelerator: Accelerator,
-    scheduler: torch.optim.lr_scheduler.OneCycleLR,
-) -> None:
-    weighter = ReLoBRaLoWeighter(
-        alpha=args.relobralo_alpha,
-        beta=args.relobralo_beta,
-        eps=args.relobralo_epsilon,
-    )
-    best_val_loss = float("inf")
-
-    for epoch in tqdm(range(args.epochs), desc="Epochs",
-                      disable=not accelerator.is_main_process):
-
-        # Profile the first epoch (main process only).
-        # The schedule (wait=1, warmup=1, active=3) requires >=5 batches to record anything.
-        if epoch == 0 and accelerator.is_main_process:
-            if len(train_loader) < 5:
-                logger.warning(
-                    "Profiler schedule requires >=5 batches per epoch but epoch 0 has %d. "
-                    "The exported trace will be empty.",
-                    len(train_loader),
-                )
-            profiler = torch.profiler.profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-                with_stack=False,
-            )
-            profiler.start()
-            _run_train_epoch(
-                model, cond_encoder, optimizer, train_loader, epoch,
-                args, grid_attrs, ds_cfg, scheduler, accelerator, weighter,
-                profiler=profiler,
-            )
-            profiler.stop()
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-                trace_path = tmp.name
-            try:
-                profiler.export_chrome_trace(trace_path)
-                mlflow.log_artifact(trace_path, artifact_path="profiler")
-            finally:
-                os.remove(trace_path)
-            logger.info("Profiler trace logged to MLflow (epoch 0).")
-        else:
-            _run_train_epoch(
-                model, cond_encoder, optimizer, train_loader, epoch,
-                args, grid_attrs, ds_cfg, scheduler, accelerator, weighter,
-            )
-
-        if epoch % args.val_every != 0:
-            continue
-
-        avg_val = _run_val_epoch_accel(
-            model, cond_encoder, val_loader, grid_attrs, _MODEL_PATCH_SIZE, accelerator
+        cond_emb = cond_encoder(cond)
+        noise = sample_noise(T_tgt)
+        tau = torch.rand(B, device=accelerator.device)
+        x_tau = interpolate(noise, T_tgt, tau)
+        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_idx)
+        loss_fm = fm_loss(v_pred, noise, T_tgt)
+        rho = denorm_cond_batch(cond, ds_cfg, "rho")
+        cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
+        k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
+        phys = PDEResidualLoss.apply(
+            v_pred, x_tau.detach(), tau, T_in, Q,
+            rho, cp_val, k_val,
+            grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
+            ds_cfg.T_ref, ds_cfg.T_ambient, ds_cfg.Q_ref, args.dt_s,
         )
+        loss_fm_reduced = accelerator.gather(loss_fm.detach()).mean()
+        phys_reduced = accelerator.gather(phys.detach()).mean()
+        lambda_phys = weighter.step(loss_fm_reduced.item(), phys_reduced.item())
+        loss = loss_fm + lambda_phys * phys
+        optimizer.zero_grad()
+        accelerator.backward(loss)
+        optimizer.step()
+        scheduler.step()
+        return loss.detach().cpu().item()
 
-        if accelerator.is_main_process:
-            mlflow.log_metric("val_loss", avg_val, step=epoch)
-            if avg_val < best_val_loss:
-                best_val_loss = avg_val
-                _save_best_checkpoint_accel(
-                    model, cond_encoder, ckpt_dir, epoch, avg_val, args, accelerator
-                )
-                mlflow.log_metric("best_val_loss", best_val_loss, step=epoch)
-                logger.info("New best model at epoch %d: %.6f", epoch, best_val_loss)
-
-            if epoch % 10 == 0:
-                _log_val_image_rope_accel(
-                    model, run, cond_encoder, next(iter(val_loader)),
-                    epoch, accelerator.device, grid_attrs, _MODEL_PATCH_SIZE, accelerator,
-                )
-
-        accelerator.wait_for_everyone()
+    return _train_batch_triton
 
 
 # ---------------------------------------------------------------------------
@@ -474,70 +226,235 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     if accelerator.is_main_process:
-        logger.info(
-            "Accelerate: %d process(es), mixed_precision=%s",
-            accelerator.num_processes, args.mixed_precision,
-        )
+        logger.info("Accelerate: %d process(es), mixed_precision=%s",
+                    accelerator.num_processes, args.mixed_precision)
 
     grid_attrs = read_grid_attrs(args.h5[0])
     if accelerator.is_main_process:
-        logger.info(
-            "Grid: dx=%.3e m  dy=%.3e m  dz=%.3e m",
-            grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
-        )
+        logger.info("Grid: dx=%.3e m  dy=%.3e m  dz=%.3e m",
+                    grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"])
 
-    ds_cfg, full_ds, test_ds, train_loader, val_loader, test_loader, n_train, n_val, n_test = (
-        _build_data(args)
+    split = build_patch_data(
+        args.h5, patch_size=64, batch_size=args.batch_size,
+        seed=args.seed, use_origins=True,
     )
-    model, cond_encoder, optimizer = _build_models(args, ds_cfg)
+    ds_cfg = split.ds_cfg
 
+    model = VelocityDiTRoPE(
+        patch_size=_MODEL_PATCH_SIZE, in_channels=3, embed_dim=_DEFAULT_EMBED_DIM,
+        depth=_MODEL_DEPTH, num_heads=_MODEL_HEADS, cond_embed_dim=128,
+    )
+    cond_encoder = ConditioningEncoder(len(ds_cfg.conditioning_keys), 128)
+    optimizer = torch.optim.AdamW(
+        list(model.parameters()) + list(cond_encoder.parameters()), lr=args.lr
+    )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=args.lr,
-        epochs=args.epochs,
-        steps_per_epoch=len(train_loader),
-        pct_start=0.1,
+        optimizer, max_lr=args.lr, epochs=args.epochs,
+        steps_per_epoch=len(split.train_loader), pct_start=0.1,
+    )
+    model, cond_encoder, optimizer, split.train_loader, split.val_loader, scheduler = (
+        accelerator.prepare(model, cond_encoder, optimizer,
+                            split.train_loader, split.val_loader, scheduler)
     )
 
-    model, cond_encoder, optimizer, train_loader, val_loader, scheduler = (
-        accelerator.prepare(model, cond_encoder, optimizer, train_loader, val_loader, scheduler)
+    weighter = ReLoBRaLoWeighter(
+        alpha=args.relobralo_alpha, beta=args.relobralo_beta, eps=args.relobralo_epsilon
+    )
+    _train_batch_triton = _make_train_batch_fn(
+        model, cond_encoder, optimizer, accelerator, args, grid_attrs, ds_cfg, weighter, scheduler
     )
 
+    # --- val step (shared with accelerate variant) ---
+
+    def _val_step(batch: dict[str, Any]) -> float:
+        T_tgt = batch["T_target"].squeeze(1)
+        mask = batch["mask"].squeeze(1)
+        Q = batch["Q"].squeeze(1)
+        cond = batch["conditioning"]
+        patch_origins = batch["patch_origin"]
+        B, _, D, H, W = T_tgt.shape
+        coords_idx = patch_center_coords_idx(
+            patch_origins, _MODEL_PATCH_SIZE, grid_attrs,
+            (D // _MODEL_PATCH_SIZE, H // _MODEL_PATCH_SIZE, W // _MODEL_PATCH_SIZE),
+            accelerator.device,
+        )
+        cond_emb = cond_encoder(cond)
+        noise = sample_noise(T_tgt)
+        tau = torch.rand(B, device=accelerator.device)
+        x_tau = interpolate(noise, T_tgt, tau)
+        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_idx)
+        return fm_loss(v_pred, noise, T_tgt).detach().cpu().item()
+
+    # --- per-epoch callbacks with epoch-0 profiler ---
+
+    def _train_epoch_fn(epoch: int) -> float:
+        model.train()
+        cond_encoder.train()
+        is_main = accelerator.is_main_process
+        if epoch == 0 and is_main:
+            if len(split.train_loader) < 5:
+                logger.warning("Profiler schedule requires >=5 batches per epoch but has %d.",
+                               len(split.train_loader))
+            profiler = torch.profiler.profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+                with_stack=False,
+            )
+            profiler.start()
+            avg = run_train_epoch(_train_batch_triton, split.train_loader, epoch,
+                                  profiler=profiler, tqdm_disable=not is_main)
+            profiler.stop()
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                trace_path = tmp.name
+            try:
+                profiler.export_chrome_trace(trace_path)
+                mlflow.log_artifact(trace_path, artifact_path="profiler")
+            finally:
+                os.remove(trace_path)
+        else:
+            avg = run_train_epoch(_train_batch_triton, split.train_loader, epoch,
+                                  tqdm_disable=not is_main)
+        if is_main:
+            mlflow.log_metric("train_loss", avg, step=epoch)
+            mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
+        return avg
+
+    def _val_epoch_fn(epoch: int) -> float:
+        model.eval()
+        cond_encoder.eval()
+        avg_val = run_val_epoch(_val_step, split.val_loader)
+        if accelerator.is_main_process:
+            mlflow.log_metric("val_loss", avg_val, step=epoch)
+        return avg_val
+
+    val_loader_for_snap = split.val_loader
+
+    def _inference_rollout(val_batch: dict[str, Any]) -> Tensor:
+        single: dict[str, Any] = {
+            k: v[:1] if isinstance(v, Tensor) else (v[:1] if isinstance(v, list) else v)
+            for k, v in val_batch.items()
+        }
+        T_in = single["T_in"].squeeze(1)
+        mask = single["mask"].squeeze(1)
+        Q = single["Q"].squeeze(1)
+        cond = single["conditioning"]
+        patch_origins = single["patch_origin"]
+        B, _, D, H, W = T_in.shape
+        coords_idx = patch_center_coords_idx(
+            patch_origins, _MODEL_PATCH_SIZE, grid_attrs,
+            (D // _MODEL_PATCH_SIZE, H // _MODEL_PATCH_SIZE, W // _MODEL_PATCH_SIZE),
+            accelerator.device,
+        )
+        cond_emb = cond_encoder(cond)
+        x = sample_noise(T_in)
+        dt = 1.0 / 25
+        with torch.no_grad():
+            for i in range(25):
+                tau = torch.full((B,), i * dt, device=accelerator.device)
+                x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx) * dt
+        return x
+
+    # Worker processes: run training loop without tracker
     if not accelerator.is_main_process:
-        ckpt_dir = Path(args.checkpoint_dir)
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        _train_loop(
-            model, cond_encoder, optimizer, train_loader, val_loader,
-            args, ckpt_dir, None, grid_attrs, ds_cfg, accelerator, scheduler,
+        from pathlib import Path
+        ckpt_dir_worker = Path(args.checkpoint_dir)
+        ckpt_dir_worker.mkdir(parents=True, exist_ok=True)
+
+        def _noop_checkpoint(epoch: int, val_loss: float) -> None:
+            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args,
+                            accelerator=accelerator)
+
+        run_train_loop(
+            _train_epoch_fn, _val_epoch_fn, _noop_checkpoint,
+            snapshot_fn=lambda epoch: None,
+            epochs=args.epochs, val_every=args.val_every,
+            sync_fn=accelerator.wait_for_everyone,
+            is_main=False,
+            tqdm_disable=True,
         )
         return
 
-    ckpt_dir, tracker = _setup_tracking(args)
+    tracker, ckpt_dir = setup_run(args, timestamped=False)
 
     with tracker.start_run(
         run_name=f"dit_triton_{datetime.datetime.now().strftime('%H%M%S')}",
         config={},
         tags={"architecture": "transformer_rope", "mode": "triton_pde_loss"},
     ) as run:
-        _log_all_params(args, n_train, n_val, n_test)
+        mlflow.log_params(vars(args))
+        mlflow.log_params({
+            "data_n_total": len(split.train_ds) + len(split.val_ds) + len(split.test_ds),
+            "data_n_train": len(split.train_ds),
+            "data_n_val": len(split.val_ds),
+            "data_n_test": len(split.test_ds),
+            "model_embed_dim": _DEFAULT_EMBED_DIM,
+            "model_depth": _MODEL_DEPTH,
+            "model_num_heads": _MODEL_HEADS,
+            "model_patch_size": _MODEL_PATCH_SIZE,
+        })
 
-        _train_loop(
-            model, cond_encoder, optimizer, train_loader, val_loader,
-            args, ckpt_dir, run, grid_attrs, ds_cfg, accelerator, scheduler,
+        def _checkpoint_fn(epoch: int, val_loss: float) -> None:
+            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args,
+                            accelerator=accelerator)
+            mlflow.log_metric("best_val_loss", val_loss, step=epoch)
+
+        def _snapshot_fn(epoch: int) -> tuple[Tensor, Tensor] | None:
+            if epoch % 10 != 0:
+                return None
+            return log_val_image_rope(
+                model, cond_encoder, _inference_rollout,
+                next(iter(val_loader_for_snap)), epoch, run,
+                filename_prefix="val_rope_epoch",
+            )
+
+        run_train_loop(
+            _train_epoch_fn, _val_epoch_fn, _checkpoint_fn, _snapshot_fn,
+            epochs=args.epochs, val_every=args.val_every,
+            sync_fn=accelerator.wait_for_everyone,
+            is_main=True,
+            tqdm_disable=False,
         )
-        _run_test_phase_accel(
-            model, cond_encoder, test_loader, test_ds, full_ds, ckpt_dir,
-            args, tracker, run, grid_attrs, _MODEL_PATCH_SIZE, accelerator,
-        )
-        # No barrier here: non-main processes have already returned from main().
-        # The barrier inside _train_loop (accelerator.wait_for_everyone) is sufficient.
+
+        best_ckpt = ckpt_dir / "best.pt"
+        if best_ckpt.exists():
+            load_checkpoint(model, cond_encoder, best_ckpt, accelerator.device,
+                            accelerator=accelerator)
+            model.eval()
+            cond_encoder.eval()
+
+            def _test_rollout(batch: dict[str, Any]) -> tuple[Tensor, Tensor]:
+                moved = {k: v.to(accelerator.device) if isinstance(v, Tensor) else v
+                         for k, v in batch.items()}
+                T_tgt = moved["T_target"].squeeze(1)
+                T_in = moved["T_in"].squeeze(1)
+                mask = moved["mask"].squeeze(1)
+                Q = moved["Q"].squeeze(1)
+                cond = moved["conditioning"]
+                patch_origins = moved["patch_origin"]
+                B, _, D, H, W = T_tgt.shape
+                coords_idx = patch_center_coords_idx(
+                    patch_origins, _MODEL_PATCH_SIZE, grid_attrs,
+                    (D // _MODEL_PATCH_SIZE, H // _MODEL_PATCH_SIZE, W // _MODEL_PATCH_SIZE),
+                    accelerator.device,
+                )
+                cond_emb = cond_encoder(cond)
+                x = sample_noise(T_in)
+                dt = 1.0 / args.test_n_steps
+                with torch.no_grad():
+                    for i in range(args.test_n_steps):
+                        tau = torch.full((B,), i * dt, device=accelerator.device)
+                        x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx) * dt
+                return x.cpu(), T_tgt.cpu()
+
+            run_test_phase(
+                _test_rollout, split.test_loader, ckpt_dir, run,
+                args.seed, tracker=tracker,
+            )
+
         torch.save(
-            {
-                "model_state": accelerator.unwrap_model(model).state_dict(),
-                "cond_encoder_state": accelerator.unwrap_model(cond_encoder).state_dict(),
-                "ds_cfg": ds_cfg.model_dump(),
-                "grid_attrs": grid_attrs,
-            },
+            {"model_state": accelerator.unwrap_model(model).state_dict(),
+             "cond_encoder_state": accelerator.unwrap_model(cond_encoder).state_dict(),
+             "ds_cfg": ds_cfg.model_dump(), "grid_attrs": grid_attrs},
             ckpt_dir / "latest.pt",
         )
 
