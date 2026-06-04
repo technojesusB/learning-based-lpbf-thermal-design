@@ -21,9 +21,7 @@ class RolloutConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    n_steps: int = Field(
-        default=10, gt=0, description="Number of macro-steps to evaluate"
-    )
+    n_steps: int = Field(default=10, gt=0, description="Number of macro-steps to evaluate")
     mode: str = Field(default="one_step", description='"one_step" or "autoregressive"')
     divergence_T_max: float = Field(
         default=5000.0,

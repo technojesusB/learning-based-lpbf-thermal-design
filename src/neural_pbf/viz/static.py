@@ -7,9 +7,7 @@ from neural_pbf.core.config import SimulationConfig
 from neural_pbf.core.state import SimulationState
 
 
-def plot_temperature_field(
-    state: SimulationState, sim: SimulationConfig, save_path: str | None = None
-):
+def plot_temperature_field(state: SimulationState, sim: SimulationConfig, save_path: str | None = None):
     """
     Plot the 2D temperature field using Matplotlib.
 
@@ -24,14 +22,10 @@ def plot_temperature_field(
     """
     # Extract T
     T = state.T
-    if T.ndim == 5:  # B, C, D, H, W
-        # Assuming Top Layer is index 0 or -1?
-        # Usually index 0 in Z if Z increases into depth? Or 0 is surface?
-        # Let's assume index 0 is surface.
-        T_slice = T[0, 0, 0, :, :].detach().cpu().numpy()
-    else:
-        # 2D case: B, C, H, W
-        T_slice = T[0, 0, :, :].detach().cpu().numpy()
+    # Assuming Top Layer is index 0 or -1?
+    # Usually index 0 in Z if Z increases into depth? Or 0 is surface?
+    # Let's assume index 0 is surface.
+    T_slice = T[0, 0, 0, :, :].detach().cpu().numpy() if T.ndim == 5 else T[0, 0, :, :].detach().cpu().numpy()
 
     plt.figure(figsize=(6, 5))
     im = plt.imshow(T_slice, origin="upper", cmap="inferno")
@@ -58,11 +52,8 @@ def plot_cooling_rate(state: SimulationState, save_path: str | None = None):
         return
 
     CR = state.cooling_rate
-    if CR.ndim == 5:
-        # Top layer
-        CR_slice = CR[0, 0, 0, :, :].detach().cpu().numpy()
-    else:
-        CR_slice = CR[0, 0, :, :].detach().cpu().numpy()
+    # Top layer for 3D
+    CR_slice = CR[0, 0, 0, :, :].detach().cpu().numpy() if CR.ndim == 5 else CR[0, 0, :, :].detach().cpu().numpy()
 
     plt.figure(figsize=(6, 5))
     im = plt.imshow(CR_slice, origin="upper", cmap="viridis")

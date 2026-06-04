@@ -127,11 +127,7 @@ class PhysicsInformedLoss(nn.Module):
         # ---- PDE residual ---------------------------------------------------
         T_det = T_pred.detach()
 
-        k = (
-            k_field.detach()
-            if k_field is not None
-            else k_eff(T_det, self.mat_config, mask=None)
-        )
+        k = k_field.detach() if k_field is not None else k_eff(T_det, self.mat_config, mask=None)
 
         if cp_field is not None:
             cp: Tensor = cp_field.detach()
@@ -158,9 +154,7 @@ class PhysicsInformedLoss(nn.Module):
         # ---- Mask BCE (consolidation state) ---------------------------------
         mask_bce: Tensor
         if mask_pred is not None and mask_target is not None:
-            mask_bce = F.binary_cross_entropy_with_logits(
-                mask_pred, mask_target.float()
-            )
+            mask_bce = F.binary_cross_entropy_with_logits(mask_pred, mask_target.float())
         else:
             mask_bce = T_pred.new_zeros(())
 

@@ -53,7 +53,7 @@ dev = [
 ]
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py311"
 extend-exclude = ["notebooks", "scripts", "experiments", "legacy", "tests"]
 
@@ -67,19 +67,19 @@ indent-style = "space"
 
 [tool.pyright]
 include = ["src"]
-exclude = ["**/node_modules", "**/__pycache__", "legacy", "experiments", "notebooks", "scripts", "tests"]
+exclude = ["**/node_modules", "**/__pycache__", "legacy", "experiments", "notebooks", "scripts", "tests", "**/triton_*.py"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
 
 [tool.black]
-line-length = 88
+line-length = 120
 target-version = ['py311']
 include = '\.pyi?$'
 
 [tool.isort]
 profile = "black"
-line_length = 88
+line_length = 120
 multi_line_output = 3
 include_trailing_comma = true
 force_grid_wrap = 0
@@ -112,7 +112,7 @@ python_version = "3.11"
 mypy_path = "src"
 explicit_package_bases = true
 ignore_missing_imports = true
-exclude = ["experiments/", "notebooks/", "legacy/", "scripts/", "tests/"]
+exclude = ["experiments/", "notebooks/", "legacy/", "scripts/", "tests/", ".*triton_.*\\.py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/neural_pbf"]

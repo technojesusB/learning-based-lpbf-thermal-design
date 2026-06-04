@@ -67,9 +67,7 @@ class RunContext:
 
     # ── Instrumentation setup ────────────────────────────────────────────────
 
-    def _setup_instrumentation(
-        self, cfg: InstrumentationConfig, n_steps: int | None
-    ) -> None:
+    def _setup_instrumentation(self, cfg: InstrumentationConfig, n_steps: int | None) -> None:
         from .instrumentation import FlightRecorder, ProgressReporter, SystemMonitor
 
         if cfg.system_metrics:
@@ -225,9 +223,7 @@ class RunContext:
             if extra_metrics:
                 mlflow_metrics.update(extra_metrics)
             # System metrics: skip None values
-            mlflow_metrics.update(
-                {k: v for k, v in sys_sample.items() if v is not None}
-            )
+            mlflow_metrics.update({k: v for k, v in sys_sample.items() if v is not None})
             if mlflow_metrics:
                 self.tracker.log_metrics(mlflow_metrics, step=step_idx)
 
@@ -279,15 +275,10 @@ class RunContext:
         meta = {"dt": self.run_meta.dt}
         self.diagnostics.on_step_start(state, meta)
 
-    def log_step(
-        self, step: int, state: Any, meta: dict[str, Any] | None = None
-    ) -> dict[str, float]:
+    def log_step(self, step: int, state: Any, meta: dict[str, Any] | None = None) -> dict[str, float]:
         if meta is None:
             meta = {}
-        if isinstance(state, dict):
-            T = state.get("T", state.get("temperature"))
-        else:
-            T = state
+        T = state.get("T", state.get("temperature")) if isinstance(state, dict) else state
         metrics = self.diagnostics.on_step_end(step, state, self._prev_state_T, meta)
         if step % self.tracking_cfg.log_every_n_steps == 0:
             self.tracker.log_metrics(metrics, step=step)
@@ -300,9 +291,7 @@ class RunContext:
                 self._prev_state_T = T
         return metrics
 
-    def maybe_snapshot(
-        self, step: int, state: Any, meta: dict[str, Any] | None = None
-    ) -> None:
+    def maybe_snapshot(self, step: int, state: Any, meta: dict[str, Any] | None = None) -> None:
         if meta is None:
             meta = {}
         if not self.artifact_builder:

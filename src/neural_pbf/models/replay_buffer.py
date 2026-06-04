@@ -94,18 +94,12 @@ class ExperienceReplayBuffer:
         experience: dict[str, Tensor] = {
             "T_in": self._crop_patch(T_in).to(dtype=torch.float32, device=self._device),
             "Q": self._crop_patch(Q).to(dtype=torch.float32, device=self._device),
-            "T_target": self._crop_patch(T_target).to(
-                dtype=torch.float32, device=self._device
-            ),
+            "T_target": self._crop_patch(T_target).to(dtype=torch.float32, device=self._device),
         }
         if T_lf is not None:
-            experience["T_lf"] = self._crop_patch(T_lf).to(
-                dtype=torch.float32, device=self._device
-            )
+            experience["T_lf"] = self._crop_patch(T_lf).to(dtype=torch.float32, device=self._device)
         for key, tensor in extra_fields.items():
-            experience[key] = self._crop_patch(tensor).to(
-                dtype=torch.float32, device=self._device
-            )
+            experience[key] = self._crop_patch(tensor).to(dtype=torch.float32, device=self._device)
 
         if len(self._storage) < self._capacity:
             self._storage.append(experience)
@@ -133,10 +127,7 @@ class ExperienceReplayBuffer:
         if n == 0:
             raise RuntimeError("Cannot sample from an empty replay buffer.")
         if n < batch_size:
-            raise RuntimeError(
-                f"Buffer has only {n} entries but batch_size={batch_size} "
-                "was requested."
-            )
+            raise RuntimeError(f"Buffer has only {n} entries but batch_size={batch_size} was requested.")
 
         indices = torch.randperm(n)[:batch_size].tolist()
         samples = [self._storage[i] for i in indices]

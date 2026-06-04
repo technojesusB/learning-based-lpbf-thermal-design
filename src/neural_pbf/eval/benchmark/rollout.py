@@ -49,19 +49,18 @@ def run_euler_rollout(
                 f"grid_attrs must be provided for model_type={model_type!r}. "
                 "Pass e.g. grid_attrs={'dx_m': 1.5e-5, 'dy_m': 1.5e-5, 'dz_m': 1.5e-5}."
             )
-        from experiments.train_fm_dit_rope import _euler_rollout_rope
+        from neural_pbf.integrator.fm_stepper import euler_rollout_rope
 
         ps = getattr(model, "patch_size", 4)
-        with torch.no_grad():
-            return _euler_rollout_rope(
-                model,  # type: ignore[arg-type]
-                cond_enc,
-                batch,
-                n_steps,
-                device,
-                grid_attrs,
-                ps,
-            )
+        return euler_rollout_rope(
+            model,  # type: ignore[arg-type]
+            cond_enc,
+            batch,
+            n_steps,
+            device,
+            grid_attrs,
+            ps,
+        )
 
     # --- net / dit path ---
     with torch.no_grad():
@@ -107,18 +106,14 @@ def measure_inference_throughput(
         Dict with keys: s_per_sample, throughput_samples_per_sec.
     """
     for _ in range(n_warmup):
-        run_euler_rollout(
-            model, cond_enc, batch, model_type, device, grid_attrs=grid_attrs
-        )
+        run_euler_rollout(model, cond_enc, batch, model_type, device, grid_attrs=grid_attrs)
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
     start = time.perf_counter()
     for _ in range(n_timed):
-        run_euler_rollout(
-            model, cond_enc, batch, model_type, device, grid_attrs=grid_attrs
-        )
+        run_euler_rollout(model, cond_enc, batch, model_type, device, grid_attrs=grid_attrs)
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -128,7 +123,5 @@ def measure_inference_throughput(
 
     return {
         "s_per_sample": s_per_sample,
-        "throughput_samples_per_sec": 1.0 / s_per_sample
-        if s_per_sample > 0
-        else float("inf"),
+        "throughput_samples_per_sec": 1.0 / s_per_sample if s_per_sample > 0 else float("inf"),
     }

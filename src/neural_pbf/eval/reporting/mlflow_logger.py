@@ -34,9 +34,7 @@ def log_rollout_to_mlflow(
             f"{prefix}/final_mae_K": summary.get("final_mae", float("nan")),
             f"{prefix}/peak_mae_K": summary.get("peak_mae", float("nan")),
             f"{prefix}/vram_peak_MB": result.vram_peak_bytes / 1e6,
-            f"{prefix}/mean_latency_ms": 1000.0 * sum(result.latencies_s) / n
-            if n > 0
-            else float("nan"),
+            f"{prefix}/mean_latency_ms": 1000.0 * sum(result.latencies_s) / n if n > 0 else float("nan"),
             f"{prefix}/diverged": float(result.diverged_at_step is not None),
         }
     )

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from experiments.train_fm_dit_rope import physics_heat_residual
+from neural_pbf.physics.fm_physics import physics_heat_residual
 from neural_pbf.physics.ops import div_k_grad
 
 

@@ -145,8 +145,8 @@ class EnergyMonitor:
         # Ideally should use cp_eff(T) but that includes latent heat.
         # Sensible heat loss uses specific heat.
 
-        loss_power_W = (
-            self.sim.loss_h * T_diff * self.mat.rho * self.mat.cp_base
-        ).sum() * (self.sim.dx * self.sim.dy * self.sim.dz)
+        loss_power_W = (self.sim.loss_h * T_diff * self.mat.rho * self.mat.cp_base).sum() * (
+            self.sim.dx * self.sim.dy * self.sim.dz
+        )
 
         self.stats.total_loss_J += float(loss_power_W * dt)

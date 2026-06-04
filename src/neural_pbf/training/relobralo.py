@@ -50,12 +50,18 @@ class ReLoBRaLoWeighter:
         if not (math.isfinite(loss_fm) and math.isfinite(loss_phys)):
             return self.lambda_phys
 
-        if self._ema_fm is None:
+        if self._ema_fm is None or self._ema_phys is None or self._init_fm is None or self._init_phys is None:
             self._ema_fm = loss_fm
             self._ema_phys = loss_phys
             self._init_fm = loss_fm
             self._init_phys = loss_phys
             return self.lambda_phys
+
+        # Inform Pyright that these are strictly floats here
+        assert self._ema_fm is not None
+        assert self._ema_phys is not None
+        assert self._init_fm is not None
+        assert self._init_phys is not None
 
         # Single Bernoulli draw per step so both losses share the
         # same reference baseline

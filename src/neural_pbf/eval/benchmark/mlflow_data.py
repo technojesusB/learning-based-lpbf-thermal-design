@@ -80,21 +80,13 @@ def fetch_mlflow_data(
             row["Start_Time"] = start_ms
             row["End_Time"] = eff_end_ms
 
-            util_hist = client.get_metric_history(
-                run_id, "system/gpu_0_utilization_percentage"
-            )
-            mem_hist = client.get_metric_history(
-                run_id, "system/gpu_0_memory_usage_megabytes"
-            )
+            util_hist = client.get_metric_history(run_id, "system/gpu_0_utilization_percentage")
+            mem_hist = client.get_metric_history(run_id, "system/gpu_0_memory_usage_megabytes")
 
             if util_hist:
-                row["GPU Util [%]"] = round(
-                    float(np.mean([m.value for m in util_hist])), 1
-                )
+                row["GPU Util [%]"] = round(float(np.mean([m.value for m in util_hist])), 1)
             if mem_hist:
-                row["GPU Mem [MB]"] = round(
-                    float(np.mean([m.value for m in mem_hist])), 1
-                )
+                row["GPU Mem [MB]"] = round(float(np.mean([m.value for m in mem_hist])), 1)
 
             if len(loss_hist) > 1:
                 total_ms = loss_hist[-1].timestamp - loss_hist[0].timestamp
@@ -105,9 +97,7 @@ def fetch_mlflow_data(
                     # s/sample = (seconds_per_batch / batch_size)
                     row["s/sample"] = round(s_per_it / batch_size, 4)
 
-            row["Final Loss"] = run.data.metrics.get(
-                "val_loss", run.data.metrics.get("train_loss", float("nan"))
-            )
+            row["Final Loss"] = run.data.metrics.get("val_loss", run.data.metrics.get("train_loss", float("nan")))
 
             # 2. Fetch Inference Stats (from the BENCHMARK experiment)
             if bench_exp_id and bench_run_id:
@@ -117,20 +107,12 @@ def fetch_mlflow_data(
                 )
                 for nr in nested_runs:
                     if nr.data.tags.get("model_version") == version:
-                        i_util = client.get_metric_history(
-                            nr.info.run_id, "system/gpu_0_utilization_percentage"
-                        )
-                        i_mem = client.get_metric_history(
-                            nr.info.run_id, "system/gpu_0_memory_usage_megabytes"
-                        )
+                        i_util = client.get_metric_history(nr.info.run_id, "system/gpu_0_utilization_percentage")
+                        i_mem = client.get_metric_history(nr.info.run_id, "system/gpu_0_memory_usage_megabytes")
                         if i_util:
-                            row["Inf GPU Util [%]"] = round(
-                                float(np.mean([m.value for m in i_util])), 1
-                            )
+                            row["Inf GPU Util [%]"] = round(float(np.mean([m.value for m in i_util])), 1)
                         if i_mem:
-                            row["Inf GPU Mem [MB]"] = round(
-                                float(np.max([m.value for m in i_mem])), 1
-                            )
+                            row["Inf GPU Mem [MB]"] = round(float(np.max([m.value for m in i_mem])), 1)
 
         except Exception as exc:
             logger.warning("Could not fetch MLflow data for %s: %s", version, exc)

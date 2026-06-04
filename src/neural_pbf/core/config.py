@@ -35,9 +35,7 @@ class SimulationConfig(BaseModel):
     # Domain size (user units)
     Lx: float = Field(..., gt=0.0, description="Length in X (user units)")
     Ly: float = Field(..., gt=0.0, description="Length in Y (user units)")
-    Lz: float | None = Field(
-        None, gt=0.0, description="Length in Z (user units). If None, 2D mode."
-    )
+    Lz: float | None = Field(None, gt=0.0, description="Length in Z (user units). If None, 2D mode.")
     # Layer thickness for 2D mode consistency (user units)
     default_dz: float = Field(
         default=0.05,
@@ -55,12 +53,8 @@ class SimulationConfig(BaseModel):
 
     # Time settings
     dt_base: float = Field(default=1e-5, gt=0.0, description="Base timestep [s]")
-    T_ambient: float = Field(
-        default=293.15, gt=0.0, description="Ambient temperature [K]"
-    )
-    loss_h: float = Field(
-        default=0.0, ge=0.0, description="Linear cooling loss coefficient [1/s]"
-    )
+    T_ambient: float = Field(default=293.15, gt=0.0, description="Ambient temperature [K]")
+    loss_h: float = Field(default=0.0, ge=0.0, description="Linear cooling loss coefficient [1/s]")
 
     @property
     def is_3d(self) -> bool:

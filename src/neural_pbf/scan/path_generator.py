@@ -78,9 +78,7 @@ def generate_pulsed_path(
                 b_x_min, b_x_max = xi, min(xi + island_size, x_max)
                 b_y_min, b_y_max = yi, min(yi + island_size, y_max)
 
-                island_pts = _generate_block(
-                    b_x_min, b_x_max, b_y_min, b_y_max, zigzag=True
-                )
+                island_pts = _generate_block(b_x_min, b_x_max, b_y_min, b_y_max, zigzag=True)
                 if island_pts.shape[0] > 0:
                     points.append(island_pts)
     else:

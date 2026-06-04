@@ -24,9 +24,7 @@ def harmonic_mean(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> torch
     return (2.0 * a * b) / (a + b + eps)
 
 
-def div_k_grad(
-    T: torch.Tensor, k: torch.Tensor, dx: float, dy: float, dz: float | None = None
-) -> torch.Tensor:
+def div_k_grad(T: torch.Tensor, k: torch.Tensor, dx: float, dy: float, dz: float | None = None) -> torch.Tensor:
     r"""
     Compute the divergence of the conductive heat flux: Div(k * Grad(T)) [W/m^3].
 

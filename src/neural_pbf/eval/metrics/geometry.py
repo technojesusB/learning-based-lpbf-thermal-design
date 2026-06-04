@@ -125,8 +125,7 @@ def evaluate_physical_metrics(
     return {
         "Physical/Meltpool_IoU": iou_melt_volumes(T_pred, T_tgt, T_liquidus),
         "Physical/Depth_Error_Vox": abs(
-            melt_pool_extent(T_pred, T_liquidus)["D"]
-            - melt_pool_extent(T_tgt, T_liquidus)["D"]
+            melt_pool_extent(T_pred, T_liquidus)["D"] - melt_pool_extent(T_tgt, T_liquidus)["D"]
         ),
         "Physical/Hotspot_Offset_Vox": hotspot_offset_vox(T_pred, T_tgt),
     }

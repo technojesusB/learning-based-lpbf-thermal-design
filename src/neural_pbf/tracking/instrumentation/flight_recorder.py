@@ -29,9 +29,7 @@ def _collect_env() -> dict[str, Any]:
         env["torch_cuda_version"] = getattr(t_v, "cuda", None) if t_v else None
         if torch.cuda.is_available():
             env["gpu_name"] = torch.cuda.get_device_name(0)
-            env["gpu_total_memory_mb"] = (
-                torch.cuda.get_device_properties(0).total_memory / 1024**2
-            )
+            env["gpu_total_memory_mb"] = torch.cuda.get_device_properties(0).total_memory / 1024**2
     except Exception:
         pass
     try:
@@ -128,9 +126,7 @@ class FlightRecorder:
         tb_str = None
         if exc is not None:
             try:
-                tb_str = "".join(
-                    traceback.format_exception(type(exc), exc, exc.__traceback__)
-                )
+                tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             except Exception:
                 tb_str = repr(exc)
 

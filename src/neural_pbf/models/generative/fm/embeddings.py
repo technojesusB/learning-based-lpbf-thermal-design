@@ -46,9 +46,7 @@ class AdaGroupNorm3d(nn.Module):
 
     def __init__(self, num_groups: int, num_channels: int, cond_dim: int) -> None:
         super().__init__()
-        self.norm = nn.GroupNorm(
-            num_groups=num_groups, num_channels=num_channels, affine=False
-        )
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels, affine=False)
         self.proj = nn.Linear(cond_dim, num_channels * 2)
         # Zero-init so at init the module is a pure GroupNorm
         nn.init.zeros_(self.proj.weight)

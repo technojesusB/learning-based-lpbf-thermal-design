@@ -87,7 +87,5 @@ def load_state(
             sys.modules["schemas"] = original_schemas
 
     if not isinstance(obj, model_type):
-        raise TypeError(
-            f"Loaded object type {type(obj)} does not match expected {model_type}."
-        )
+        raise TypeError(f"Loaded object type {type(obj)} does not match expected {model_type}.")
     return obj

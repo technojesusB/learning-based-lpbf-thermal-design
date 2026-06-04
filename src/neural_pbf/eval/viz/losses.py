@@ -85,31 +85,25 @@ def loss_panel(
     """
     if len(train_losses) != len(val_losses):
         raise ValueError(
-            "train_losses and val_losses must have the same length; "
-            f"got {len(train_losses)} and {len(val_losses)}."
+            f"train_losses and val_losses must have the same length; got {len(train_losses)} and {len(val_losses)}."
         )
     if len(train_losses) == 0:
         raise ValueError("train_losses and val_losses must not be empty.")
     if lambda_hist is not None and len(lambda_hist) != len(train_losses):
         raise ValueError(
-            "lambda_hist must have the same length as train_losses; "
-            f"got {len(lambda_hist)} vs {len(train_losses)}."
+            f"lambda_hist must have the same length as train_losses; got {len(lambda_hist)} vs {len(train_losses)}."
         )
 
     # Validate sub-loss args: must be both or neither
     if (fm_losses is None) != (pde_losses is None):
-        raise ValueError(
-            "fm_losses and pde_losses must both be provided or both be None."
-        )
+        raise ValueError("fm_losses and pde_losses must both be provided or both be None.")
     if fm_losses is not None and len(fm_losses) != len(train_losses):
         raise ValueError(
-            "fm_losses must have the same length as train_losses; "
-            f"got {len(fm_losses)} vs {len(train_losses)}."
+            f"fm_losses must have the same length as train_losses; got {len(fm_losses)} vs {len(train_losses)}."
         )
     if pde_losses is not None and len(pde_losses) != len(train_losses):
         raise ValueError(
-            "pde_losses must have the same length as train_losses; "
-            f"got {len(pde_losses)} vs {len(train_losses)}."
+            f"pde_losses must have the same length as train_losses; got {len(pde_losses)} vs {len(train_losses)}."
         )
 
     detailed = fm_losses is not None  # both fm_losses and pde_losses are set
@@ -191,14 +185,8 @@ def _loss_panel_standard(
         )
 
         ax_loss.set_yscale("log")
-        ax_loss.yaxis.set_major_locator(
-            matplotlib.ticker.LogLocator(base=10.0, numticks=10)
-        )
-        ax_loss.yaxis.set_minor_locator(
-            matplotlib.ticker.LogLocator(
-                base=10.0, subs=(0.2, 0.4, 0.6, 0.8), numticks=12
-            )
-        )
+        ax_loss.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10.0, numticks=10))
+        ax_loss.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10.0, subs=(0.2, 0.4, 0.6, 0.8), numticks=12))
         ax_loss.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
         ax_loss.grid(True, which="both", linestyle="--", alpha=0.4, color="#666666")
 
@@ -224,9 +212,7 @@ def _loss_panel_standard(
             )
             ax_lam.fill_between(epochs, 0, lambda_hist, color="#9b59b6", alpha=0.2)
             ax_lam.set_yscale("log")
-            ax_lam.yaxis.set_major_locator(
-                matplotlib.ticker.LogLocator(base=10.0, numticks=10)
-            )
+            ax_lam.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10.0, numticks=10))
             ax_lam.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
             if THEME.base.grid.enabled:
                 ax_lam.grid(
@@ -238,9 +224,7 @@ def _loss_panel_standard(
                     color=THEME.base.grid.color,
                 )
             ax_lam.set_xlabel("Epoch", fontsize=10)
-            ax_lam.set_ylabel(
-                r"ReLoBRaLo $\lambda_{phys}$ (log)", fontsize=11, fontweight="bold"
-            )
+            ax_lam.set_ylabel(r"ReLoBRaLo $\lambda_{phys}$ (log)", fontsize=11, fontweight="bold")
             ax_lam.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%d"))
 
         plt.tight_layout()
@@ -319,14 +303,8 @@ def _loss_panel_detailed(
         )
 
         ax_loss.set_yscale("log")
-        ax_loss.yaxis.set_major_locator(
-            matplotlib.ticker.LogLocator(base=10.0, numticks=10)
-        )
-        ax_loss.yaxis.set_minor_locator(
-            matplotlib.ticker.LogLocator(
-                base=10.0, subs=(0.2, 0.4, 0.6, 0.8), numticks=12
-            )
-        )
+        ax_loss.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10.0, numticks=10))
+        ax_loss.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10.0, subs=(0.2, 0.4, 0.6, 0.8), numticks=12))
         ax_loss.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
         ax_loss.grid(True, which="both", linestyle="--", alpha=0.4, color="#666666")
 
@@ -365,18 +343,12 @@ def _loss_panel_detailed(
             linewidth=THEME.base.line_width_sub + 0.5,
             label="Physics Weight lambda_phys",
         )
-        ax_lam.fill_between(
-            epochs, 0, lam_vals, color=THEME.base.color_lambda, alpha=0.2
-        )
+        ax_lam.fill_between(epochs, 0, lam_vals, color=THEME.base.color_lambda, alpha=0.2)
         ax_lam.set_yscale("log")
-        ax_lam.yaxis.set_major_locator(
-            matplotlib.ticker.LogLocator(base=10.0, numticks=10)
-        )
+        ax_lam.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10.0, numticks=10))
         ax_lam.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
         ax_lam.set_xlabel("Epoch", fontsize=10)
-        ax_lam.set_ylabel(
-            r"ReLoBRaLo $\lambda_{phys}$ (log)", fontsize=11, fontweight="bold"
-        )
+        ax_lam.set_ylabel(r"ReLoBRaLo $\lambda_{phys}$ (log)", fontsize=11, fontweight="bold")
         ax_lam.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%d"))
 
         plt.tight_layout()

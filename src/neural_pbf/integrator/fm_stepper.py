@@ -3,19 +3,28 @@
 Mirrors the TimeStepper.step_adaptive interface: takes a SimulationState
 and advances it by one macro-step using the trained VelocityNet.
 Immutability is enforced: input state is never mutated.
+
+Also exposes standalone Euler rollout functions for DiT and DiT+RoPE models
+used in the experiment training loops.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from neural_pbf.data.patch_dataset import GridAttrs
 
 import torch
+import torch.nn as nn
 from torch import Tensor
 
 from neural_pbf.core.config import SimulationConfig
 from neural_pbf.core.state import SimulationState
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.config import FMConfig
+from neural_pbf.models.generative.fm.flow import sample_noise
 from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 
 
@@ -73,14 +82,10 @@ class FMStepper:
         """
         if conditioning.ndim != 1:
             raise ValueError(
-                f"conditioning must be a 1-D tensor of shape (cond_dim,), "
-                f"got shape {tuple(conditioning.shape)}"
+                f"conditioning must be a 1-D tensor of shape (cond_dim,), got shape {tuple(conditioning.shape)}"
             )
         if state.T.ndim != 5:
-            raise ValueError(
-                f"FMStepper requires a 3-D SimulationState (T.ndim=5), "
-                f"got T.ndim={state.T.ndim}"
-            )
+            raise ValueError(f"FMStepper requires a 3-D SimulationState (T.ndim=5), got T.ndim={state.T.ndim}")
 
         n_steps = n_steps if n_steps is not None else self.fm_cfg.n_inference_steps
         dt_target = dt_target if dt_target is not None else self.sim_cfg.dt_base
@@ -95,10 +100,7 @@ class FMStepper:
             # --- Prepare inputs ---
             T = state.T.to(device, dtype=torch.float32)
             mask = state.material_mask
-            if mask is None:
-                mask = torch.zeros_like(T, dtype=torch.float32)
-            else:
-                mask = mask.to(device, dtype=torch.float32)
+            mask = torch.zeros_like(T, dtype=torch.float32) if mask is None else mask.to(device, dtype=torch.float32)
 
             # Build Q channel: use Q from state if available, else zeros
             # VelocityNet expects shape (1, 3, Nz, Ny, Nx): [T_τ, mask, Q]
@@ -172,3 +174,109 @@ class FMStepper:
             current = self.step(current, cond, n_steps=n_steps, dt_target=dt_target)
             results.append(current)
         return results
+
+
+# ---------------------------------------------------------------------------
+# Standalone Euler rollout functions (used by training experiment scripts)
+# ---------------------------------------------------------------------------
+
+
+def euler_rollout(
+    model: nn.Module,
+    cond_encoder: nn.Module,
+    batch: dict[str, Any],
+    n_steps: int,
+    device: torch.device,
+) -> Tensor:
+    """n-step Euler integration for VelocityDiT (fixed sinusoidal pos embed).
+
+    Args:
+        model:        VelocityDiT (or any model with forward(x, t, cond) signature).
+        cond_encoder: ConditioningEncoder.
+        batch:        Dataset batch dict with T_in, mask, Q, conditioning keys.
+        n_steps:      Number of Euler integration steps.
+        device:       Compute device.
+
+    Returns:
+        T_pred: (B, 1, D, H, W).
+    """
+    T_in = batch["T_in"].to(device).squeeze(1)
+    mask = batch["mask"].to(device).squeeze(1)
+    Q = batch["Q"].to(device).squeeze(1)
+    cond = batch["conditioning"].to(device)
+
+    model.eval()
+    cond_encoder.eval()
+    try:
+        x = sample_noise(T_in)
+        dt = 1.0 / n_steps
+        with torch.no_grad():
+            cond_emb = cond_encoder(cond)
+            for i in range(n_steps):
+                tau = torch.full((T_in.shape[0],), i * dt, device=device)
+                v = model(torch.cat([x, mask, Q], dim=1), tau, cond_emb)
+                x = x + v * dt
+    finally:
+        model.train()
+        cond_encoder.train()
+
+    return x
+
+
+def euler_rollout_rope(
+    model: nn.Module,
+    cond_encoder: nn.Module,
+    batch: dict[str, Any],
+    n_steps: int,
+    device: torch.device,
+    grid_attrs: GridAttrs,
+    model_patch_size: int,
+) -> Tensor:
+    """n-step Euler integration for VelocityDiTRoPE.
+
+    Tensors in batch are moved to device inside this function (use the accel
+    variant in accelerate-based scripts where tensors are already on device).
+
+    Args:
+        model:            VelocityDiTRoPE.
+        cond_encoder:     ConditioningEncoder.
+        batch:            Dataset batch dict; must include patch_origin key.
+        n_steps:          Number of Euler integration steps.
+        device:           Compute device.
+        grid_attrs:       Output of read_grid_attrs.
+        model_patch_size: DiT patch size in voxels.
+
+    Returns:
+        T_pred: (B, 1, D, H, W).
+    """
+    from neural_pbf.models.generative.fm.dit import patch_center_coords_idx
+
+    T_in = batch["T_in"].to(device).squeeze(1)
+    mask = batch["mask"].to(device).squeeze(1)
+    Q = batch["Q"].to(device).squeeze(1)
+    cond = batch["conditioning"].to(device)
+    patch_origins = batch["patch_origin"].to(device)
+
+    B, _, D, H, W = T_in.shape
+    Nz_t = D // model_patch_size
+    Ny_t = H // model_patch_size
+    Nx_t = W // model_patch_size
+
+    coords_idx = patch_center_coords_idx(patch_origins, model_patch_size, grid_attrs, (Nz_t, Ny_t, Nx_t), device)
+
+    model.eval()
+    cond_encoder.eval()
+    try:
+        x = sample_noise(T_in)
+        dt = 1.0 / n_steps
+        with torch.no_grad():
+            cond_emb = cond_encoder(cond)
+            for i in range(n_steps):
+                tau = torch.full((B,), i * dt, device=device)
+                v = model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx)
+                x = x + v * dt
+    finally:
+        model.train()
+        cond_encoder.train()
+
+    return x

@@ -28,15 +28,11 @@ def _get_total_vram_mb() -> float:
         pynvml.nvmlShutdown()
         return float(total_mb)
     except Exception as exc:
-        logger.warning(
-            "Could not detect total VRAM via pynvml: %s. Using 16GB fallback.", exc
-        )
+        logger.warning("Could not detect total VRAM via pynvml: %s. Using 16GB fallback.", exc)
         return 16384.0
 
 
-def _palette(
-    names: list[str], color_map: dict[str, str] | None = None
-) -> dict[str, str]:
+def _palette(names: list[str], color_map: dict[str, str] | None = None) -> dict[str, str]:
     """Dynamically assign colors, prioritizing the provided color_map."""
     if color_map:
         return {n: color_map[n] for n in names if n in color_map}
@@ -110,9 +106,7 @@ def plot_system_dashboard(
                 color=colors,
                 alpha=THEME.system.alpha_bar,
             )
-            ax00.set_title(
-                "Training Duration & Efficiency", fontsize=THEME.system.font_size_title
-            )
+            ax00.set_title("Training Duration & Efficiency", fontsize=THEME.system.font_size_title)
             ax00.set_ylabel("Duration [h]", fontsize=THEME.system.font_size_label)
             ax00.tick_params(axis="x", rotation=0)
 
@@ -154,9 +148,7 @@ def plot_system_dashboard(
                         alpha=THEME.system.alpha_scatter,
                         label=ver,
                     )
-            ax01.legend(
-                fontsize=THEME.system.font_size_legend, loc="upper left", framealpha=0.3
-            )
+            ax01.legend(fontsize=THEME.system.font_size_legend, loc="upper left", framealpha=0.3)
             _apply_gpu_axes(ax01, total_vram, "Training Resource Consumption")
 
             # [1, 1] Inference GPU Scatter (with Legends)
@@ -208,15 +200,11 @@ def plot_system_dashboard(
                 color=inf_colors,
                 alpha=THEME.system.alpha_bar,
             )
-            ax10.set_title(
-                "Inference Throughput", fontsize=THEME.system.font_size_title
-            )
+            ax10.set_title("Inference Throughput", fontsize=THEME.system.font_size_title)
             ax10.set_ylabel("s/sample", fontsize=THEME.system.font_size_label)
             ax10.tick_params(axis="x", rotation=0)
         else:
-            ax10.text(
-                0.5, 0.5, "No data", ha="center", va="center", transform=ax10.transAxes
-            )
+            ax10.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax10.transAxes)
 
         plt.tight_layout()
         fig.savefig(output_path, dpi=THEME.system.dpi, bbox_inches="tight")

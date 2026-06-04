@@ -87,18 +87,12 @@ class RolloutEngine:
         if len(gt_trajectory) < 2:
             raise ValueError("Trajectory must contain at least 2 snapshots.")
         if mode not in ("one_step", "autoregressive"):
-            raise ValueError(
-                f"mode must be 'one_step' or 'autoregressive', got {mode!r}"
-            )
+            raise ValueError(f"mode must be 'one_step' or 'autoregressive', got {mode!r}")
 
         n_steps = len(gt_trajectory) - 1
-        cond_seq: list[dict[str, Any] | None] = (
-            conditioning_seq if conditioning_seq is not None else [None] * n_steps
-        )
+        cond_seq: list[dict[str, Any] | None] = conditioning_seq if conditioning_seq is not None else [None] * n_steps
         T_sol = T_solidus if T_solidus is not None else gt_trajectory.mat_cfg.T_solidus
-        T_liq = (
-            T_liquidus if T_liquidus is not None else gt_trajectory.mat_cfg.T_liquidus
-        )
+        T_liq = T_liquidus if T_liquidus is not None else gt_trajectory.mat_cfg.T_liquidus
 
         reset_vram_peak()
         pred_T: list[torch.Tensor] = []
@@ -112,9 +106,7 @@ class RolloutEngine:
             snap_in = gt_trajectory.snapshots[i]
             snap_gt = gt_trajectory.snapshots[i + 1]
 
-            state_in = (
-                _snapshot_to_state(snap_in) if mode == "one_step" else current_state
-            )
+            state_in = _snapshot_to_state(snap_in) if mode == "one_step" else current_state
 
             with LatencyTimer() as timer:
                 pred_state = stepper.step(
@@ -127,10 +119,7 @@ class RolloutEngine:
             T_pred = pred_state.T
             T_gt = snap_gt.T.to(T_pred.device)
 
-            if (
-                not torch.isfinite(T_pred).all()
-                or T_pred.max().item() > _DIVERGENCE_T_MAX
-            ):
+            if not torch.isfinite(T_pred).all() or T_pred.max().item() > _DIVERGENCE_T_MAX:
                 diverged_at = i
                 break
 
@@ -172,7 +161,5 @@ def _snapshot_to_state(snap: Snapshot) -> SimulationState:
         T=snap.T.clone(),
         t=snap.t,
         step=0,
-        material_mask=snap.material_mask.clone()
-        if snap.material_mask is not None
-        else None,
+        material_mask=snap.material_mask.clone() if snap.material_mask is not None else None,
     )

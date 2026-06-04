@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from experiments.train_fm_dit_rope import apply_rope_3d, patch_center_coords_mm
+from neural_pbf.models.generative.fm.dit import apply_rope_3d, patch_center_coords_idx
 
 
 # ---------------------------------------------------------------------------
@@ -90,18 +90,18 @@ def test_rope3d_rotation_varies_across_heads() -> None:
 
 
 # ---------------------------------------------------------------------------
-# patch_center_coords_mm
+# patch_center_coords_idx
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_patch_center_coords_mm_shape() -> None:
+def test_patch_center_coords_idx_shape() -> None:
     B = 3
     model_patch_size = 4
     token_grid = (4, 4, 4)  # 64 tokens
     patch_origins = torch.zeros(B, 3, dtype=torch.long)
     grid_attrs = {"dz_m": 1e-5, "dy_m": 1e-5, "dx_m": 1e-5}
-    out = patch_center_coords_mm(
+    out = patch_center_coords_idx(
         patch_origins, model_patch_size, grid_attrs, token_grid, torch.device("cpu")
     )
     N_tokens = 4 * 4 * 4
@@ -109,7 +109,7 @@ def test_patch_center_coords_mm_shape() -> None:
 
 
 @pytest.mark.unit
-def test_patch_center_coords_mm_origin_offset() -> None:
+def test_patch_center_coords_idx_origin_offset() -> None:
     """Non-zero patch origin shifts all coordinate values uniformly."""
     B = 1
     model_patch_size = 4
@@ -119,10 +119,10 @@ def test_patch_center_coords_mm_origin_offset() -> None:
     origins_zero = torch.zeros(B, 3, dtype=torch.long)
     origins_shifted = torch.tensor([[0, 8, 0]], dtype=torch.long)  # y shifted by 8 voxels
 
-    coords_zero = patch_center_coords_mm(
+    coords_zero = patch_center_coords_idx(
         origins_zero, model_patch_size, grid_attrs, token_grid, torch.device("cpu")
     )
-    coords_shifted = patch_center_coords_mm(
+    coords_shifted = patch_center_coords_idx(
         origins_shifted, model_patch_size, grid_attrs, token_grid, torch.device("cpu")
     )
 

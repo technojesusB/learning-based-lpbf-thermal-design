@@ -48,9 +48,7 @@ def peak_tracking_plot(
         )
         ax.set_xlabel("Step")
         ax.set_ylabel("Peak Temperature [K]")
-        ax.set_title(
-            f"Peak Temperature Evolution — {result.stepper_name} ({result.mode})"
-        )
+        ax.set_title(f"Peak Temperature Evolution — {result.stepper_name} ({result.mode})")
         ax.legend(facecolor=THEME.base.bg_axis, edgecolor=THEME.base.grid.color)
     plt.tight_layout()
 

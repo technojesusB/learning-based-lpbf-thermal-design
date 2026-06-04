@@ -64,7 +64,7 @@ def test_pytorch_reference_returns_scalar(pde_module) -> None:
 def test_pytorch_reference_matches_rope_physics_residual(pde_module) -> None:
     """_pde_residual_pytorch must agree with the existing physics_heat_residual."""
     from neural_pbf.data.fm_dataset import FMDatasetConfig
-    from experiments.train_fm_dit_rope import physics_heat_residual
+    from neural_pbf.physics.fm_physics import physics_heat_residual
 
     B, D, H, W = 1, 8, 8, 8
     v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W)

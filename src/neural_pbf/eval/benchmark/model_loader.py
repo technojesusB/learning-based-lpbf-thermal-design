@@ -45,9 +45,7 @@ def load_model_adaptive(
     from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 
     ckpt_path = Path(ckpt_path)
-    ckpt: dict[str, Any] = torch.load(
-        str(ckpt_path), map_location=device, weights_only=False
-    )
+    ckpt: dict[str, Any] = torch.load(str(ckpt_path), map_location=device, weights_only=True)
 
     model: nn.Module | None = None
     cond_enc: nn.Module
@@ -56,9 +54,7 @@ def load_model_adaptive(
     grid_attrs: dict[str, Any] | None = ckpt.get("grid_attrs")
     if grid_attrs is None:
         grid_attrs = {"dx_m": 1.5e-05, "dy_m": 1.5e-05, "dz_m": 1.5e-05}
-        logger.warning(
-            "Checkpoint for %r lacks 'grid_attrs'; using fallback: %s", name, grid_attrs
-        )
+        logger.warning("Checkpoint for %r lacks 'grid_attrs'; using fallback: %s", name, grid_attrs)
 
     if model_type == "net":
         from neural_pbf.models.generative.fm.config import FMConfig
@@ -66,14 +62,12 @@ def load_model_adaptive(
 
         fm_cfg = FMConfig(**ckpt["fm_cfg"])
         model = VelocityNet(fm_cfg).to(device)
-        cond_enc = ConditioningEncoder(fm_cfg.cond_dim, fm_cfg.cond_embed_dim).to(
-            device
-        )
+        cond_enc = ConditioningEncoder(fm_cfg.cond_dim, fm_cfg.cond_embed_dim).to(device)
         model.load_state_dict(ckpt["model_state"])
         cond_enc.load_state_dict(ckpt["cond_encoder_state"])
 
     elif model_type == "dit":
-        from experiments.train_fm_dit import VelocityDiT
+        from neural_pbf.models.generative.fm.dit import VelocityDiT
 
         cond_enc = ConditioningEncoder(12, 128).to(device)
         for p_size in [4, 8]:
@@ -95,13 +89,11 @@ def load_model_adaptive(
                 logger.debug("DiT patch_size=%d failed for %r: %s", p_size, name, exc)
                 continue
         if model is None:
-            raise ValueError(
-                f"Could not load DiT {name!r} with any patch_size in [4, 8]"
-            )
+            raise ValueError(f"Could not load DiT {name!r} with any patch_size in [4, 8]")
         cond_enc.load_state_dict(ckpt["cond_encoder_state"])
 
     elif model_type in ("rope", "triton"):
-        from experiments.train_fm_dit_rope import VelocityDiTRoPE
+        from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE
 
         cond_enc = ConditioningEncoder(12, 128).to(device)
         for p_size in [4, 8]:
@@ -123,9 +115,7 @@ def load_model_adaptive(
                 logger.debug("RoPE patch_size=%d failed for %r: %s", p_size, name, exc)
                 continue
         if model is None:
-            raise ValueError(
-                f"Could not load RoPE {name!r} with any patch_size in [4, 8]"
-            )
+            raise ValueError(f"Could not load RoPE {name!r} with any patch_size in [4, 8]")
         cond_enc.load_state_dict(ckpt["cond_encoder_state"])
 
     else:

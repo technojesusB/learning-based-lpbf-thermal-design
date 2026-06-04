@@ -43,15 +43,11 @@ def compute_radial_psd(
     nz, ny, nx = psd_3d.shape
     z, y, x = np.indices(psd_3d.shape)
     center = (nz // 2, ny // 2, nx // 2)
-    r = np.sqrt(
-        (x - center[2]) ** 2 + (y - center[1]) ** 2 + (z - center[0]) ** 2
-    ).astype(int)
+    r = np.sqrt((x - center[2]) ** 2 + (y - center[1]) ** 2 + (z - center[0]) ** 2).astype(int)
 
     tbin = np.bincount(r.ravel(), psd_3d.ravel())
     nr = np.bincount(r.ravel())
-    radial_profile = np.divide(
-        tbin, nr, out=np.zeros_like(tbin, dtype=float), where=nr > 0
-    )
+    radial_profile = np.divide(tbin, nr, out=np.zeros_like(tbin, dtype=float), where=nr > 0)
 
     freqs_radial = np.linspace(0, 0.5, len(radial_profile))
     return freqs_radial, radial_profile
@@ -173,9 +169,7 @@ def plot_spectral_full_analysis(
 
     plt.style.use("dark_background")
     # Use schema-defined figsize and DPI
-    fig, axes = plt.subplots(
-        2, 2, figsize=THEME.spectral.figsize, dpi=THEME.spectral.dpi
-    )
+    fig, axes = plt.subplots(2, 2, figsize=THEME.spectral.figsize, dpi=THEME.spectral.dpi)
     fig.patch.set_facecolor(THEME.spectral.bg_figure)
     eps = 1e-12
 
@@ -187,9 +181,7 @@ def plot_spectral_full_analysis(
         pal_map = {name: color_map[name] for name in model_names if name in color_map}
     else:
         palette = THEME.spectral.color_palette
-        pal_map = {
-            name: palette[i % len(palette)] for i, name in enumerate(model_names)
-        }
+        pal_map = {name: palette[i % len(palette)] for i, name in enumerate(model_names)}
 
     gt_radial = gt_result["radial"]
     gt_axes = gt_result["axes"]
@@ -213,9 +205,7 @@ def plot_spectral_full_analysis(
             zorder=10,
         )
         ax.set_yscale("log")
-        ax.set_title(
-            titles[idx], fontsize=THEME.spectral.font_size_label + 1, color="white"
-        )
+        ax.set_title(titles[idx], fontsize=THEME.spectral.font_size_label + 1, color="white")
         ax.set_xlabel("Frequency [px⁻¹]", fontsize=THEME.spectral.font_size_label)
         ax.set_ylabel("PSD Ratio (Model / GT)", fontsize=THEME.spectral.font_size_label)
         ax.tick_params(labelsize=THEME.spectral.font_size_tick)

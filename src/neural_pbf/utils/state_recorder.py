@@ -9,9 +9,7 @@ from neural_pbf.schemas.state import SnapshotState
 
 @dataclass
 class StateRecorder:
-    keys: list[str] = field(
-        default_factory=lambda: ["T", "E_acc", "t_since", "cooling_rate"]
-    )
+    keys: list[str] = field(default_factory=lambda: ["T", "E_acc", "t_since", "cooling_rate"])
     times: list[float] = field(default_factory=list)
     event_idxs: list[int] = field(default_factory=list)
     snaps: dict[str, list[torch.Tensor]] = field(default_factory=dict)

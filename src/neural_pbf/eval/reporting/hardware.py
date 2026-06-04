@@ -55,9 +55,7 @@ def log_step_timing(step: int, secs_per_iter: float) -> None:
     try:
         import mlflow
 
-        mlflow.log_metric(
-            "Perf/steps_per_sec", 1.0 / max(secs_per_iter, 1e-9), step=step
-        )
+        mlflow.log_metric("Perf/steps_per_sec", 1.0 / max(secs_per_iter, 1e-9), step=step)
     except Exception:
         logger.debug("Step timing log unavailable", exc_info=True)
 
@@ -91,8 +89,7 @@ def epoch0_profiler(loader_len: int, run_name: str) -> Generator:
 
     if loader_len < 5:
         logger.warning(
-            "Profiler schedule requires >=5 batches per epoch but epoch 0 has %d. "
-            "The exported trace will be empty.",
+            "Profiler schedule requires >=5 batches per epoch but epoch 0 has %d. The exported trace will be empty.",
             loader_len,
         )
 

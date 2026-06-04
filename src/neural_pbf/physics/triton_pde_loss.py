@@ -104,43 +104,37 @@ if _TRITON_AVAILABLE:
         idx_xp = iz * NyNx + iy * Nx + ix_xp
         T_xp = (
             tl.load(x_tau_ptr + idx_xp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_xp, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_xp, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         idx_xm = iz * NyNx + iy * Nx + ix_xm
         T_xm = (
             tl.load(x_tau_ptr + idx_xm, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_xm, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_xm, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         idx_yp = iz * NyNx + iy_yp * Nx + ix
         T_yp = (
             tl.load(x_tau_ptr + idx_yp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_yp, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_yp, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         idx_ym = iz * NyNx + iy_ym * Nx + ix
         T_ym = (
             tl.load(x_tau_ptr + idx_ym, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_ym, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_ym, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         idx_zp = iz_zp * NyNx + iy * Nx + ix
         T_zp = (
             tl.load(x_tau_ptr + idx_zp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_zp, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_zp, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         idx_zm = iz_zm * NyNx + iy * Nx + ix
         T_zm = (
             tl.load(x_tau_ptr + idx_zm, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f
-            * tl.load(v_ptr + idx_zm, mask=mask, other=0.0).to(tl.float32)
+            + one_minus_tau_f * tl.load(v_ptr + idx_zm, mask=mask, other=0.0).to(tl.float32)
         ) * T_ref_f + T_ambient_f
 
         lap = (
@@ -190,24 +184,12 @@ if _TRITON_AVAILABLE:
         iz_zp = tl.minimum(iz + 1, Nz - 1)
         iz_zm = tl.maximum(iz - 1, 0)
 
-        res_xp = tl.load(
-            res_ptr + (iz * NyNx + iy * Nx + ix_xp), mask=mask, other=0.0
-        ).to(tl.float32)
-        res_xm = tl.load(
-            res_ptr + (iz * NyNx + iy * Nx + ix_xm), mask=mask, other=0.0
-        ).to(tl.float32)
-        res_yp = tl.load(
-            res_ptr + (iz * NyNx + iy_yp * Nx + ix), mask=mask, other=0.0
-        ).to(tl.float32)
-        res_ym = tl.load(
-            res_ptr + (iz * NyNx + iy_ym * Nx + ix), mask=mask, other=0.0
-        ).to(tl.float32)
-        res_zp = tl.load(
-            res_ptr + (iz_zp * NyNx + iy * Nx + ix), mask=mask, other=0.0
-        ).to(tl.float32)
-        res_zm = tl.load(
-            res_ptr + (iz_zm * NyNx + iy * Nx + ix), mask=mask, other=0.0
-        ).to(tl.float32)
+        res_xp = tl.load(res_ptr + (iz * NyNx + iy * Nx + ix_xp), mask=mask, other=0.0).to(tl.float32)
+        res_xm = tl.load(res_ptr + (iz * NyNx + iy * Nx + ix_xm), mask=mask, other=0.0).to(tl.float32)
+        res_yp = tl.load(res_ptr + (iz * NyNx + iy_yp * Nx + ix), mask=mask, other=0.0).to(tl.float32)
+        res_ym = tl.load(res_ptr + (iz * NyNx + iy_ym * Nx + ix), mask=mask, other=0.0).to(tl.float32)
+        res_zp = tl.load(res_ptr + (iz_zp * NyNx + iy * Nx + ix), mask=mask, other=0.0).to(tl.float32)
+        res_zm = tl.load(res_ptr + (iz_zm * NyNx + iy * Nx + ix), mask=mask, other=0.0).to(tl.float32)
 
         lap_res = (
             (res_xp - 2.0 * res_c + res_xm) * inv_dx2

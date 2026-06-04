@@ -80,12 +80,8 @@ class FMDatasetConfig(BaseModel):
 
     conditioning_keys: tuple[str, ...] = Field(default=_DEFAULT_CONDITIONING_KEYS)
 
-    cond_means: dict[str, float] = Field(
-        default_factory=lambda: dict(_DEFAULT_COND_MEANS)
-    )
-    cond_stds: dict[str, float] = Field(
-        default_factory=lambda: dict(_DEFAULT_COND_STDS)
-    )
+    cond_means: dict[str, float] = Field(default_factory=lambda: dict(_DEFAULT_COND_MEANS))
+    cond_stds: dict[str, float] = Field(default_factory=lambda: dict(_DEFAULT_COND_STDS))
 
     @model_validator(mode="after")
     def _validate_cond_stds(self) -> FMDatasetConfig:
@@ -148,10 +144,7 @@ class FMThermalDataset(Dataset):
             cond_values: list[float] = []
             for key in cfg.conditioning_keys:
                 if key not in grp.attrs:
-                    raise KeyError(
-                        f"Conditioning attribute '{key}' missing in sample "
-                        f"'{sample_key}' of '{path}'"
-                    )
+                    raise KeyError(f"Conditioning attribute '{key}' missing in sample '{sample_key}' of '{path}'")
                 cond_values.append(float(grp.attrs[key]))  # type: ignore
 
         # Normalise temperature fields: (T - T_ambient) / T_ref → O(1)
@@ -163,12 +156,8 @@ class FMThermalDataset(Dataset):
 
         # Z-score normalise conditioning vector
         cond = torch.tensor(cond_values, dtype=torch.float32)
-        means = torch.tensor(
-            [cfg.cond_means[k] for k in cfg.conditioning_keys], dtype=torch.float32
-        )
-        stds = torch.tensor(
-            [cfg.cond_stds[k] for k in cfg.conditioning_keys], dtype=torch.float32
-        )
+        means = torch.tensor([cfg.cond_means[k] for k in cfg.conditioning_keys], dtype=torch.float32)
+        stds = torch.tensor([cfg.cond_stds[k] for k in cfg.conditioning_keys], dtype=torch.float32)
         cond = (cond - means) / stds
 
         return {

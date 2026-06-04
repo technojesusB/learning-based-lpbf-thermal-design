@@ -134,21 +134,17 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
 
         return mask
 
-    def on_snapshot(
-        self, step_idx: int, state: Any, meta: dict[str, Any]
-    ) -> list[Path]:
+    def on_snapshot(self, step_idx: int, state: Any, meta: dict[str, Any]) -> list[Path]:
         """Buffer the state for later rendering to ensure consistent dynamic vmax."""
         generated: list[Path] = []
         if not self.cfg.enabled:
             return generated
 
         do_png = (step_idx == 999999) or (
-            (self.cfg.png_every_n_steps > 0)
-            and (step_idx % self.cfg.png_every_n_steps == 0)
+            (self.cfg.png_every_n_steps > 0) and (step_idx % self.cfg.png_every_n_steps == 0)
         )
         do_html = (step_idx == 999999) or (
-            (self.cfg.html_every_n_steps > 0)
-            and (step_idx % self.cfg.html_every_n_steps == 0)
+            (self.cfg.html_every_n_steps > 0) and (step_idx % self.cfg.html_every_n_steps == 0)
         )
 
         if not (do_png or do_html):
@@ -200,11 +196,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             profile = T_surf[:, Ny // 2]
             self._xt_buffer.append(profile)
             t_val = float(step_idx)
-            if (
-                isinstance(state, dict | object)
-                and not isinstance(state, torch.Tensor)
-                and hasattr(state, "t")
-            ):
+            if isinstance(state, dict | object) and not isinstance(state, torch.Tensor) and hasattr(state, "t"):
                 t_val = float(state.t)  # type: ignore
             self._xt_times.append(t_val)
 
@@ -229,9 +221,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         plt.savefig(path)
         plt.close(fig)
 
-    def save_material_overlay(
-        self, T: np.ndarray, mask: np.ndarray, path: Path, step: int
-    ):
+    def save_material_overlay(self, T: np.ndarray, mask: np.ndarray, path: Path, step: int):
         """Save a composite plot of Temperature and Material Mask."""
         if plt is None or ListedColormap is None or BoundaryNorm is None:
             return
@@ -295,9 +285,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         if plt is None:
             return
         fig = plt.figure(figsize=(15, 5))
-        plots.plot_cross_sections(
-            fig, T, self._dx, self._dy, self._dz, unit="mm", cmap="jet", vmax=vmax
-        )
+        plots.plot_cross_sections(fig, T, self._dx, self._dy, self._dz, unit="mm", cmap="jet", vmax=vmax)
         plt.savefig(path, dpi=150)
         plt.close(fig)
 
@@ -305,9 +293,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         if plt is None:
             return
         fig = plt.figure(figsize=(14, 10))
-        plots.plot_composite_thermal_view(
-            fig, T, self._dx, self._dy, self._dz, step, unit="mm", vmax=vmax
-        )
+        plots.plot_composite_thermal_view(fig, T, self._dx, self._dy, self._dz, step, unit="mm", vmax=vmax)
         plt.savefig(path, dpi=150)
         plt.close(fig)
 
@@ -335,9 +321,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         if go is None:
             return
         if T.ndim == 3:
-            fig = plots.plot_interactive_volume(
-                T, self._dx, self._dy, self._dz, step, vmax=vmax
-            )
+            fig = plots.plot_interactive_volume(T, self._dx, self._dy, self._dz, step, vmax=vmax)
         else:
             fig = plots.plot_interactive_heatmap(T, self._dx, self._dy, step, vmax=vmax)
         fig.write_html(str(path), include_plotlyjs="cdn")
@@ -371,9 +355,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
             vmax = float(np.ceil(overall_max / 500.0) * 500.0)
             if vmax < 500:
                 vmax = 500.0
-        logger.info(
-            f"Rendering {len(self._snapshot_buffer)} snapshots with vmax={vmax}"
-        )
+        logger.info(f"Rendering {len(self._snapshot_buffer)} snapshots with vmax={vmax}")
 
         # 3. Render all buffered snapshots
         from tqdm.auto import tqdm
@@ -402,30 +384,19 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
                     self._save_cross_sections(T_full, p_cross, step_idx, vmax=vmax)
                     generated.append(p_cross)
 
-                    p_comp = (
-                        self.dirs["plots_png"] / f"step_{step_idx:06d}_composite.png"
-                    )
+                    p_comp = self.dirs["plots_png"] / f"step_{step_idx:06d}_composite.png"
                     self._save_composite(T_full, p_comp, step_idx, vmax=vmax)
                     self._comp_paths.append(p_comp)
                     generated.append(p_comp)
 
                     if self.cfg.show_phase_map and snap.get("mask_full") is not None:
-                        p_dual = (
-                            self.dirs["plots_png"] / f"step_{step_idx:06d}_dual.png"
-                        )
-                        self._save_dual_view(
-                            T_full, snap["mask_full"], p_dual, step_idx, vmax=vmax
-                        )
+                        p_dual = self.dirs["plots_png"] / f"step_{step_idx:06d}_dual.png"
+                        self._save_dual_view(T_full, snap["mask_full"], p_dual, step_idx, vmax=vmax)
                         self._dual_paths.append(p_dual)
                         generated.append(p_dual)
 
-                    p_html_comp = (
-                        self.dirs["plots_interactive"]
-                        / f"step_{step_idx:06d}_composite.html"
-                    )
-                    self._save_plotly_composite(
-                        T_full, p_html_comp, step_idx, vmax=vmax
-                    )
+                    p_html_comp = self.dirs["plots_interactive"] / f"step_{step_idx:06d}_composite.html"
+                    self._save_plotly_composite(T_full, p_html_comp, step_idx, vmax=vmax)
                     generated.append(p_html_comp)
 
             if do_html and go:
@@ -462,9 +433,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
         import os
 
         # Combine all plotted paths for cleanup
-        all_plots = (
-            self._png_paths + self._block_paths + self._comp_paths + self._dual_paths
-        )
+        all_plots = self._png_paths + self._block_paths + self._comp_paths + self._dual_paths
         for p in all_plots:
             if p.exists() and p != xt_path:
                 try:
@@ -518,9 +487,7 @@ class TemperatureArtifactBuilder(ArtifactBuilder):
     def _write_report(self, path: Path, meta: dict, gif_path: Path | None):
         content = ["<html><body><h1>Simulation Report</h1>"]
         if gif_path:
-            content.append(
-                f"<h2>3D Animation</h2><img src='../plots/png/{gif_path.name}' />"
-            )
+            content.append(f"<h2>3D Animation</h2><img src='../plots/png/{gif_path.name}' />")
         content.append("</body></html>")
         with open(path, "w") as f:
             f.write("".join(content))
