@@ -1,0 +1,137 @@
+# Uncertainty quantification
+
+Prediction intervals for scalar melt-pool quantities (depth, T_max, volume) from the
+flow-matching surrogate, calibrated with split conformal prediction and evaluated on
+held-out simulation runs. It is developed and evaluated on the Baseline (`VelocityNet`).
+
+**Measured results are only in the generated [report](uq_report.md).** This page holds
+no result numbers. If the report is missing, the full pipeline has not been run yet.
+
+## Input causality audit
+
+A surrogate input must exist before the step it predicts. Checked against
+`_do_run` in `experiments/generate_offline_dataset.py`. Tests:
+`tests/scripts/test_generator_causality.py`.
+
+| Input | Source in the generator | Available before the predicted step |
+| --- | --- | --- |
+| Noise | Sampled at inference, independent of the data | Yes |
+| `mask_in` | `state.material_mask.clone()`, taken before the step runs | Yes |
+| `mask` (legacy only) | `state_next.material_mask`, the state after the step | **No** |
+| `Q` | `beam.intensity(...)` at the planned laser position, before the step | Yes |
+| Conditioning: power, sigma, material properties | Fixed per run by `prepare_trajectory` | Yes |
+| Conditioning: x, y | `plan.path_points`, computed before the time loop | Yes |
+
+`T_target` and the legacy `mask` are the only stored arrays derived from `state_next`.
+`T_in` is stored but is not a model input.
+
+The tests check that `mask_in` is a subset of the post-step mask, that `mask_in` is empty at
+a cold start, and that nothing except targets and diagnostics derives from `state_next`.
+
+**Every legacy result uses the post-step mask**, so part of the answer was in the input.
+Old checkpoints cannot be corrected. They need retraining on data with `mask_in`.
+
+## Method
+
+- **Data:** new runs in a material x pattern factorial design, with a seed range that
+  does not collide with legacy data. Legacy data has no `mask_in` and is used only for the
+  leakage demonstration.
+- **Split:** by run, stratified by material, into train, val, calibration, and test. Runs
+  sharing a scan stay together. The manifest is hashed and stored in the checkpoint.
+- **Ensemble:** K noise draws per input through `run_euler_rollout`, with a `torch.Generator`
+  on both noise paths. Default behavior without a generator is unchanged.
+- **Scalars:** computed per draw, using each sample's own T_l rather than the fixed 1600 K
+  of the legacy benchmark.
+
+| Interval method | Definition |
+| --- | --- |
+| `absolute` (primary) | Conformal quantile of the ensemble-mean residual; constant width |
+| `normalized` | Conformal quantile of residual / (ensemble sigma + eps) |
+| `constant_single_draw` | Constant-width baseline: conformal on one draw, no ensemble |
+| `raw_ensemble` | Uncalibrated mean +- z sigma, reference only |
+
+`absolute` is itself constant-width, so the separate baseline uses a single draw. That
+shows what the ensemble adds.
+
+**Coverage intervals:** Wilson (assumes independent samples) and a run-level bootstrap.
+Samples within a run are correlated, so prefer the bootstrap. Conformal's guarantee needs
+exchangeability, which holds only loosely within runs.
+
+**Run-level support:** a finite run-level quantile at level alpha needs
+`ceil((n+1)(1-alpha)) <= n` calibration runs: 4 for 0.2, 9 for 0.1, 19 for 0.05. The
+planned 12 calibration runs do not support alpha = 0.05, so the report marks it
+`not supported at run level`.
+
+## Deviations from the legacy Baseline training
+
+| Item | Legacy (`train_fm_patches.py`) | This pipeline | Reason |
+| --- | --- | --- | --- |
+| Mask input | Post-step `mask` | `mask_in` | Remove the leak |
+| Split | Random by sample, 3 runs | By run, about 45 runs | Honest held-out data |
+| Stopping | Fixed 100 epochs | At most 100, with patience in `TrainConfig` | Requested |
+| Validation noise | Fresh each epoch | Fixed seed | Epochs compare on equal terms |
+| Stored `Q` | Float32 after a repair | Float32 at write time | float16 overflows to inf |
+
+Architecture, learning rate, batch size, optimizer, and loss are unchanged. T_in is not added.
+
+## Legacy Baseline provenance gap
+
+`checkpoints/fm/best.pt` was trained by `experiments/train_fm_patches.py` on
+`offline_dataset_notebook.h5` (3 runs). MLflow names commit `f7add59`, but the script is
+not in that commit, so the exact training code cannot be recovered. The stored data also
+has a `Q_saturated` dataset that no committed generator version writes.
+
+## Leakage controls
+
+- `LEAKAGE GUARD`: every result is labelled `run-disjoint: yes/no/unknown`, from the
+  checkpoint's manifest hash or, for old checkpoints, from actual scan overlap with
+  `dataset_cfg`. Models with different labels are never ranked together.
+- Pre-registered K, alpha, primary method, and seeds are frozen and hashed before test access.
+- Every test access is logged. A second evaluation needs `--allow-reeval` and is stated
+  in the report.
+- Checkpoint selection uses val only. In manifest mode, training cannot load cal or test runs.
+- Normalization constants are fixed defaults, not fitted on any data.
+- The old benchmark test reconstruction (hard-coded seed 42) is not used.
+- Leakage demonstration: the old checkpoint on its own random-split held-out samples and
+  on the new test runs. Its small held-out n is an illustration, not a measurement.
+
+## Running it
+
+```bash
+scripts/run_uq_pipeline.sh --smoke      # whole chain on a tiny grid; writes to artifacts/uq_smoke
+scripts/run_uq_pipeline.sh              # full run, or resume; finished stages are skipped
+scripts/run_uq_pipeline.sh --status     # progress, ETA, heartbeat
+scripts/run_uq_pipeline.sh --stop       # stop cleanly; finished work is kept
+scripts/run_uq_pipeline.sh --dry-run    # what would run
+```
+
+Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`.
+
+| Stage | Purpose |
+| --- | --- |
+| S0 | Preflight: branch, clean tree, GPU, disk, dependencies, quick tests |
+| S1 | Generate runs: one process per run, atomic, deep-checked as each finishes |
+| S2 | Validate: schema, NaN/inf, counts, unique parameters, `mask_in` subset of `mask` |
+| S3 | Split manifest and pre-registration freeze |
+| S4 | Train the Baseline: resumable, best on val |
+| S5 | K-draw sampling: atomic chunks, resumable |
+| S6 | Conformal, evaluation, report, MLflow |
+| S7 | Summary with the timeline actually used |
+
+Exit codes: 0 ok, 1 failed, 2 refused, 3 GPU lost, 130 stopped. Logs are under `logs/uq/`
+and status is in `artifacts/uq/status.json`.
+
+A stage whose inputs changed is refused, never rerun silently. `--force-stage S1` never
+deletes generated runs, because that data is expensive.
+
+## Limitations
+
+- Results are on simulated data only, with no real-world validation.
+- There is a small number of runs, so run-level intervals are wide.
+- Conformal validity under within-run correlation is approximate.
+- Depth is capped by the domain height, and zero-depth samples make coverage easy. The
+  report shows these strata separately.
+- The simulator has no vaporization limit, so T_max can reach unphysical values.
+- Results apply to the Baseline only. Other models need retraining on `mask_in` data.
+- `load_model_adaptive` currently cannot load `checkpoints/dit`, `dit_physics`, or
+  `dit_accelerate`.

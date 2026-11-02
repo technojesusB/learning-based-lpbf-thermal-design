@@ -31,6 +31,7 @@ laser scan strategies under simplified thermal assumptions.
 - [Unified Benchmarking Suite](#unified-benchmarking-suite)
 - [Surrogate Development & Ablation History](#surrogate-development--ablation-history)
 - [Physics & Critical Assessment](#physics--critical-assessment)
+- [Uncertainty Quantification](#uncertainty-quantification)
 - [Development & Usage](#development--usage)
 - [Project Status & Milestones](#-project-status--milestones)
 
@@ -229,6 +230,15 @@ Rollout speed evaluated on a single GPU (representing speedups for inverse desig
 ### Current Limitations:
 - **Basic Boundary Conditions**: Limited to adiabatic or linear cooling losses; lacks radiation and gas flow convection.
 - **Memory Overhead**: Large 3D domains are constrained by VRAM (partially solved by Triton).
+- **Post-Step Mask in Legacy Results**: All legacy surrogate results use a material mask taken after the predicted step, so part of the answer is in the input. See [docs/uq.md](docs/uq.md).
+
+---
+
+## Uncertainty Quantification
+
+A run-level evaluation of prediction intervals for melt-pool depth, T_max, and volume, using split conformal prediction on the Baseline. It retrains on new runs with a causal pre-step mask, and includes a leakage audit.
+
+Method and limitations are in [docs/uq.md](docs/uq.md). Measured results are only in the generated [report](docs/uq_report.md), which exists once the full pipeline has run.
 
 ---
 
