@@ -61,7 +61,7 @@ def run_euler_rollout(
             batch,
             n_steps,
             device,
-            grid_attrs,
+            grid_attrs,  # type: ignore[arg-type]
             ps,
             generator,
         )

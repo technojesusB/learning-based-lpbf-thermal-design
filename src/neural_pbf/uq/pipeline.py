@@ -139,6 +139,8 @@ def run_child_with_retries(
     backoff_s: int,
     gpu_alive: Callable[[], bool],
     on_tick: Callable[[], None] | None = None,
+    progress_path: Path | None = None,
+    stall_timeout_s: int | None = None,
 ) -> int:
     """Run a stage child with bounded retries on GPU or memory failures. Returns an exit code."""
     global _current_child
@@ -150,13 +152,21 @@ def run_child_with_retries(
             log.flush()
             child = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             _current_child = child
+            last_seen = time.time()
+            wait_s = min(5, stall_timeout_s) if stall_timeout_s else 5
             while True:
                 try:
-                    code = child.wait(timeout=5)
+                    code = child.wait(timeout=wait_s)
                     break
                 except subprocess.TimeoutExpired:
                     if on_tick is not None:
                         on_tick()
+                    if progress_path is not None and progress_path.exists():
+                        last_seen = max(last_seen, progress_path.stat().st_mtime)
+                    if stall_timeout_s and time.time() - last_seen > stall_timeout_s:
+                        log.write(f"\n=== {_now()} stalled: no progress for {stall_timeout_s}s, killing\n".encode())
+                        log.flush()
+                        os.killpg(child.pid, signal.SIGKILL)
             _current_child = None
         if code == EXIT_OK:
             return EXIT_OK
@@ -342,6 +352,8 @@ def drive(cfg: UQConfig, args: argparse.Namespace) -> int:
                 cfg.run.retry_backoff_s,
                 gpu_alive,
                 on_tick=lambda s=stage: status.tick(s),
+                progress_path=root / "progress" / f"{stage}.json",
+                stall_timeout_s=cfg.run.stall_timeout_s if stage in ("S4", "S5") else None,
             )
             duration = round(time.time() - t0, 1)
             if code != EXIT_OK:

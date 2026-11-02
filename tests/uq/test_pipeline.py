@@ -225,3 +225,31 @@ os.kill(os.getpid(), signal.SIGTERM)
 @pytest.mark.unit
 def test_no_gpus_message_counts_as_gpu_failure():
     assert classify_failure(1, "RuntimeError: No CUDA GPUs are available") == "gpu"
+
+
+@pytest.mark.integration
+def test_stalled_child_is_killed_and_treated_as_gpu_failure(tmp_path, capsys):
+    progress = tmp_path / "p.json"
+    progress.write_text("{}")
+    kw = _common(tmp_path)
+    kw["max_retries"] = 0
+    body = "import time; time.sleep(120)"
+    code = run_child_with_retries(_script(tmp_path, body), **kw, progress_path=progress, stall_timeout_s=1)
+    assert code == EXIT_GPU_LOST
+    assert "stalled" in (tmp_path / "s.log").read_text()
+
+
+@pytest.mark.unit
+def test_cal_and_test_use_different_noise_streams():
+    from neural_pbf.uq.stages import set_seed
+
+    assert set_seed(7, "cal") != set_seed(7, "test") and set_seed(7, "cal") == set_seed(7, "cal")
+
+
+@pytest.mark.unit
+def test_timeline_projection_scales_with_runs():
+    from neural_pbf.uq.stages import _timeline
+
+    t = _timeline(UQConfig.full(), 800.0)
+    assert t["projected_generation_h"] == pytest.approx(10.0)
+    assert t["projected_total_h"] > t["projected_generation_h"]

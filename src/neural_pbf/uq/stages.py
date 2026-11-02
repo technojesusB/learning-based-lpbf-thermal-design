@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -49,9 +50,9 @@ _SAMPLING_CODE = [
 ]
 _EVAL_CODE = ["src/neural_pbf/uq/analysis.py", "src/neural_pbf/uq/conformal.py", "src/neural_pbf/uq/report.py"]
 
-# Planning figures for the timeline, from the README and legacy generation logs. Replaced by measurements as they exist.
-_LEGACY_TRAIN_H_PER_SAMPLE_EPOCH = 1.39 / (135 * 100)
-_LEGACY_ROLLOUT_S = 1.92
+# Measured on the project's eGPU at the full 64^3 patch size, used only to project the timeline.
+_TRAIN_S_PER_SAMPLE = 0.352  # batch size 4, including HDF5 reads
+_SAMPLING_S_PER_INPUT_K16 = 13.3  # K=16, draw_batch=4, 25 Euler steps
 
 
 class PipelineError(RuntimeError):
@@ -199,16 +200,20 @@ def _generator_cmd(cfg: UQConfig, run: int, out: Path) -> list[str]:
 
 
 def _timeline(cfg: UQConfig, seconds_per_run: float) -> dict[str, Any]:
-    sample_epochs = cfg.gen.samples_per_run * cfg.gen.n_runs * cfg.train.max_epochs * 0.55  # train + val share
-    rollouts = cfg.gen.samples_per_run * cfg.gen.n_runs * 0.45 * cfg.prereg.K
+    """Generation is measured in this run; training and sampling project from recorded throughput."""
+    samples = cfg.gen.samples_per_run * cfg.gen.n_runs
+    fractions = cfg.split.fractions
     generation = seconds_per_run * cfg.gen.n_runs / 3600
-    training = _LEGACY_TRAIN_H_PER_SAMPLE_EPOCH * sample_epochs
-    sampling = rollouts * _LEGACY_ROLLOUT_S / 3600 * 2.1  # new Baseline, legacy Baseline, second seed
+    training = _TRAIN_S_PER_SAMPLE * samples * (fractions["train"] + fractions["val"]) * cfg.train.max_epochs / 3600
+    per_input = _SAMPLING_S_PER_INPUT_K16 * cfg.prereg.K / 16
+    # new and legacy Baseline on cal + test, second seed, and the legacy Baseline's 45 own samples
+    inputs = 2 * samples * (fractions["cal"] + fractions["test"]) + samples * fractions["test"] * 0.1 + 45
+    sampling = inputs * per_input / 3600
     return {
         "measured_s_per_run": round(seconds_per_run, 1),
         "projected_generation_h": round(generation, 1),
-        "planning_training_h_upper_bound": round(training, 1),
-        "planning_sampling_h_unbatched_upper_bound": round(sampling, 1),
+        "projected_training_h_at_max_epochs": round(training, 1),
+        "projected_sampling_h": round(sampling, 1),
         "projected_total_h": round(generation + training + sampling, 1),
     }
 
@@ -223,9 +228,9 @@ def s1_generate(ctx: Context) -> dict[str, Any]:
     log_dir.mkdir(parents=True, exist_ok=True)
     paths = _run_paths(cfg)
 
-    def valid(path: Path) -> bool:
+    def valid(path: Path, deep: bool = False) -> bool:
         try:
-            validate_run_file(str(path), cfg.gen.samples_per_run, deep=False)
+            validate_run_file(str(path), cfg.gen.samples_per_run, deep=deep)
             return True
         except ValidationError as exc:
             logger.warning("%s", exc)
@@ -248,11 +253,19 @@ def s1_generate(ctx: Context) -> dict[str, Any]:
         for attempt in range(cfg.gen.max_retries_per_run + 1):
             partial.unlink(missing_ok=True)
             with (log_dir / f"run_{run:03d}.log").open("a") as log:
-                result = subprocess.run(_generator_cmd(cfg, run, partial), stdout=log, stderr=subprocess.STDOUT)
-            if result.returncode == 0 and valid(partial):
+                try:
+                    code = subprocess.run(
+                        _generator_cmd(cfg, run, partial), stdout=log, stderr=subprocess.STDOUT,
+                        timeout=cfg.gen.run_timeout_s,
+                    ).returncode  # fmt: skip
+                except subprocess.TimeoutExpired:
+                    logger.error("run %d exceeded %d s", run, cfg.gen.run_timeout_s)
+                    code = -1
+            # Deep check now: bad data must stop the job after one run, not after all of them.
+            if code == 0 and valid(partial, deep=True):
                 os.replace(partial, path)
                 break
-            logger.error("run %d attempt %d failed (exit %d)", run, attempt + 1, result.returncode)
+            logger.error("run %d attempt %d failed (exit %d)", run, attempt + 1, code)
             if not gpu_alive():
                 raise GpuLost(f"GPU lost while generating run {run}")
             time.sleep(cfg.gen.backoff_s * (attempt + 1))
@@ -337,16 +350,29 @@ def _jobs(ctx: Context) -> list[dict[str, Any]]:
     own_cal, own_test = legacy_own_split(list(legacy_paths))
     every = max(1, round(1 / p.second_seed_fraction))
     limit = cfg.run.legacy_sample_limit
+    sets = manifest["sets"]
+    seed = lambda name: set_seed(p.sampling_seed, name)  # noqa: E731
     return [
-        {"spec": new, "name": "cal", "runs": manifest["sets"]["cal"], "seed": p.sampling_seed},
-        {"spec": new, "name": "test", "runs": manifest["sets"]["test"], "seed": p.sampling_seed},
-        {"spec": new, "name": "test_seed2", "runs": manifest["sets"]["test"], "seed": p.second_sampling_seed,
+        {"spec": new, "name": "cal", "runs": sets["cal"], "seed": seed("cal")},
+        {"spec": new, "name": "test", "runs": sets["test"], "seed": seed("test")},
+        {"spec": new, "name": "test_seed2", "runs": sets["test"], "seed": set_seed(p.second_sampling_seed, "test"),
          "every": every},
-        {"spec": legacy, "name": "own_cal", "runs": own_cal, "seed": p.sampling_seed, "limit": limit},
-        {"spec": legacy, "name": "own_test", "runs": own_test, "seed": p.sampling_seed, "limit": limit},
-        {"spec": legacy, "name": "new_cal", "runs": manifest["sets"]["cal"], "seed": p.sampling_seed, "limit": limit},
-        {"spec": legacy, "name": "new_test", "runs": manifest["sets"]["test"], "seed": p.sampling_seed, "limit": limit},
+        {"spec": legacy, "name": "own_cal", "runs": own_cal, "seed": seed("own_cal"), "limit": limit},
+        {"spec": legacy, "name": "own_test", "runs": own_test, "seed": seed("own_test"), "limit": limit},
+        {"spec": legacy, "name": "new_cal", "runs": sets["cal"], "seed": seed("cal"), "limit": limit},
+        {"spec": legacy, "name": "new_test", "runs": sets["test"], "seed": seed("test"), "limit": limit},
     ]  # fmt: skip
+
+
+def set_seed(sampling_seed: int, set_name: str) -> int:
+    """Independent noise stream per set, so calibration and test inputs never share noise."""
+    return sample_seed_for_set(sampling_seed, zlib.crc32(set_name.encode()))
+
+
+def sample_seed_for_set(base: int, token: int) -> int:
+    import numpy as np
+
+    return int(np.random.SeedSequence([base, token]).generate_state(1)[0])
 
 
 def _hash_dir(directory: Path) -> str:

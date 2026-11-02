@@ -99,7 +99,7 @@ def _fig_material(df: Any, primary: str, alpha: float, path: Path) -> None:
         x = np.arange(len(sub))
         ax.errorbar(
             x, sub.coverage,
-            yerr=[sub.coverage - sub.boot_lo, sub.boot_hi - sub.coverage],
+            yerr=[np.maximum(sub.coverage - sub.boot_lo, 0), np.maximum(sub.boot_hi - sub.coverage, 0)],
             fmt="o", ms=7, color=_STYLE[primary][0], capsize=3, lw=1.5,
         )  # fmt: skip
         ax.axhline(1 - alpha, color=_MUTED, lw=1, ls="--")

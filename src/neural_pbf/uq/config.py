@@ -26,6 +26,7 @@ class GenConfig(_Frozen):
     min_per_pattern: dict[str, int] = {"zigzag": 5}
     max_retries_per_run: int = 3
     backoff_s: int = 60
+    run_timeout_s: int = 10800  # worst planned run: 411 steps at the slowest legacy 8.4 s/step is about 1 h
     wsl_safe: bool = True
 
 
@@ -71,6 +72,7 @@ class RunConfig(_Frozen):
     min_free_gb_sampling: float = 5.0
     max_stage_retries: int = 3
     retry_backoff_s: int = 60
+    stall_timeout_s: int = 7200  # no progress for this long in S4 or S5 counts as a hung GPU
     device: str = "cuda"
     legacy_checkpoint: str = "checkpoints/fm/best.pt"
     legacy_sample_limit: int | None = None  # None = every sample of each set
@@ -122,7 +124,7 @@ class UQConfig(_Frozen):
                 min_per_pattern={},
                 max_retries_per_run=1,
                 backoff_s=2,
-                wsl_safe=False,
+                wsl_safe=True,
             ),
             split=SplitConfig(
                 seed=1,
