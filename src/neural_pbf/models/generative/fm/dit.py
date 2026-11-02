@@ -293,6 +293,15 @@ class VelocityDiT(nn.Module):
             self.unpatchify = nn.ConvTranspose3d(embed_dim, 1, kernel_size=patch_size, stride=patch_size)
             self.final_layer = nn.Identity()
 
+    def _load_from_state_dict(self, state_dict: dict[str, Any], prefix: str, *args: Any, **kwargs: Any) -> None:
+        # Checkpoints from before 8cbe721 named the same ConvTranspose3d "final_layer".
+        if not self.overlap_unpatchify and f"{prefix}unpatchify.weight" not in state_dict:
+            for name in ("weight", "bias"):
+                old = f"{prefix}final_layer.{name}"
+                if old in state_dict:
+                    state_dict[f"{prefix}unpatchify.{name}"] = state_dict.pop(old)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     def forward(self, x: Tensor, t: Tensor, cond: Tensor) -> Tensor:
         """
         Args:
@@ -346,6 +355,11 @@ class VelocityDiTRoPE(VelocityDiT):
         del self._buffers["pos_embed"]
         depth = len(self.blocks)
         self.blocks = nn.ModuleList([DiTBlockRoPE(embed_dim, num_heads) for _ in range(depth)])
+
+    def _load_from_state_dict(self, state_dict: dict[str, Any], prefix: str, *args: Any, **kwargs: Any) -> None:
+        # Checkpoints from before 8cbe721 still store the buffer; RoPE forward never read it.
+        state_dict.pop(f"{prefix}pos_embed", None)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(  # type: ignore[override]
         self,

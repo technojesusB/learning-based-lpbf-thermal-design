@@ -6,8 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib
+import matplotlib.axes
 import matplotlib.figure
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 
 from neural_pbf.schemas.viz import THEME
 

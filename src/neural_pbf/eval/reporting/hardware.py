@@ -23,7 +23,7 @@ def log_gpu_telemetry(step: int) -> None:
     """
     try:
         import mlflow
-        import pynvml
+        import pynvml  # pyright: ignore[reportMissingImports]  # optional "monitoring" extra; ImportError handled by except below
 
         pynvml.nvmlInit()
         try:
@@ -36,7 +36,7 @@ def log_gpu_telemetry(step: int) -> None:
         mlflow.log_metrics(
             {
                 "GPU/Temp_C": float(temp),
-                "GPU/VRAM_MB": mem.used / 1e6,
+                "GPU/VRAM_MB": float(mem.used) / 1e6,
                 "GPU/Fan_Pct": float(fan),
             },
             step=step,

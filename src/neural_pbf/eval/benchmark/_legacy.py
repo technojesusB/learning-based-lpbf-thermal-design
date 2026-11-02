@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -30,12 +30,16 @@ from tqdm import tqdm
 
 from neural_pbf.data.patch_dataset import PatchFMThermalDataset
 from neural_pbf.eval.metrics.spectral import (
+    compute_axis_psd,
     compute_radial_psd,
     plot_spectral_comparison,
 )
 from neural_pbf.schemas.viz import THEME
 
 matplotlib.use("Agg")
+
+if TYPE_CHECKING:
+    from neural_pbf.data.patch_dataset import GridAttrs
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +94,7 @@ def _rollout_sample(
             ps = getattr(model, "patch_size", 4)
             if grid_attrs is None:
                 grid_attrs = {"dx_m": 1.5e-5, "dy_m": 1.5e-5, "dz_m": 1.5e-5}
-            return euler_rollout_rope(model, cond_enc, batch, n_steps, device, grid_attrs, ps)
+            return euler_rollout_rope(model, cond_enc, batch, n_steps, device, cast("GridAttrs", grid_attrs), ps)
 
         # Legacy path for non-rope models
         T_in = batch["T_in"]
@@ -373,27 +377,31 @@ def run_physical_fidelity_benchmark(
     df = (
         pd.DataFrame(
             all_rows,
-            columns=[
-                "Model",
-                "Sample",
-                "IoU",
-                "Depth_GT",
-                "Depth_Pred",
-                "T_max_Error",
-                "Offset_vox",
-            ],
+            columns=pd.Index(
+                [
+                    "Model",
+                    "Sample",
+                    "IoU",
+                    "Depth_GT",
+                    "Depth_Pred",
+                    "T_max_Error",
+                    "Offset_vox",
+                ]
+            ),
         )
         if all_rows
         else pd.DataFrame(
-            columns=[
-                "Model",
-                "Sample",
-                "IoU",
-                "Depth_GT",
-                "Depth_Pred",
-                "T_max_Error",
-                "Offset_vox",
-            ]
+            columns=pd.Index(
+                [
+                    "Model",
+                    "Sample",
+                    "IoU",
+                    "Depth_GT",
+                    "Depth_Pred",
+                    "T_max_Error",
+                    "Offset_vox",
+                ]
+            )
         )
     )
 
@@ -571,14 +579,16 @@ def run_system_comparison(
 
     if not runs:
         df = pd.DataFrame(
-            columns=[
-                "Version",
-                "Duration (h)",
-                "GPU Util (%)",
-                "GPU Mem (MB)",
-                "s/it",
-                "Final Loss",
-            ]
+            columns=pd.Index(
+                [
+                    "Version",
+                    "Duration (h)",
+                    "GPU Util (%)",
+                    "GPU Mem (MB)",
+                    "s/it",
+                    "Final Loss",
+                ]
+            )
         )
     else:
         rows: list[dict[str, Any]] = []
@@ -653,10 +663,10 @@ def run_system_comparison(
             ax1 = axes[1]
             valid_gpu = df[["GPU Util (%)", "GPU Mem (MB)"]].dropna()
             if not valid_gpu.empty:
-                for _, row in df.iterrows():
-                    util = row["GPU Util (%)"]
-                    mem = row["GPU Mem (MB)"]
-                    version = row["Version"]
+                for _, gpu_row in df.iterrows():
+                    util = gpu_row["GPU Util (%)"]
+                    mem = gpu_row["GPU Mem (MB)"]
+                    version = gpu_row["Version"]
                     if not (np.isnan(util) or np.isnan(mem)):
                         ax1.scatter(util, mem, color=palette[str(version)], s=100, zorder=5)
                         ax1.annotate(
@@ -726,12 +736,13 @@ def run_spectral_benchmark(
         sample_idx = int(len(ds) * 0.95)  # Deep in test set
         sample = ds[sample_idx]
         gt_volume = sample["T_target"].squeeze(0)  # (D, H, W)
-        gt_freqs, gt_psd = compute_radial_psd(gt_volume.to(device))
+        gt_on_device = gt_volume.to(device)
+        gt_result = {"radial": compute_radial_psd(gt_on_device), "axes": compute_axis_psd(gt_on_device)}
     except Exception as exc:
         logger.error("Spectral benchmark failed to load data: %s", exc)
         return
 
-    model_psds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    model_psds: dict[str, dict[str, Any]] = {}
 
     for name, ckpt_path, model_type in models:
         try:
@@ -777,8 +788,7 @@ def run_spectral_benchmark(
             batch = {k: v.unsqueeze(0).to(device) if isinstance(v, torch.Tensor) else v for k, v in sample.items()}
             T_pred = _rollout_sample(model, cond_enc, batch, model_type, device)
 
-            freqs, psd = compute_radial_psd(T_pred[0])
-            model_psds[name] = (freqs, psd)
+            model_psds[name] = {"radial": compute_radial_psd(T_pred[0]), "axes": compute_axis_psd(T_pred[0])}
 
         except Exception as exc:
             logger.warning("Failed to compute PSD for %s: %s", name, exc)
@@ -786,7 +796,7 @@ def run_spectral_benchmark(
     # Plot using standardized look
     plot_spectral_comparison(
         model_results=model_psds,
-        gt_result=(gt_freqs, gt_psd),
+        gt_result=gt_result,
         output_path=output_path,
         patch_sizes=[4, 8],
     )

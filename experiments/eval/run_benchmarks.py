@@ -76,7 +76,7 @@ def main():
 
     print("\n" + "="*60)
     print("BENCHMARK COMPLETE")
-    print(f"Reports available in reports/baseline/{run_id_patches} and reports/dit/{run_id_dit}")
+    print("Reports available in reports/baseline, reports/dit_150 and reports/dit_500")
     print("="*60)
 
 if __name__ == "__main__":

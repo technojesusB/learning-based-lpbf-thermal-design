@@ -9,6 +9,8 @@ Public API:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -156,7 +158,7 @@ def calculate_boundary_discontinuity(
 def plot_spectral_full_analysis(
     model_results: dict,
     gt_result: dict,
-    output_path: str,
+    output_path: str | Path,
     patch_sizes: list[int] | None = None,
     color_map: dict[str, str] | None = None,
 ) -> None:
@@ -253,7 +255,7 @@ def plot_spectral_full_analysis(
         fontsize=THEME.spectral.font_size_title + 2,
         fontweight=THEME.spectral.font_weight_title,
     )
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
     plt.savefig(output_path, facecolor=THEME.spectral.bg_figure, dpi=THEME.spectral.dpi)
     plt.close()
 

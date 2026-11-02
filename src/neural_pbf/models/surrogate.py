@@ -263,9 +263,9 @@ def _centre_crop(src: Tensor, target_shape: torch.Size) -> Tensor:
     _, _, D_t, H_t, W_t = target_shape
     _, _, D_s, H_s, W_s = src.shape
 
-    assert all(
-        s >= t for s, t in zip((D_s, H_s, W_s), (D_t, H_t, W_t), strict=True)
-    ), f"_centre_crop: source {tuple(src.shape)} is smaller than target {target_shape}"
+    assert all(s >= t for s, t in zip((D_s, H_s, W_s), (D_t, H_t, W_t), strict=True)), (
+        f"_centre_crop: source {tuple(src.shape)} is smaller than target {target_shape}"
+    )
 
     d0 = (D_s - D_t) // 2
     h0 = (H_s - H_t) // 2

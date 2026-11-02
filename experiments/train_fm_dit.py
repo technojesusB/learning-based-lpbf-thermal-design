@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 from neural_pbf.eval.reporting.hardware import epoch0_profiler, log_gpu_telemetry, log_step_timing
 from neural_pbf.eval.viz.logging import log_figure
 from neural_pbf.eval.viz.losses import loss_panel
-from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test
+from neural_pbf.eval.viz.spatial import gallery_evolution, gallery_test, val_grid_2x2
 from neural_pbf.integrator.fm_stepper import euler_rollout
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.dit import VelocityDiT

@@ -100,7 +100,7 @@ def plot_tv_pbd_comparison(
             fontsize=THEME.spectral.font_size_title + 2,
             fontweight=THEME.spectral.font_weight_title,
         )
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.tight_layout(rect=(0, 0.03, 1, 0.95))
         fig.savefig(output_path, dpi=THEME.spectral.dpi, bbox_inches="tight")
         plt.close(fig)
 

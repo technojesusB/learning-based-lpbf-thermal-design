@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 def _get_total_vram_mb() -> float:
     """Get total GPU memory in MB using pynvml."""
     try:
-        import pynvml
+        import pynvml  # pyright: ignore[reportMissingImports]  # optional "monitoring" extra; ImportError handled by except below
 
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
         info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        total_mb = info.total / (1024 * 1024)
+        total_mb = float(info.total) / (1024 * 1024)
         pynvml.nvmlShutdown()
         return float(total_mb)
     except Exception as exc:
@@ -138,7 +138,7 @@ def plot_system_dashboard(
                 util = row["GPU Util [%]"]
                 mem = row["GPU Mem [MB]"]
                 ver = str(row["Version"])
-                if not pd.isna(util) and not pd.isna(mem):
+                if bool(pd.notna(util)) and bool(pd.notna(mem)):
                     ax01.scatter(
                         util,
                         mem,
@@ -158,7 +158,7 @@ def plot_system_dashboard(
                 util = row["Inf GPU Util [%]"]
                 mem = row["Inf GPU Mem [MB]"]
                 ver = str(row["Version"])
-                if not pd.isna(util) and not pd.isna(mem):
+                if bool(pd.notna(util)) and bool(pd.notna(mem)):
                     has_inf_data = True
                     ax11.scatter(
                         util,

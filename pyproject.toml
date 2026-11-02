@@ -98,11 +98,6 @@ markers = [
     "slow: slow tests requiring GPU; run with -m slow",
 ]
 
-[filterwarnings]
-ignore = [
-    "ignore::DeprecationWarning",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

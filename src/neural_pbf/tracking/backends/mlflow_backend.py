@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from typing import Any, Literal
 
 import mlflow
+from mlflow.exceptions import MlflowException
 
 from ..base import ExperimentTracker
 
@@ -42,7 +43,12 @@ class MLflowTracker(ExperimentTracker):
     def start_run(self, run_name: str | None, config: dict[str, Any], tags: dict[str, str]):
         # End any existing zombie runs (common in notebooks)
         if mlflow.active_run():
-            mlflow.end_run()
+            try:
+                mlflow.end_run()
+            except MlflowException as e:
+                # The zombie belongs to another tracking store. end_run already
+                # popped it from the active-run stack, so a new run can start.
+                logger.warning(f"Could not terminate stale MLflow run: {e}")
 
         # Set sampling configuration before run start
         try:

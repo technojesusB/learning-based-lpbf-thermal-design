@@ -149,6 +149,11 @@ def plot_path_preview(path_points, sample_indices, Lx, Ly, out_path):
     plt.close()
 
 
+def _should_use_triton(args: argparse.Namespace, device: torch.device) -> bool:
+    """The Triton kernel needs a GPU; CPU runs take the stepper's PyTorch path."""
+    return device.type == "cuda" and not getattr(args, "no_triton", False)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate Offline LPBF Dataset")
     parser.add_argument("--out", type=str, default="data/offline_dataset.h5")
@@ -271,7 +276,7 @@ def run_worker(
     stepper = TimeStepper(sim_cfg, mat_cfg)
     beam = GaussianBeam(plan.beam_cfg)
 
-    use_triton = not getattr(args, "no_triton", False)
+    use_triton = _should_use_triton(args, DEVICE)
     mlflow_enabled = getattr(args, "mlflow", False)
     no_diag_csv = getattr(args, "no_diag_csv", False)
     orchestration_id = getattr(args, "orchestration_id", "manual")
@@ -488,7 +493,8 @@ def _run_worker(args: argparse.Namespace) -> None:
     run_worker(args)
 
 
-def _orchestrate(args: argparse.Namespace) -> None:
+def _orchestrate(args: argparse.Namespace) -> list[int]:
+    """Run every worker; returns the indices of runs that failed all attempts."""
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -555,6 +561,7 @@ def _orchestrate(args: argparse.Namespace) -> None:
 
     total = _count_samples(out_path)
     logger.info("Done. Total snapshots: %d. Failed runs: %s", total, failed if failed else "none")
+    return failed
 
 
 def main() -> None:
@@ -572,7 +579,8 @@ def main() -> None:
                 "(pass --no-wsl-safe to opt out)"
             )
         args.wsl_safe = resolved
-        _orchestrate(args)
+        if _orchestrate(args):
+            sys.exit(1)
     else:
         _run_worker(args)
 

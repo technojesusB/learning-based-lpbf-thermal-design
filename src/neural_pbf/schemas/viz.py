@@ -1,10 +1,12 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class GridConfig(BaseModel):
     enabled: bool = True
-    which: str = "both"
-    axis: str = "both"  # 'both', 'x', or 'y'
+    which: Literal["major", "minor", "both"] = "both"
+    axis: Literal["both", "x", "y"] = "both"  # 'both', 'x', or 'y'
     linestyle: str = "--"
     alpha: float = 0.4
     color: str = "#666666"
@@ -114,7 +116,7 @@ class SpatialConfig(PlotConfig):
 class SpectralConfig(PlotConfig):
     """Specifics for frequency PSD analysis (aliasing/fidelity)."""
 
-    figsize: tuple[int, int] = (16.7, 15)
+    figsize: tuple[float, float] = (16.7, 15)
     line_width_ref: float = 2.0
     alpha_aliasing: float = 0.5
     color_aliasing: str = "#f1c40f"

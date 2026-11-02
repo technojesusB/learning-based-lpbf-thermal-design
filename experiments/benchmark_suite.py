@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _MODEL_REGISTRY: dict[str, tuple[str, str]] = {
     "Baseline":      ("checkpoints/fm/best.pt",            "net"),
     "DiT v1":        ("checkpoints/dit_v1/best.pt",        "dit"),
-    "DiT v2":        ("checkpoints/dit_v2/best.pt",        "dit"),
+    "DiT v2":        ("checkpoints/dit/best.pt",           "dit"),
     "DiT v3":        ("checkpoints/dit_physics/best.pt",   "rope"),
     "DiT v4":        ("checkpoints/dit_accelerate/best.pt","rope"),
     "Hero Run (v5)": ("checkpoints/dit_triton/best.pt",    "triton"),
@@ -47,7 +47,8 @@ def _sanitize(name: str) -> str:
     return name.replace(" ", "_").replace("(", "").replace(")", "").lower()
 
 
-def run_benchmark(args: argparse.Namespace) -> None:
+def run_benchmark(args: argparse.Namespace) -> list[str]:
+    """Run the suite; returns the names of models that could not be evaluated."""
     from neural_pbf.eval.benchmark.constants import N_EULER_STEPS, PATCH_SIZE
     from neural_pbf.eval.benchmark.dataset import build_test_dataset
     from neural_pbf.eval.benchmark.io import mlflow_log_paths, save_metrics_csv
@@ -120,11 +121,15 @@ def run_benchmark(args: argparse.Namespace) -> None:
         # 2. Physics & Model Sweep (with Nested Runs for Inference Metrics)
         all_vols: dict[str, dict[int, torch.Tensor]] = {}
         physics_df = pd.DataFrame()
+        failed_models: list[str] = []
         master_throughput: dict[str, dict[str, float]] = {}
 
         logger.info("=== Starting Model Evaluation Sweep ===")
         for model_name in args.models:
-            if model_name not in _MODEL_REGISTRY: continue
+            if model_name not in _MODEL_REGISTRY:
+                logger.error("Unknown model %r; registry has %s", model_name, list(_MODEL_REGISTRY))
+                failed_models.append(model_name)
+                continue
             ckpt_path, model_type = _MODEL_REGISTRY[model_name]
             
             # Use nested run for each model to capture isolated GPU metrics
@@ -146,7 +151,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
                         for k, v in throughput[model_name].items():
                             mlflow.log_metric(f"inf_{k}", v)
                 except Exception as exc:
-                    logger.warning("Failed evaluating %s: %s", model_name, exc)
+                    logger.error("Failed evaluating %s: %s", model_name, exc)
+                    failed_models.append(model_name)
 
         # 3. Persistence & Plotting (Physical)
         if not physics_df.empty:
@@ -193,7 +199,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
             plot_system_dashboard(train_df, inf_df, system_png, color_map=color_map)
             mlflow_log_paths(ctx, [system_png], artifact_subdir="plots")
 
-    logger.info("Benchmark complete. Artifacts in %s", output_dir)
+    logger.info("Benchmark complete. Artifacts in %s. Failed models: %s", output_dir, failed_models or "none")
+    return failed_models
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -222,7 +229,8 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = _build_parser()
     args = parser.parse_args(argv)
-    run_benchmark(args)
+    if run_benchmark(args):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

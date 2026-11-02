@@ -32,5 +32,4 @@ class BaseStepper(Protocol):
         Q_ext: torch.Tensor | None,
         dt: float,
         conditioning: dict[str, Any] | None = None,
-    ) -> SimulationState:
-        ...
+    ) -> SimulationState: ...

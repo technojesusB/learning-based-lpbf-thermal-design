@@ -66,7 +66,7 @@ def load_trajectory(
         mat_cfg = MaterialConfig.model_validate_json(str(f.attrs[_KEY_MAT_CFG]))
         metadata: dict = json.loads(str(f.attrs.get(_KEY_META, "{}")))
 
-        keys = sorted(k for k in f if k.startswith(_STEP_PREFIX))
+        keys = sorted(str(k) for k in f if str(k).startswith(_STEP_PREFIX))
         snapshots: list[Snapshot] = []
         for key in keys:
             item = f[key]
