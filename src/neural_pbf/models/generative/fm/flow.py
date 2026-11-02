@@ -10,9 +10,14 @@ from neural_pbf.core.config import SimulationConfig
 from neural_pbf.physics.material import MaterialConfig
 
 
-def sample_noise(x_target: Tensor) -> Tensor:
-    """Sample standard Gaussian noise with the same shape as x_target."""
-    return torch.randn_like(x_target)
+def sample_noise(x_target: Tensor, generator: torch.Generator | None = None) -> Tensor:
+    """Sample standard Gaussian noise with the same shape as x_target.
+
+    Without *generator* the global RNG is used, as before.
+    """
+    if generator is None:
+        return torch.randn_like(x_target)
+    return torch.randn(x_target.shape, generator=generator, device=x_target.device, dtype=x_target.dtype)
 
 
 def interpolate(noise: Tensor, x_target: Tensor, tau: Tensor) -> Tensor:

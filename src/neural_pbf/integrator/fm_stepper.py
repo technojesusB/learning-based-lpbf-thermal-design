@@ -231,6 +231,7 @@ def euler_rollout_rope(
     device: torch.device,
     grid_attrs: GridAttrs,
     model_patch_size: int,
+    generator: torch.Generator | None = None,
 ) -> Tensor:
     """n-step Euler integration for VelocityDiTRoPE.
 
@@ -245,6 +246,7 @@ def euler_rollout_rope(
         device:           Compute device.
         grid_attrs:       Output of read_grid_attrs.
         model_patch_size: DiT patch size in voxels.
+        generator:        Optional noise generator; default is the global RNG.
 
     Returns:
         T_pred: (B, 1, D, H, W).
@@ -267,7 +269,7 @@ def euler_rollout_rope(
     model.eval()
     cond_encoder.eval()
     try:
-        x = sample_noise(T_in)
+        x = sample_noise(T_in, generator)
         dt = 1.0 / n_steps
         with torch.no_grad():
             cond_emb = cond_encoder(cond)

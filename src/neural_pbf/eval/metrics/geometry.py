@@ -42,6 +42,11 @@ def melt_pool_extent(T: torch.Tensor, T_liquidus: float) -> dict[str, float]:
     return {"W": W, "L": L, "D": D}
 
 
+def melt_pool_volume_vox(T: torch.Tensor, T_liquidus: float) -> float:
+    """Number of voxels above *T_liquidus*; multiply by dx*dy*dz for SI volume."""
+    return float(_molten(T, T_liquidus).sum().item())
+
+
 def iou_melt_volumes(
     T_pred: torch.Tensor,
     T_gt: torch.Tensor,

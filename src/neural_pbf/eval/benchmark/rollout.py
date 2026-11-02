@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 
 from neural_pbf.eval.benchmark.constants import N_EULER_STEPS
+from neural_pbf.models.generative.fm.flow import sample_noise
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ def run_euler_rollout(
     device: torch.device,
     n_steps: int = N_EULER_STEPS,
     grid_attrs: dict[str, Any] | None = None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Run Euler integration to produce T_pred for one batch.
 
@@ -39,6 +41,7 @@ def run_euler_rollout(
         n_steps:     Euler steps (default: N_EULER_STEPS = 25).
         grid_attrs:  Physical grid spacing — required for rope / triton;
                      raises ValueError if None for those types.
+        generator:   Optional noise generator; default is the global RNG.
 
     Returns:
         T_pred tensor, same shape as batch["T_in"].
@@ -60,6 +63,7 @@ def run_euler_rollout(
             device,
             grid_attrs,
             ps,
+            generator,
         )
 
     # --- net / dit path ---
@@ -78,7 +82,7 @@ def run_euler_rollout(
         cond_emb = cond_enc(cond)
 
         B = T_in.shape[0]
-        x = torch.randn_like(T_in)
+        x = sample_noise(T_in, generator)
         dt = 1.0 / n_steps
 
         for i in range(n_steps):
