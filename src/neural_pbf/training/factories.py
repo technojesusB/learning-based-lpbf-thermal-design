@@ -6,7 +6,7 @@ import datetime
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import mlflow
 import torch
@@ -18,6 +18,7 @@ from neural_pbf.data.patch_dataset import (
     PatchFMThermalDatasetWithOrigin,
     _collate_with_strings,
 )
+from neural_pbf.data.splits import load_manifest, manifest_sample_keys
 from neural_pbf.schemas.tracking import TrackingConfig
 from neural_pbf.tracking.factory import build_tracker
 
@@ -53,6 +54,8 @@ def build_patch_data(
     train_frac: float = 0.7,
     val_frac: float = 0.2,
     Q_ref: float = 1.35e15,
+    manifest_path: str | None = None,
+    mask_source: Literal["post", "pre"] = "post",
 ) -> DataSplit:
     """Build patch dataset with 70/20/10 train-val-test split and DataLoaders.
 
@@ -68,20 +71,35 @@ def build_patch_data(
         train_frac:  Fraction of data assigned to training.
         val_frac:    Fraction of data assigned to validation.
         Q_ref:       Heat-flux normalisation reference [W/m³].
+        manifest_path: Run-level split manifest. Replaces the random split: train and val come
+                     from the manifest and test_ds stays empty, so training cannot load
+                     calibration or test runs. Fractions are ignored.
+        mask_source: "post" (legacy) or "pre" (mask_in, causal).
     """
-    ds_cfg = FMDatasetConfig(h5_paths=h5_paths, Q_ref=Q_ref)
+    ds_cfg = FMDatasetConfig(h5_paths=h5_paths, Q_ref=Q_ref, mask_source=mask_source)
     full_ds = FMThermalDataset(ds_cfg)
     patch_ds: Dataset
     if use_origins:
         patch_ds = PatchFMThermalDatasetWithOrigin(full_ds, patch_size=patch_size)
     else:
         patch_ds = PatchFMThermalDataset(full_ds, patch_size=patch_size)
-    n = len(patch_ds)
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
-    n_test = n - n_train - n_val
-    generator = torch.Generator().manual_seed(seed)
-    train_ds, val_ds, test_ds = random_split(patch_ds, [n_train, n_val, n_test], generator=generator)
+    if manifest_path is not None:
+        manifest = load_manifest(manifest_path)
+        index = {key: i for i, key in enumerate(full_ds._keys)}
+        try:
+            train_ds = Subset(patch_ds, [index[k] for k in manifest_sample_keys(manifest, "train")])
+            val_ds = Subset(patch_ds, [index[k] for k in manifest_sample_keys(manifest, "val")])
+        except KeyError as exc:
+            raise ValueError(f"Manifest sample {exc} not found in {h5_paths}") from exc
+        test_ds = Subset(patch_ds, [])
+        n_train, n_val, n_test = len(train_ds), len(val_ds), 0
+    else:
+        n = len(patch_ds)
+        n_train = int(n * train_frac)
+        n_val = int(n * val_frac)
+        n_test = n - n_train - n_val
+        generator = torch.Generator().manual_seed(seed)
+        train_ds, val_ds, test_ds = random_split(patch_ds, [n_train, n_val, n_test], generator=generator)
     collate_fn = _collate_with_strings if use_origins else None
     loader_kw: dict[str, Any] = {"collate_fn": collate_fn} if collate_fn is not None else {}
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, **loader_kw)

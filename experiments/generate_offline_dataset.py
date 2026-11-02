@@ -163,6 +163,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--samples-per-run", type=int, default=50)
     parser.add_argument(
+        "--patterns", type=str, default=None,
+        help="Comma list; crossed with --materials for a balanced design. Default: random per run.",
+    )
+    parser.add_argument(
         "--wsl-safe", action="store_true",
         help="Chunk each exposure into ≤5µs slices to prevent Windows GPU TDR timeouts.",
     )
@@ -232,6 +236,11 @@ def run_worker(
 
     # If a plan was pre-computed (e.g. notebook pre-rendered the path), reuse
     # it.  Otherwise generate it now — identical results since seeds match.
+    out_path = Path(args.out)
+    if not out_path.exists():
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _init_hdf5(out_path, args)
+
     if plan is None:
         zoo = _get_material_zoo()
         plan = prepare_trajectory(args, run_idx, zoo)
@@ -254,7 +263,6 @@ def run_worker(
 
     logger.info("--- Run %d | Mat: %s ---", run_idx + 1, plan.mat_key)
 
-    out_path = Path(args.out)
     path_points = plan.path_points
     sample_indices = plan.sample_indices
     mat_cfg = plan.mat_cfg
@@ -334,6 +342,8 @@ def run_worker(
             for step_idx, (x0, y0) in enumerate(path_points):
                 is_sample = step_idx in sample_indices
                 T_in = state.T.clone() if is_sample else None
+                # Captured before the step mutates anything: the causal mask input.
+                mask_in = state.material_mask.clone() if is_sample else None  # type: ignore[union-attr]
 
                 Q_vol = beam.intensity(xs, ys, zs, x0, y0, z0=Lz_m)
 
@@ -357,7 +367,7 @@ def run_worker(
                 state_next = new_state  # type: ignore[possibly-undefined]
                 peak_temperature = float(state_next.T.amax().item())
 
-                T_in_np = Q_np = T_target_np = T_lf_np = mask_np = None
+                T_in_np = Q_np = T_target_np = T_lf_np = mask_np = mask_in_np = None
                 if is_sample:
                     with profiler.phase("transfer"):
                         assert T_in is not None
@@ -370,15 +380,18 @@ def run_worker(
                             mode="trilinear", align_corners=False,
                         )
                         T_in_np = T_in.half().cpu().numpy()
-                        Q_np = Q_vol.half().cpu().numpy()
+                        # float32: Q is ~1e15 W/m^3 and would overflow float16 to inf.
+                        Q_np = Q_vol.float().cpu().numpy()
                         T_target_np = state_next.T.half().cpu().numpy()
                         T_lf_np = T_lf.half().cpu().numpy()
                         mask_np = state_next.material_mask.cpu().numpy()  # type: ignore[union-attr]
+                        assert mask_in is not None
+                        mask_in_np = mask_in.cpu().numpy()
 
                 if is_sample:
                     assert T_in_np is not None and Q_np is not None
                     assert T_target_np is not None and T_lf_np is not None
-                    assert mask_np is not None
+                    assert mask_np is not None and mask_in_np is not None
                     try:
                         with profiler.phase("io"):
                             _write_sample(
@@ -387,7 +400,7 @@ def run_worker(
                                 arrays={
                                     "T_in": T_in_np, "Q": Q_np,
                                     "T_target": T_target_np, "T_lf": T_lf_np,
-                                    "mask": mask_np,
+                                    "mask": mask_np, "mask_in": mask_in_np,
                                 },
                                 attrs={
                                     "mat_name": plan.mat_key,
@@ -496,6 +509,8 @@ def _orchestrate(args: argparse.Namespace) -> None:
         "--orchestration-id", orch_id,
         "--append",
     ]
+    if args.patterns:
+        base_cmd.extend(["--patterns", args.patterns])
     if args.viz:
         base_cmd.append("--viz")
     if args.wsl_safe:

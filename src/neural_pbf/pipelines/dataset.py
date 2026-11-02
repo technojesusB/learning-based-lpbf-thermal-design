@@ -74,7 +74,11 @@ def prepare_trajectory(
     point_distance = _pd_base * random.uniform(0.9, 1.1)
     hatch_spacing = _pd_base * random.uniform(0.9, 1.1)
 
-    pattern = random.choice(["zigzag", "raster", "island"])
+    pattern = random.choice(["zigzag", "raster", "island"])  # always drawn: keeps legacy RNG order
+    patterns = getattr(args, "patterns", None)
+    if patterns:
+        pattern_list = [p.strip() for p in patterns.split(",")]
+        pattern = pattern_list[(run_idx // len(target_materials)) % len(pattern_list)]
 
     from ..core.config import SimulationConfig
     from ..utils.units import LengthUnit

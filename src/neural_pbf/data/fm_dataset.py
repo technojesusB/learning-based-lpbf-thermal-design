@@ -98,6 +98,10 @@ class FMDatasetConfig(BaseModel):
 
     dtype: Literal["float32"] = "float32"
 
+    # "post": legacy post-step mask (derived from the predicted step, not causal).
+    # "pre":  mask_in, the material state before the predicted step.
+    mask_source: Literal["post", "pre"] = "post"
+
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -138,7 +142,10 @@ class FMThermalDataset(Dataset):
             T_in = torch.from_numpy(grp["T_in"][:].astype(np.float32))  # type: ignore
             T_target = torch.from_numpy(grp["T_target"][:].astype(np.float32))  # type: ignore
             Q = torch.from_numpy(grp["Q"][:].astype(np.float32))  # type: ignore
-            mask = torch.from_numpy(grp["mask"][:].astype(np.float32))  # type: ignore
+            mask_key = "mask_in" if cfg.mask_source == "pre" else "mask"
+            if mask_key not in grp:  # type: ignore[operator]
+                raise KeyError(f"Dataset '{mask_key}' missing in sample '{sample_key}' of '{path}'")
+            mask = torch.from_numpy(grp[mask_key][:].astype(np.float32))  # type: ignore
 
             # Build conditioning vector — raises KeyError with key name if missing
             cond_values: list[float] = []

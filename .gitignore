@@ -32,3 +32,5 @@ htmlcov/
 dataset_gen.log
 scratch/
 temp.md
+# UQ pipeline logs
+/logs/
