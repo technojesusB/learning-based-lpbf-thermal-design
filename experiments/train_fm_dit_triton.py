@@ -91,7 +91,14 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _run_kernel_test() -> None:
-    """Unit-test: Triton PDEResidualLoss vs PyTorch float64 reference."""
+    """Unit-test: Triton PDEResidualLoss vs PyTorch float64 reference.
+    
+    Note: This test is intentionally kept in the experiment script rather than 
+    in tests/physics/ because Triton kernels require JIT-compilation on the 
+    target GPU architecture. Placing it here allows it to act as a "pre-flight 
+    sanity check" on the actual cluster node before launching a long training run, 
+    bypassing CPU-only CI environments where Triton compilation would fail.
+    """
     print("=== Triton kernel unit test ===")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
@@ -317,6 +324,9 @@ def main() -> None:
         if is_main:
             mlflow.log_metric("train_loss", avg, step=epoch)
             mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
+            if weighter._ema_fm is not None:
+                mlflow.log_metric("fm_loss_ema", weighter._ema_fm, step=epoch)
+                mlflow.log_metric("pde_loss_ema", weighter._ema_phys, step=epoch)
         return avg
 
     def _val_epoch_fn(epoch: int) -> float:

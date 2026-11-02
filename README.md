@@ -158,6 +158,8 @@ The surrogate architecture evolved through a baseline and five sequential DiT it
 
 > [!NOTE]
 > In the physical evaluation (Table 1) and inference performance (Table 4) benchmarks, **DiT v1** and **DiT v2** are omitted because these early models failed to achieve numerical convergence and could not generate physically coherent melt pools.
+>
+> **Ablation Update Pending:** An apples-to-apples proxy ablation (250 epochs, 150 samples) comparing 3D U-Net vs. DiT backbones with and without $T_{in}$ conditioning has been completed (see scripts in `experiments/`). Unified benchmarking suite integration and updated dashboard plots for these runs are pending and tracked in GitHub Issues.
 
 ### Quantitative Ablation Results
 
@@ -254,8 +256,14 @@ uv run experiments/generate_offline_dataset.py --runs 20 --samples-per-run 50
 
 **2. Train Surrogate Model:**
 ```bash
-# Train v5 Triton-PINN DiT model
-uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
+# Train v5 Triton-PINN DiT model (Hero Run on full 650 samples)
+uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset_test.h5 data/offline_dataset_notebook.h5
+
+# Apples-to-Apples Ablation (Proxy Task: 250 Epochs, Batch Size 2 on 150 samples)
+uv run accelerate launch experiments/train_fm_dit_triton.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
+uv run accelerate launch experiments/train_fm_dit_triton_tin.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
+uv run accelerate launch experiments/train_fm_unet_triton.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
+uv run accelerate launch experiments/train_fm_unet_triton_tin.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
 ```
 
 **3. Run Benchmarking Suite:**
