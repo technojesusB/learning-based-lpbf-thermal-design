@@ -202,3 +202,26 @@ def test_draws_from_another_checkpoint_are_refused(tmp_path):
     bind_draws_to_checkpoint(d, "ckpt-a", "manifest-a")  # same binding on resume is fine
     with pytest.raises(PipelineError, match="--force-stage S5"):
         bind_draws_to_checkpoint(d, "ckpt-b", "manifest-a")
+
+
+@pytest.mark.integration
+def test_stop_request_is_not_mistaken_for_gpu_failure(tmp_path):
+    import neural_pbf.uq.pipeline as mod
+
+    counter = tmp_path / "n"
+    body = f"""
+import os, pathlib, signal
+f = pathlib.Path({str(counter)!r}); f.write_text(f.read_text() + "x" if f.exists() else "x")
+os.kill(os.getpid(), signal.SIGTERM)
+"""
+    mod.STOP_REQUESTED.set()
+    try:
+        assert run_child_with_retries(_script(tmp_path, body), **_common(tmp_path)) == mod.EXIT_STOPPED
+    finally:
+        mod.STOP_REQUESTED.clear()
+    assert counter.read_text() == "x", "a stopped stage must not be retried"
+
+
+@pytest.mark.unit
+def test_no_gpus_message_counts_as_gpu_failure():
+    assert classify_failure(1, "RuntimeError: No CUDA GPUs are available") == "gpu"

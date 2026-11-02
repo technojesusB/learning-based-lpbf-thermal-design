@@ -218,7 +218,7 @@ def build_report(
         "- Methods: `absolute` (conformal on residuals of the ensemble mean), `normalized` (residual / (spread + "
         "eps)), `constant_single_draw` (constant-width baseline: conformal on one draw, no ensemble), and "
         "`raw_ensemble` (uncalibrated mean +- z sigma, reference only).",
-        f"- Test-set access: evaluated {n_eval} times"
+        f"- Test-set access: evaluated {n_eval} time{'s' if n_eval != 1 else ''}"
         + (" (re-evaluation forced with --allow-reeval; treat results as no longer pristine)." if n_eval > 1 else ".")
         + "\n",
         "Conformal coverage assumes exchangeable samples. Samples within a run are correlated, so the guarantee "

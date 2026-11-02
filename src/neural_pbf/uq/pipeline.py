@@ -44,7 +44,7 @@ from neural_pbf.uq.stages import (  # noqa: E402
 EXIT_OK, EXIT_FAILED, EXIT_REFUSED, EXIT_GPU_LOST, EXIT_STOPPED = 0, 1, 2, 3, 130
 _GPU_RE = re.compile(
     r"CUDA error|cuda runtime error|device-side assert|GPU is lost|driver|nvidia-smi has failed|"
-    r"Unable to determine the device handle|no longer available|Triton Error",
+    r"Unable to determine the device handle|no longer available|Triton Error|No CUDA GPUs",
     re.IGNORECASE,
 )
 _OOM_RE = re.compile(r"out of memory", re.IGNORECASE)
@@ -129,6 +129,7 @@ def _tail(path: Path, n: int = 6000) -> str:
 
 
 _current_child: subprocess.Popen[bytes] | None = None
+STOP_REQUESTED = threading.Event()
 
 
 def run_child_with_retries(
@@ -159,7 +160,7 @@ def run_child_with_retries(
             _current_child = None
         if code == EXIT_OK:
             return EXIT_OK
-        if code == EXIT_STOPPED:
+        if code == EXIT_STOPPED or STOP_REQUESTED.is_set():
             return EXIT_STOPPED
         tail = _tail(log_path, min(6000, log_path.stat().st_size - start))
         kind = classify_failure(code, tail)
@@ -290,6 +291,7 @@ def _claim_lock(root: Path) -> Path:
 
 
 def _handle_stop(signum: int, frame: Any) -> None:
+    STOP_REQUESTED.set()
     if _current_child is not None:
         with contextlib.suppress(OSError):
             os.killpg(_current_child.pid, signal.SIGTERM)
@@ -303,14 +305,13 @@ def drive(cfg: UQConfig, args: argparse.Namespace) -> int:
         raise PipelineError(f"uncommitted changes in pipeline code: {dirty}. Commit them so results stay traceable.")
     selected = select_stages(args.from_stage, args.only_stage)
     forced = set(args.force_stage or [])
-    stop_requested = threading.Event()
 
     if args.dry_run:
         return _dry_run(cfg, root, selected, forced)
 
     lock = _claim_lock(root)
-    signal.signal(signal.SIGTERM, lambda s, f: (stop_requested.set(), _handle_stop(s, f)))
-    signal.signal(signal.SIGINT, lambda s, f: (stop_requested.set(), _handle_stop(s, f)))
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGINT, _handle_stop)
     status = Status(root, cfg.mode)
     status.update(state="running", started=_now(), git_commit=git_commit())
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -344,13 +345,13 @@ def drive(cfg: UQConfig, args: argparse.Namespace) -> int:
             )
             duration = round(time.time() - t0, 1)
             if code != EXIT_OK:
-                state = "stopped" if stop_requested.is_set() else "failed"
+                state = "stopped" if STOP_REQUESTED.is_set() else "failed"
                 status.stage(stage, state=state, duration_s=duration, exit_code=code)
                 status.update(state=state)
                 print(
                     f"[{_now()}] {stage}: {state} with exit {code}. Log: {cfg.log_dir}/{stamp}_{stage}.log", flush=True
                 )
-                return EXIT_STOPPED if stop_requested.is_set() else code
+                return EXIT_STOPPED if STOP_REQUESTED.is_set() else code
             status.tick(stage)
             output = json.loads((root / "outputs" / f"{stage}.json").read_text())
             provenance = {
