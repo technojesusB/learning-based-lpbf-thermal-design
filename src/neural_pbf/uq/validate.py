@@ -25,12 +25,12 @@ def validate_run_file(path: str, n_samples: int, deep: bool) -> None:
     except OSError as exc:
         raise ValidationError(f"{path}: unreadable: {exc}") from exc
     with f:
-        samples = f.get("samples")
-        if samples is None or len(samples) != n_samples:  # type: ignore[arg-type]
-            found = 0 if samples is None else len(samples)  # type: ignore[arg-type]
+        samples: Any = f.get("samples")
+        if samples is None or len(samples) != n_samples:
+            found = 0 if samples is None else len(samples)
             raise ValidationError(f"{path}: expected {n_samples} samples, found {found}")
-        for key in samples:  # type: ignore[union-attr]
-            sample = samples[key]  # type: ignore[index]
+        for key in samples:
+            sample: Any = samples[key]
             missing = [d for d in _REQUIRED if d not in sample] + [a for a in _REQUIRED_ATTRS if a not in sample.attrs]
             if missing:
                 raise ValidationError(f"{path}:{key}: missing {missing}")
