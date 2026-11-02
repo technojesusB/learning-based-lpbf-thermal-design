@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neural_pbf.uq.analysis import QUANTITIES, evaluate, point_errors, second_seed_table, sensitivity_table
+from neural_pbf.uq.analysis import (
+    QUANTITIES,
+    build_tables,
+    evaluate,
+    point_errors,
+    second_seed_table,
+    sensitivity_table,
+)
 from neural_pbf.uq.config import UQConfig
 from neural_pbf.uq.report import build_report
 
@@ -118,15 +125,15 @@ def test_report_contains_only_generated_numbers_and_required_statements(cfg, tmp
         "training": {"best_epoch": 3, "epochs_run": 5, "stopped_early": True},
     }
     out = tmp_path / "r.md"
-    build_report(results, meta, cfg, out, tmp_path / "fig")
+    build_report(results, meta, cfg, out, tmp_path / "fig", build_tables(results, cfg.prereg))
     text = out.read_text()
     for needle in ("run-level", "n_cal", "n_test", "Wilson", "bootstrap", "run-disjoint: yes", "run-disjoint: no",
                    "not supported at run level", "simulated data only", "post-step mask", "zero-depth", "abc", "def",
                    "patch-limited", "zero-volume", "SeedSequence", "capped by the patch"):
         assert needle in text, needle
-    assert (tmp_path / "fig" / "coverage_nominal_vs_empirical.png").exists()
-    assert (tmp_path / "fig" / "width_vs_error.png").exists()
-    assert (tmp_path / "fig" / "coverage_per_material.png").exists()
+    for image in ("_nominal.png", "_spread.png", "_material.png", "coverage_per_run.png", "sensitivity_vs_k.png",
+                  "leakage_demo.png"):  # fmt: skip
+        assert image in text, image
 
 
 @pytest.mark.integration
@@ -137,26 +144,13 @@ def test_report_records_reevaluation(cfg, tmp_path):
             "access_events": [{"event": "evaluation", "allow_reeval": False},
                               {"event": "evaluation", "allow_reeval": True}], "training": {}}
     out = tmp_path / "r.md"
-    build_report(results, meta, cfg, out, tmp_path / "fig")
+    build_report(results, meta, cfg, out, tmp_path / "fig", build_tables(results, cfg.prereg))
     assert "evaluated 2 times" in out.read_text()
 
 
 @pytest.mark.unit
 def test_shared_runs_only_with_explicit_opt_in(cfg):
     assert not evaluate(_set(), _set(n_runs=9, seed=1), cfg.prereg, allow_shared_runs=True).empty
-
-
-@pytest.mark.unit
-def test_material_figure_survives_estimate_outside_bootstrap_interval(tmp_path):
-    import pandas as pd
-
-    from neural_pbf.uq.analysis import QUANTITIES as Q
-    from neural_pbf.uq.report import _fig_material
-
-    df = pd.DataFrame([{"stratum_type": "material", "quantity": q, "alpha": 0.1, "method": "absolute",
-                        "stratum": "SS316L", "coverage": 0.5, "boot_lo": 0.6, "boot_hi": 0.7} for q in Q])
-    _fig_material(df, "absolute", 0.1, tmp_path / "f.png")
-    assert (tmp_path / "f.png").exists()
 
 
 @pytest.mark.unit

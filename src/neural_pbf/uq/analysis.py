@@ -166,3 +166,39 @@ def second_seed_table(
                     result[f"mean_width_{label}_seed"] = float((hi - lo).mean())
                 rows.append(result)
     return pd.DataFrame(rows)
+
+
+def sample_points(part: dict[str, np.ndarray]) -> pd.DataFrame:
+    """Per-sample ensemble spread and absolute error of the ensemble mean."""
+    frames = []
+    for q_index, quantity in enumerate(QUANTITIES):
+        draws = part["draws"][:, :, q_index]
+        frames.append(
+            pd.DataFrame(
+                {
+                    "quantity": quantity,
+                    "run_id": part["run_id"],
+                    "sample_index": part["sample_index"],
+                    "spread": draws.std(axis=1, ddof=1),
+                    "abs_error": np.abs(draws.mean(axis=1) - part["truth"][:, q_index]),
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def build_tables(results: list[dict[str, Any]], prereg: PreregConfig) -> dict[str, pd.DataFrame]:
+    """All computed tables behind the report and figures. Sensitivity covers the primary model only."""
+    coverage, errors, points = [], [], []
+    for result in results:
+        rows = evaluate(result["cal"], result["test"], prereg, allow_shared_runs=result["role"] == "leakage_demo")
+        coverage.append(rows.assign(model=result["name"], label=result["label"], role=result["role"]))
+        errors.append(point_errors(result["test"]).assign(model=result["name"]))
+        points.append(sample_points(result["test"]).assign(model=result["name"]))
+    primary = next(r for r in results if r["role"] == "primary")
+    return {
+        "coverage": pd.concat(coverage, ignore_index=True),
+        "sensitivity": sensitivity_table(primary["cal"], primary["test"], prereg),
+        "errors": pd.concat(errors, ignore_index=True),
+        "points": pd.concat(points, ignore_index=True),
+    }

@@ -3,28 +3,19 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from neural_pbf.uq.analysis import QUANTITIES, evaluate, point_errors, second_seed_table, sensitivity_table
+from neural_pbf.eval.viz import uq as viz
+from neural_pbf.uq.analysis import QUANTITIES, point_errors, second_seed_table
 from neural_pbf.uq.config import UQConfig
 from neural_pbf.uq.guard import atomic_write_text
 
-# Fixed by method, validated with the dataviz palette checker; markers add a non-color cue.
-_STYLE = {
-    "absolute": ("#2a78d6", "o"),
-    "normalized": ("#eb6834", "s"),
-    "constant_single_draw": ("#1baf7a", "^"),
-    "raw_ensemble": ("#6250d6", "D"),
-}
-_INK, _MUTED = "#0b0b0b", "#52514e"
+_NOTICE_START, _NOTICE_END = "<!-- missing-figures -->", "<!-- /missing-figures -->"
 
 
 def _fmt(value: Any) -> str:
@@ -50,63 +41,6 @@ def _coverage_cols(df: Any) -> Any:
         Wilson_95=[f"{a:.3f} to {b:.3f}" for a, b in zip(df.binom_lo, df.binom_hi, strict=True)],
         run_bootstrap_95=[f"{a:.3f} to {b:.3f}" for a, b in zip(df.boot_lo, df.boot_hi, strict=True)],
     )
-
-
-def _style(ax: Any, title: str, xlabel: str, ylabel: str) -> None:
-    ax.set_title(title, fontsize=10, color=_INK, loc="left")
-    ax.set_xlabel(xlabel, color=_MUTED, fontsize=9)
-    ax.set_ylabel(ylabel, color=_MUTED, fontsize=9)
-    ax.grid(alpha=0.25, linewidth=0.6)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.tick_params(colors=_MUTED, labelsize=8)
-
-
-def _save(fig: Any, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(path, dpi=140, facecolor="#fcfcfb")
-    plt.close(fig)
-
-
-def _fig_nominal(df: Any, path: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5), sharey=True)
-    for ax, quantity in zip(axes, QUANTITIES, strict=True):
-        sub = df[(df.stratum_type == "all") & (df.quantity == quantity)]
-        ax.plot([0.7, 1], [0.7, 1], color=_MUTED, lw=1, ls="--", label="nominal")
-        for method, (color, marker) in _STYLE.items():
-            m = sub[sub.method == method].sort_values("alpha", ascending=False)
-            ax.plot(1 - m.alpha, m.coverage, color=color, marker=marker, ms=6, lw=2, label=method)
-        _style(ax, quantity, "nominal coverage", "empirical coverage")
-    axes[-1].legend(fontsize=7, frameon=False)
-    _save(fig, path)
-
-
-def _fig_width_error(test: dict[str, np.ndarray], path: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.5))
-    for i, (ax, quantity) in enumerate(zip(axes, QUANTITIES, strict=True)):
-        spread = test["draws"][:, :, i].std(axis=1, ddof=1)
-        error = np.abs(test["draws"][:, :, i].mean(axis=1) - test["truth"][:, i])
-        ax.scatter(spread, error, s=9, alpha=0.5, color=_STYLE["normalized"][0], linewidths=0)
-        _style(ax, quantity, "ensemble spread (sigma)", "absolute error of ensemble mean")
-    _save(fig, path)
-
-
-def _fig_material(df: Any, primary: str, alpha: float, path: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.2), sharey=True)
-    for ax, quantity in zip(axes, QUANTITIES, strict=True):
-        sub = df[(df.stratum_type == "material") & (df.quantity == quantity)]
-        sub = sub[(sub.alpha == alpha) & (sub.method == primary)]
-        x = np.arange(len(sub))
-        ax.errorbar(
-            x, sub.coverage,
-            yerr=[np.maximum(sub.coverage - sub.boot_lo, 0), np.maximum(sub.boot_hi - sub.coverage, 0)],
-            fmt="o", ms=7, color=_STYLE[primary][0], capsize=3, lw=1.5,
-        )  # fmt: skip
-        ax.axhline(1 - alpha, color=_MUTED, lw=1, ls="--")
-        ax.set_xticks(x, sub.stratum)
-        ax.set_ylim(0, 1.05)
-        _style(ax, quantity, "", f"coverage (dashed: {1 - alpha:.2f})")
-    _save(fig, path)
 
 
 def _overall_block(df: Any) -> list[str]:
@@ -144,30 +78,35 @@ def _strata_block(primary: Any, test: dict[str, np.ndarray], label: str) -> list
     ]  # fmt: skip
 
 
-def _figure_block(df: Any, result: dict[str, Any], cfg: UQConfig, fig_dir: Path, report_dir: Path) -> list[str]:
-    slug = "".join(c if c.isalnum() else "_" for c in result["name"]).lower()
-    nominal, width, material = (fig_dir / f"{slug}_{n}.png" for n in ("nominal", "width", "material"))
-    _fig_nominal(df, nominal)
-    _fig_width_error(result["test"], width)
-    _fig_material(df, cfg.prereg.primary_method, cfg.prereg.primary_alpha, material)
-    images = ((nominal, "Nominal against empirical coverage"), (width, "Ensemble spread against error"),
-              (material, "Coverage per material"))  # fmt: skip
-    return [f"\n![{alt}]({os.path.relpath(image, report_dir)})\n" for image, alt in images]
+def _image(path: Path, alt: str, report_dir: Path) -> str:
+    return f"\n![{alt}]({os.path.relpath(path, report_dir)})\n"
 
 
-def _sensitivity_block(result: dict[str, Any], prereg: Any) -> list[str]:
+def _figure_block(name: str, fig_dir: Path, report_dir: Path) -> list[str]:
+    alts = {"nominal": "Nominal against empirical coverage", "spread": "Ensemble spread against error",
+            "material": "Coverage per material"}  # fmt: skip
+    return [_image(fig_dir / viz.model_figure_name(name, kind), alts[kind], report_dir) for kind in viz.MODEL_FIGURES]
+
+
+def _sensitivity_block(
+    result: dict[str, Any], prereg: Any, sensitivity: pd.DataFrame, fig_dir: Path, report_dir: Path
+) -> list[str]:
     block = ["\n#### Sensitivity (same frozen calibration data, no new sampling)\n",
              "Coverage and width against K (first K draws):\n",
-             _table(sensitivity_table(result["cal"], result["test"], prereg))]  # fmt: skip
+             _table(sensitivity),
+             _image(fig_dir / viz.SENSITIVITY_FIG_FILE, "Coverage and width against K", report_dir)]  # fmt: skip
     if result.get("second") is not None:
         block += [f"\nSecond base seed ({prereg.second_sampling_seed}) on a subset of the test inputs:\n",
                   _table(second_seed_table(result["cal"], result["test"], result["second"], prereg))]  # fmt: skip
     return block
 
 
-def _model_section(result: dict[str, Any], cfg: UQConfig, fig_dir: Path, report_dir: Path) -> tuple[str, pd.DataFrame]:
+def _model_section(
+    result: dict[str, Any], cfg: UQConfig, fig_dir: Path, report_dir: Path, tables: dict[str, pd.DataFrame]
+) -> str:
     prereg = cfg.prereg
-    df: Any = evaluate(result["cal"], result["test"], prereg, allow_shared_runs=result["role"] == "leakage_demo")
+    coverage: Any = tables["coverage"]
+    df: Any = coverage[coverage.model == result["name"]]
     primary = df[(df.method == prereg.primary_method) & (df.alpha == prereg.primary_alpha)]
     label = f"{prereg.primary_method}, alpha = {prereg.primary_alpha}"
     parts = [
@@ -180,11 +119,12 @@ def _model_section(result: dict[str, Any], cfg: UQConfig, fig_dir: Path, report_
         _table(point_errors(result["test"])),
         *_overall_block(df),
         *_strata_block(primary, result["test"], label),
-        *_figure_block(df, result, cfg, fig_dir, report_dir),
+        *_figure_block(result["name"], fig_dir, report_dir),
     ]
     if result["role"] == "primary":
-        parts += _sensitivity_block(result, prereg)
-    return "\n".join(parts), df
+        parts.append(_image(fig_dir / viz.RUN_SPREAD_FILE, "Coverage per run", report_dir))
+        parts += _sensitivity_block(result, prereg, tables["sensitivity"], fig_dir, report_dir)
+    return "\n".join(parts)
 
 
 def y_n(part: dict[str, np.ndarray]) -> int:
@@ -237,25 +177,44 @@ _LIMITATIONS = [
 ]
 
 
-def _write_canonical_figures(df: Any, test: dict[str, np.ndarray], prereg: Any, fig_dir: Path) -> None:
-    _fig_nominal(df, fig_dir / "coverage_nominal_vs_empirical.png")
-    _fig_width_error(test, fig_dir / "width_vs_error.png")
-    _fig_material(df, prereg.primary_method, prereg.primary_alpha, fig_dir / "coverage_per_material.png")
+def save_tables(tables: dict[str, pd.DataFrame], directory: str | Path) -> None:
+    """Save everything the figures need; these files are their only input."""
+    directory = Path(directory)
+    names = {"coverage": viz.COVERAGE_FILE, "sensitivity": viz.SENSITIVITY_FILE, "errors": viz.ERRORS_FILE,
+             "points": viz.POINTS_FILE}  # fmt: skip
+    for key, name in names.items():
+        atomic_write_text(directory / name, tables[key].to_csv(index=False))
+
+
+def update_missing_figures(path: str | Path, failures: dict[str, str], command: str) -> None:
+    """Write, replace, or clear the missing-figures notice under the first line of a Markdown file."""
+    path = Path(path)
+    pattern = re.escape(_NOTICE_START) + r".*?" + re.escape(_NOTICE_END) + r"\n"
+    text = re.sub(pattern, "", path.read_text(), flags=re.DOTALL)
+    if failures:
+        items = "\n".join(f"> - `{name}`: {(error.splitlines() or [''])[0]}" for name, error in failures.items())
+        notice = (
+            f"{_NOTICE_START}\n> **MISSING FIGURES.** These figures failed to render. The numbers in this "
+            f"document are not affected. Run `{command}` to render them.\n>\n{items}\n{_NOTICE_END}\n"
+        )
+        first, newline, rest = text.partition("\n")
+        text = f"{first}{newline}{notice}{rest}"
+    atomic_write_text(path, text)
 
 
 def build_report(
-    results: list[dict[str, Any]], meta: dict[str, Any], cfg: UQConfig, out_path: str | Path, fig_dir: str | Path
-) -> pd.DataFrame:
-    """Write the report; returns all coverage rows for MLflow logging."""
+    results: list[dict[str, Any]],
+    meta: dict[str, Any],
+    cfg: UQConfig,
+    out_path: str | Path,
+    fig_dir: str | Path,
+    tables: dict[str, pd.DataFrame],
+) -> None:
+    """Write the report from computed tables. Figures are rendered separately from the saved tables."""
     out_path, fig_dir = Path(out_path), Path(fig_dir)
-    fig_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    sections, frames = [], []
-    for result in results:
-        text, df = _model_section(result, cfg, fig_dir, out_path.parent)
-        sections.append((result["role"], text))
-        frames.append(df.assign(model=result["name"], label=result["label"]))
-    _write_canonical_figures(frames[0], results[0]["test"], cfg.prereg, fig_dir)
+    report_dir = out_path.parent
+    sections = [(r["role"], _model_section(r, cfg, fig_dir, report_dir, tables)) for r in results]
 
     smoke = "\n> **SMOKE RUN.** Tiny grid and few epochs. These numbers only prove the chain runs.\n"
     parts = [
@@ -270,6 +229,6 @@ def build_report(
         parts += ["\n## Leakage demonstration\n",
                   "The legacy Baseline (post-step mask, 3 training runs) under the same pipeline, labelled by actual "
                   "overlap with its training data from `dataset_cfg`. The held-out n is an illustration, not a "
-                  "measurement.\n", *demos]  # fmt: skip
+                  "measurement.\n", _image(fig_dir / viz.LEAKAGE_FILE, "Coverage and error per model", report_dir),
+                  *demos]  # fmt: skip
     atomic_write_text(out_path, "\n".join([*parts, *_LIMITATIONS]) + "\n")
-    return pd.concat(frames, ignore_index=True)

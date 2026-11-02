@@ -28,7 +28,7 @@ This project explores machine learning and differentiable physics for optimizing
 - **[Benchmarks](benchmarks.md)**: Performance benchmarks for the Triton-accelerated kernels.
 - **[Benchmark Suite Guide](benchmark_suite_guide.md)**: Production-ready modular evaluation tool for comparing baseline and generative models.
 - **[Metrics Guide](metrics_guide.md)**: Physical, spectral (PSD, TV), and patch-aliasing (PBD) metrics.
-- **[Visualization Specifications](plot_specs.md)**: Standardized visual identity, loss plots, violin plots, and system resource comparison charts.
+- **[Visualization Specifications](plot_specs.md)**: Visual identity, loss plots, physical and system dashboards, and UQ figures, as the code produces them.
 
 ### Materials Reference
 - **[Materials Gallery](materials/index.md)**: Thermophysical properties for 11 LPBF alloys.

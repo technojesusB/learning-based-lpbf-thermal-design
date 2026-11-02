@@ -38,6 +38,7 @@ from neural_pbf.uq.stages import (  # noqa: E402
     git_commit,
     gpu_alive,
     package_versions,
+    render_figures,
     run_stage,
 )
 
@@ -476,6 +477,24 @@ def _stop(cfg: UQConfig) -> int:
     return EXIT_OK
 
 
+def _render_figures(cfg: UQConfig) -> int:
+    """Re-render under the driver lock, so saved tables cannot change while they are read."""
+    root = Path(cfg.root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock = _claim_lock(root)
+    try:
+        dirty = dirty_code_paths()
+        if dirty:
+            print(f"WARNING: rendering with uncommitted code: {dirty}", file=sys.stderr, flush=True)
+        failures = render_figures(cfg)
+    finally:
+        lock.unlink(missing_ok=True)
+    for name, error in failures.items():
+        print(f"FAILED {name}: {error}", file=sys.stderr, flush=True)
+    print(f"figures: {len(failures)} failed; output in {cfg.figure_dir}", flush=True)
+    return EXIT_FAILED if failures else EXIT_OK
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="UQ pipeline driver")
     p.add_argument("--resume", action="store_true", help="default behavior; finished stages are skipped")
@@ -489,6 +508,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--allow-reeval", action="store_true", help="permit a second test evaluation; recorded in the report"
     )
+    p.add_argument(
+        "--render-figures", action="store_true", help="re-render figures from saved tables; no GPU, no test access"
+    )
     p.add_argument("--child", help=argparse.SUPPRESS)
     return p
 
@@ -499,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.child:
             return run_stage(args.child, cfg, allow_reeval=args.allow_reeval)
+        if args.render_figures:
+            return _render_figures(cfg)
         if args.status:
             print(format_status(load_status(Path(cfg.root) / "status.json")))
             return EXIT_OK

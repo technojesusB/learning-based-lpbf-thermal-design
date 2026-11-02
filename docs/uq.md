@@ -106,7 +106,14 @@ scripts/run_uq_pipeline.sh --stop       # stop cleanly; finished work is kept
 scripts/run_uq_pipeline.sh --dry-run    # what would run
 ```
 
-Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`.
+Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`, `--render-figures`.
+
+`--render-figures` redraws all figures from the tables S6 saved (`coverage_rows.csv`,
+`sample_points.csv`, `sensitivity_rows.csv`, `point_errors.csv`). It loads no model, uses no GPU,
+and does not count as a test evaluation, so it needs no `--allow-reeval`. Figure code is outside
+the S6 code hash, so restyling a figure does not make S6 stale, but figure file names must not
+change after a run because the report links to them. It is refused while a driver is running and
+warns on uncommitted pipeline code. Figure specs are in [plot_specs.md](plot_specs.md).
 
 | Stage | Purpose |
 | --- | --- |
@@ -116,8 +123,12 @@ Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`
 | S3 | Split manifest and pre-registration freeze |
 | S4 | Train the Baseline: resumable, best on val |
 | S5 | K-draw sampling: atomic chunks, resumable |
-| S6 | Conformal, evaluation, report, MLflow |
+| S6 | Conformal, evaluation, saved tables, figures, report, MLflow |
 | S7 | Summary with the timeline actually used |
+
+A figure that fails to render does not fail S6. The report and the S7 summary name it and give
+the `--render-figures` command to run. An MLflow failure does not fail S6 either; the S7 summary
+states it.
 
 Exit codes: 0 ok, 1 failed, 2 refused, 3 GPU lost, 130 stopped. Logs are under `logs/uq/`
 and status is in `artifacts/uq/status.json`.

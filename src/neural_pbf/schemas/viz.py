@@ -122,6 +122,50 @@ class SpectralConfig(PlotConfig):
     color_aliasing: str = "#f1c40f"
 
 
+class UQPlotConfig(PlotConfig):
+    """Specifics for uncertainty-quantification figures (coverage, spread, sensitivity, leakage)."""
+
+    font_size_title: int = 18
+    font_size_label: int = 14
+    font_size_tick: int = 11
+    font_size_legend: int = 12
+
+    figsize: tuple[int, int] = (22, 6)  # 1x3 panels, one per quantity
+    figsize_grid: tuple[int, int] = (25, 15)  # 2x3 panels, same as the physical dashboard
+    grid: GridConfig = Field(default_factory=lambda: GridConfig(axis="y"))
+
+    marker_default: str = "o"
+    marker_size: int = 8  # Markers on lines and error bars
+    marker_size_scatter: int = 20
+    marker_edge_width: float = 0.5
+    color_marker_edge: str = "#ffffff"
+    stripplot_size: int = 4
+    stripplot_jitter: float = 0.2
+    capsize: int = 3
+    alpha_bar: float = 0.8
+    legend_framealpha: float = 0.3
+    coverage_ylim: tuple[float, float] = (-0.05, 1.05)  # Keeps a marker at zero coverage fully visible
+
+    color_ideal: str = "#ffffff"
+    linestyle_ideal: str = "--"
+    line_width_ideal: float = 1.5
+    color_points: str = "#3498db"
+
+    # Markers are a second cue next to color, so methods stay distinct for color-blind readers.
+    method_colors: dict[str, str] = {
+        "absolute": "#3498db",
+        "normalized": "#e67e22",
+        "constant_single_draw": "#2ecc71",
+        "raw_ensemble": "#9b59b6",
+    }
+    method_markers: dict[str, str] = {
+        "absolute": "o",
+        "normalized": "s",
+        "constant_single_draw": "^",
+        "raw_ensemble": "D",
+    }
+
+
 class ThemeRegistry(BaseModel):
     """Centralized registry for all plot themes."""
 
@@ -130,6 +174,7 @@ class ThemeRegistry(BaseModel):
     system: SystemBenchmarkConfig = Field(default_factory=SystemBenchmarkConfig)
     spatial: SpatialConfig = Field(default_factory=SpatialConfig)
     spectral: SpectralConfig = Field(default_factory=SpectralConfig)
+    uq: UQPlotConfig = Field(default_factory=UQPlotConfig)
 
 
 # Global theme instance

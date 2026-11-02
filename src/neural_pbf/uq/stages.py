@@ -48,7 +48,10 @@ _SAMPLING_CODE = [
     "src/neural_pbf/eval/metrics/geometry.py",
     "src/neural_pbf/integrator/fm_stepper.py",
 ]
+# Figure code stays out on purpose: restyling a figure must not make the one test evaluation stale.
 _EVAL_CODE = ["src/neural_pbf/uq/analysis.py", "src/neural_pbf/uq/conformal.py", "src/neural_pbf/uq/report.py"]
+FIGURE_FAILURES_FILE = "figure_failures.json"
+MLFLOW_FAILURES_FILE = "mlflow_failures.json"
 
 # Measured on the project's eGPU at the full 64^3 patch size, used only to project the timeline.
 _TRAIN_S_PER_SAMPLE = 0.352  # batch size 4, including HDF5 reads
@@ -452,7 +455,39 @@ def _load_results(ctx: Context, manifest: dict[str, Any]) -> list[dict[str, Any]
     ]  # fmt: skip
 
 
-def _log_evaluation(ctx: Context, rows: Any, result: dict[str, Any], manifest_hash: str, prereg: str) -> None:
+def _render_command(cfg: UQConfig) -> str:
+    return "scripts/run_uq_pipeline.sh --render-figures" + (" --smoke" if cfg.mode == "smoke" else "")
+
+
+def _render(cfg: UQConfig, tracker: Any = None) -> dict[str, str]:
+    from neural_pbf.eval.viz.uq import render_uq_figures
+
+    return render_uq_figures(cfg.root, cfg.figure_dir, cfg.prereg.primary_method, cfg.prereg.primary_alpha, tracker)
+
+
+def _record_figure_failures(cfg: UQConfig, failures: dict[str, str]) -> None:
+    from neural_pbf.uq.report import update_missing_figures
+
+    root = Path(cfg.root)
+    atomic_write_text(root / FIGURE_FAILURES_FILE, json.dumps(failures, indent=1))
+    for path in (Path(cfg.report_path), root / "summary.md"):
+        if path.exists():
+            update_missing_figures(path, failures, _render_command(cfg))
+
+
+def render_figures(cfg: UQConfig) -> dict[str, str]:
+    """Re-render figures from the tables S6 saved. No model, no GPU, no test-access event."""
+    from neural_pbf.eval.viz.uq import COVERAGE_FILE
+
+    if not (Path(cfg.root) / COVERAGE_FILE).exists():
+        raise PipelineError(f"no saved tables in {cfg.root}; S6 has to finish first")
+    failures = _render(cfg)
+    _record_figure_failures(cfg, failures)
+    return failures
+
+
+def _log_evaluation(ctx: Context, rows: Any, result: dict[str, Any], manifest_hash: str, prereg: str) -> dict[str, str]:
+    """Log metrics, report, tables, and figures to MLflow; returns the figures that could not be logged."""
     import mlflow
 
     cfg = ctx.cfg
@@ -469,12 +504,15 @@ def _log_evaluation(ctx: Context, rows: Any, result: dict[str, Any], manifest_ha
                 mlflow.log_metric(f"{prefix}.mean_width", float(row.mean_width))
         mlflow.log_artifact(cfg.report_path)
         mlflow.log_artifact(str(ctx.root / "coverage_rows.csv"))
+        # Second pass so log_figure gets live figures; the saved PNGs are not touched.
+        return _render(cfg, tracker=mlflow)
 
 
 def s6_evaluate(ctx: Context) -> dict[str, Any]:
     from neural_pbf.data.splits import load_manifest
+    from neural_pbf.uq.analysis import build_tables
     from neural_pbf.uq.guard import TestAccessGuard, verify_prereg
-    from neural_pbf.uq.report import build_report
+    from neural_pbf.uq.report import build_report, save_tables
 
     cfg = ctx.cfg
     prereg = verify_prereg(cfg, ctx.prereg_path)
@@ -491,9 +529,17 @@ def s6_evaluate(ctx: Context) -> dict[str, Any]:
         "access_events": guard.events(),
         "training": {k: train_result[k] for k in ("best_epoch", "epochs_run", "stopped_early")},
     }
-    rows = build_report(results, meta, cfg, cfg.report_path, cfg.figure_dir)
-    rows.to_csv(ctx.root / "coverage_rows.csv", index=False)
-    _log_evaluation(ctx, rows, results[0], manifest["hash"], prereg)
+    tables = build_tables(results, cfg.prereg)
+    save_tables(tables, ctx.root)  # Before any figure, so a plotting problem cannot cost the evaluation.
+    build_report(results, meta, cfg, cfg.report_path, cfg.figure_dir, tables)
+    _record_figure_failures(cfg, _render(cfg))
+    primary = next(r for r in results if r["role"] == "primary")
+    try:  # Tracking is secondary: an MLflow problem must not cost the one test evaluation.
+        mlflow_failures = _log_evaluation(ctx, tables["coverage"], primary, manifest["hash"], prereg)
+    except Exception as exc:
+        logger.exception("MLflow logging failed")
+        mlflow_failures = {"MLflow run": f"{type(exc).__name__}: {exc}"}
+    atomic_write_text(ctx.root / MLFLOW_FAILURES_FILE, json.dumps(mlflow_failures, indent=1))
     return {"output_hash": _sha256(ctx.root / "coverage_rows.csv")}
 
 
@@ -510,6 +556,15 @@ def accumulated_seconds(status: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return totals
 
 
+def _mlflow_notice(root: Path) -> str:
+    path = root / MLFLOW_FAILURES_FILE
+    failures = json.loads(path.read_text()) if path.exists() else {}
+    if not failures:
+        return ""
+    items = "\n".join(f"- {name}: {(error.splitlines() or [''])[0]}" for name, error in failures.items())
+    return f"\nMLflow logging is incomplete. Results and figures on disk are not affected.\n\n{items}\n"
+
+
 def s7_summary(ctx: Context) -> dict[str, Any]:
     status = json.loads((ctx.root / "status.json").read_text())
     totals = accumulated_seconds(status)
@@ -524,8 +579,15 @@ def s7_summary(ctx: Context) -> dict[str, Any]:
     report = Path(ctx.cfg.report_path)
     body = report.read_text().split("\n## Timeline actually used\n")[0].rstrip() + "\n"
     atomic_write_text(report, body + section)
-    atomic_write_text(ctx.root / "summary.md", section + f"\nFinal status: {json.dumps(status.get('stages'))}\n")
-    print(section, flush=True)
+    atomic_write_text(
+        ctx.root / "summary.md",
+        f"# UQ pipeline summary\n{section}{_mlflow_notice(ctx.root)}"
+        f"\nFinal status: {json.dumps(status.get('stages'))}\n",
+    )
+    failures_path = ctx.root / FIGURE_FAILURES_FILE
+    failures = json.loads(failures_path.read_text()) if failures_path.exists() else {}
+    _record_figure_failures(ctx.cfg, failures)
+    print((ctx.root / "summary.md").read_text(), flush=True)
     return {"output_hash": hashlib.sha256(section.encode()).hexdigest()}
 
 
