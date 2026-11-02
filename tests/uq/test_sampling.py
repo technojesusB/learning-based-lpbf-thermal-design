@@ -9,7 +9,7 @@ import torch.nn as nn
 from neural_pbf.eval.benchmark.rollout import run_euler_rollout
 from neural_pbf.eval.metrics.geometry import melt_pool_volume_vox
 from neural_pbf.models.generative.fm.flow import sample_noise
-from neural_pbf.uq.sampling import scalar_functionals, sample_k
+from neural_pbf.uq.sampling import sample_k, scalar_functionals, volume_limited
 
 GRID = {"dx_m": 1e-5, "dy_m": 1e-5, "dz_m": 1e-5}
 
@@ -115,3 +115,17 @@ def test_scalar_functionals_use_per_sample_liquidus():
     T[:2, 0, 0] = 1700.0
     assert scalar_functionals(T, T_l=1600.0) == (2.0, 1700.0, 2.0)
     assert scalar_functionals(T, T_l=1800.0) == (0.0, 1700.0, 0.0)
+
+
+@pytest.mark.unit
+def test_volume_limited_when_melt_touches_lateral_faces_or_bottom():
+    def field(z, y, x):
+        T = torch.full((6, 6, 6), 300.0)
+        T[z, y, x] = 2000.0
+        return T
+
+    assert not volume_limited(field(3, 3, 3), 1500.0), "interior pool is fully inside the patch"
+    assert not volume_limited(field(5, 3, 3), 1500.0), "the top layer is the free surface"
+    for z, y, x in [(0, 3, 3), (3, 0, 3), (3, 5, 3), (3, 3, 0), (3, 3, 5)]:
+        assert volume_limited(field(z, y, x), 1500.0), (z, y, x)
+    assert not volume_limited(torch.full((6, 6, 6), 300.0), 1500.0)

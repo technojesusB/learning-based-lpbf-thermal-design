@@ -123,17 +123,23 @@ def _check_disjoint(sets: dict[str, list[dict[str, Any]]]) -> None:
                     raise SplitError(f"{token} appears in more than one set ({seen[token]}, {name})")
 
 
-def make_manifest(
-    h5_paths: list[str],
-    seed: int,
-    fractions: dict[str, float],
-    min_runs: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    """Build the manifest; raises :class:`SplitError` instead of degrading silently."""
-    if set(fractions) != set(SET_NAMES) or abs(sum(fractions.values()) - 1.0) > 1e-9:
-        raise SplitError(f"fractions must cover {SET_NAMES} and sum to 1, got {fractions}")
-    runs, dropped = discover_runs(h5_paths)
+def _run_entry(run: RunInfo) -> dict[str, Any]:
+    return {
+        "run_id": run.run_id,
+        "family_id": run.family_id,
+        "material": run.material,
+        "pattern": run.pattern,
+        "h5_path": run.h5_path,
+        "sample_keys": [[run.h5_path, k] for k in run.sample_keys],
+    }
 
+
+def _assign_families(runs: list[RunInfo], seed: int, fractions: dict[str, float]) -> dict[str, list[dict[str, Any]]]:
+    """Stratify by material, then deal each material's families across its pattern-sorted order.
+
+    Every material gets a rotated label sequence. Without the rotation all materials put the same
+    label on the same pattern, and a set with one run per material ends up with a single pattern.
+    """
     families: dict[str, list[RunInfo]] = {}
     for run in runs:
         families.setdefault(run.family_id, []).append(run)
@@ -145,24 +151,17 @@ def make_manifest(
 
     rng = random.Random(seed)
     sets: dict[str, list[dict[str, Any]]] = {name: [] for name in SET_NAMES}
-    for _material, family_ids in sorted(by_material.items()):
+    for index, (_material, family_ids) in enumerate(sorted(by_material.items())):
         rng.shuffle(family_ids)
         family_ids.sort(key=lambda fid: min(m.pattern for m in families[fid]))  # stable: random within a pattern
-        for family_id, label in zip(
-            family_ids, _evenly_spaced_labels(_allocate(len(family_ids), fractions)), strict=True
-        ):
-            sets[label].extend(
-                {
-                    "run_id": m.run_id,
-                    "family_id": m.family_id,
-                    "material": m.material,
-                    "pattern": m.pattern,
-                    "h5_path": m.h5_path,
-                    "sample_keys": [[m.h5_path, k] for k in m.sample_keys],
-                }
-                for m in families[family_id]
-            )
+        labels = _evenly_spaced_labels(_allocate(len(family_ids), fractions))
+        offset = index * len(labels) // len(by_material)
+        for family_id, label in zip(family_ids, labels[offset:] + labels[:offset], strict=True):
+            sets[label].extend(_run_entry(m) for m in families[family_id])
+    return sets
 
+
+def _check_requirements(sets: dict[str, list[dict[str, Any]]], min_runs: dict[str, int] | None) -> None:
     train_materials = {r["material"] for r in sets["train"]}
     for name in SET_NAMES:
         required = (min_runs or {}).get(name, 1)
@@ -171,8 +170,21 @@ def make_manifest(
         missing = {r["material"] for r in sets[name]} - train_materials
         if missing:
             raise SplitError(f"set '{name}' contains materials absent from train: {sorted(missing)}")
-
     _check_disjoint(sets)
+
+
+def make_manifest(
+    h5_paths: list[str],
+    seed: int,
+    fractions: dict[str, float],
+    min_runs: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Build the manifest; raises :class:`SplitError` instead of degrading silently."""
+    if set(fractions) != set(SET_NAMES) or abs(sum(fractions.values()) - 1.0) > 1e-9:
+        raise SplitError(f"fractions must cover {SET_NAMES} and sum to 1, got {fractions}")
+    runs, dropped = discover_runs(h5_paths)
+    sets = _assign_families(runs, seed, fractions)
+    _check_requirements(sets, min_runs)
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "seed": seed,

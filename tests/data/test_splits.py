@@ -167,3 +167,21 @@ def test_overlap_rejected_even_with_valid_hash(tmp_path):
     path.write_text(json.dumps(m))
     with pytest.raises(SplitError, match="more than one set"):
         load_manifest(path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed", [2026, 1, 2])
+def test_patterns_balanced_in_every_set_for_factorial_design(tmp_path, seed):
+    from collections import Counter
+
+    m = make_manifest(_dataset(tmp_path), seed=seed, fractions=FRACS)
+    expected = {"train": 7, "val": 1, "cal": 4, "test": 3}
+    for name, runs in m["sets"].items():
+        assert Counter(r["pattern"] for r in runs) == dict.fromkeys(PATTERNS, expected[name]), name
+
+
+@pytest.mark.unit
+def test_seed_changes_which_runs_go_where(tmp_path):
+    paths = _dataset(tmp_path)
+    ids = lambda s: {r["run_id"] for r in make_manifest(paths, s, FRACS)["sets"]["test"]}  # noqa: E731
+    assert ids(1) != ids(2)

@@ -87,8 +87,9 @@ has a `Q_saturated` dataset that no committed generator version writes.
   checkpoint's manifest hash or, for old checkpoints, from actual scan overlap with
   `dataset_cfg`. Models with different labels are never ranked together.
 - Pre-registered K, alpha, primary method, and seeds are frozen and hashed before test access.
-- Every test access is logged. A second evaluation needs `--allow-reeval` and is stated
-  in the report.
+- Test access after the split is logged: the conditioning check in S3 (attributes only),
+  sampling in S5, and evaluation in S6. S2 reads every run before any test set exists, to
+  check data integrity. A second evaluation needs `--allow-reeval` and is stated in the report.
 - Checkpoint selection uses val only. In manifest mode, training cannot load cal or test runs.
 - Normalization constants are fixed defaults, not fitted on any data.
 - The old benchmark test reconstruction (hard-coded seed 42) is not used.
@@ -131,6 +132,8 @@ deletes generated runs, because that data is expensive.
 - Conformal validity under within-run correlation is approximate.
 - Depth is capped by the domain height, and zero-depth samples make coverage easy. The
   report shows these strata separately.
+- Volume is capped by the 64-voxel patch, so a wider pool is truncated and its volume is a
+  lower bound. The report shows zero-volume and patch-limited samples separately.
 - The simulator has no vaporization limit, so T_max can reach unphysical values.
 - Results apply to the Baseline only. Other models need retraining on `mask_in` data.
 - `load_model_adaptive` currently cannot load `checkpoints/dit`, `dit_physics`, or

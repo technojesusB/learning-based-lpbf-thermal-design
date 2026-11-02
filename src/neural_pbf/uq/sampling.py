@@ -65,3 +65,12 @@ def scalar_functionals(T_phys: torch.Tensor, T_l: float) -> tuple[float, float, 
     """``(depth_vox, T_max_K, volume_vox)`` of a ``(D, H, W)`` field, using this sample's liquidus."""
     field = T_phys[None, None]
     return melt_pool_extent(field, T_l)["D"], float(T_phys.max().item()), melt_pool_volume_vox(field, T_l)
+
+
+def volume_limited(T_phys: torch.Tensor, T_l: float) -> bool:
+    """Whether molten material touches a lateral patch face or the bottom, so its volume is truncated.
+
+    The last z index is the free surface the laser heats, so it does not count.
+    """
+    molten = T_phys > T_l
+    return bool(molten[0].any() or molten[:, [0, -1], :].any() or molten[:, :, [0, -1]].any())

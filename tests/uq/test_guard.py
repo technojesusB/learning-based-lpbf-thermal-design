@@ -172,6 +172,7 @@ def test_valid_run_passes(tmp_path):
         (lambda g: g["Q"].__setitem__((0, 0, 0, 0, 0), np.inf), "non-finite"),
         (lambda g: g["mask_in"].__setitem__((0, 0, 3, 0, 0), 1), "subset"),
         (lambda g: g.__delitem__("mask_in"), "missing"),
+        (lambda g: g.attrs.__delitem__("k_p"), "missing"),
     ],
 )
 def test_corrupt_run_fails_deep_validation(tmp_path, mutate, match):

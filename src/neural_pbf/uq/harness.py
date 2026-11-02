@@ -19,7 +19,7 @@ from neural_pbf.data.splits import discover_runs
 from neural_pbf.eval.benchmark.dataset import build_test_dataset
 from neural_pbf.eval.benchmark.model_loader import load_model_adaptive
 from neural_pbf.uq.config import UQConfig
-from neural_pbf.uq.sampling import sample_k, sample_seed, scalar_functionals
+from neural_pbf.uq.sampling import sample_k, sample_seed, scalar_functionals, volume_limited
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,12 @@ def load_draws(directory: str | Path) -> dict[str, np.ndarray]:
     return merged
 
 
+_CHUNK_FIELDS = (
+    "draws", "truth", "run_id", "material", "pattern", "nz", "sample_index", "h5_path", "sample_key",
+    "volume_limited", "draw_batch",
+)  # fmt: skip
+
+
 def _chunk_arrays(
     items: list[tuple[int, str, str, dict[str, Any]]],
     ds: Any,
@@ -92,10 +98,7 @@ def _chunk_arrays(
     base_seed: int,
     device: torch.device,
 ) -> dict[str, np.ndarray]:
-    rows: dict[str, list[Any]] = {
-        k: []
-        for k in ("draws", "truth", "run_id", "material", "pattern", "nz", "sample_index", "h5_path", "sample_key")
-    }
+    rows: dict[str, list[Any]] = {k: [] for k in _CHUNK_FIELDS}
     for sample_index, path, key, run in items:
         with h5py.File(path, "r") as f:
             T_l = float(f["samples"][key].attrs["T_l"])  # type: ignore[index, arg-type]
@@ -116,6 +119,8 @@ def _chunk_arrays(
         rows["sample_index"].append(sample_index)
         rows["h5_path"].append(path)
         rows["sample_key"].append(key)
+        rows["volume_limited"].append(volume_limited(truth, T_l))
+        rows["draw_batch"].append(cfg.run.draw_batch)  # affects the noise stream, so it is recorded per input
     return {k: np.asarray(v, dtype=float if k in ("draws", "truth") else None) for k, v in rows.items()}
 
 

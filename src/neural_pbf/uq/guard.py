@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -112,19 +113,24 @@ def leakage_label(ckpt: dict[str, Any], manifest: dict[str, Any], set_name: str)
     return "run-disjoint: yes (no shared scan family, from dataset_cfg)"
 
 
+def _manifest_samples(manifest: dict[str, Any]) -> Iterator[tuple[str, str, str]]:
+    for name, runs in manifest["sets"].items():
+        for run in runs:
+            for path, key in run["sample_keys"]:
+                yield name, path, key
+
+
 def check_no_shared_conditioning(manifest: dict[str, Any], keys: tuple[str, ...]) -> None:
     """Raise if any sample's conditioning vector appears in two sets."""
     seen: dict[tuple[Any, ...], str] = {}
     files: dict[str, h5py.File] = {}
     try:
-        for name, runs in manifest["sets"].items():
-            for run in runs:
-                for path, key in run["sample_keys"]:
-                    f = files.setdefault(path, h5py.File(path, "r"))
-                    attrs = f["samples"][key].attrs  # type: ignore[index]
-                    vector = tuple(float(attrs[k]) for k in keys)  # type: ignore[arg-type]
-                    if seen.setdefault(vector, name) != name:
-                        raise GuardError(f"identical conditioning in sets {seen[vector]} and {name}: {path}:{key}")
+        for name, path, key in _manifest_samples(manifest):
+            f = files.setdefault(path, h5py.File(path, "r"))
+            attrs = f["samples"][key].attrs  # type: ignore[index]
+            vector = tuple(float(attrs[k]) for k in keys)  # type: ignore[arg-type]
+            if seen.setdefault(vector, name) != name:
+                raise GuardError(f"identical conditioning in sets {seen[vector]} and {name}: {path}:{key}")
     finally:
         for f in files.values():
             f.close()

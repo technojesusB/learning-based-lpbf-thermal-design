@@ -140,6 +140,7 @@ class UQConfig(_Frozen):
                 max_stage_retries=1,
                 retry_backoff_s=2,
                 legacy_sample_limit=3,
+                mlflow_uri=f"sqlite:///{root}/mlflow.db",
                 mlflow_experiment="uq_conformal_smoke",
             ),
         )

@@ -8,10 +8,13 @@ from typing import Any
 import h5py
 import numpy as np
 
+from neural_pbf.data.fm_dataset import _DEFAULT_CONDITIONING_KEYS
 from neural_pbf.data.splits import discover_runs
 
 _REQUIRED = ("T_in", "T_target", "Q", "mask", "mask_in")
-_REQUIRED_ATTRS = ("mat_name", "pattern", "power", "sigma", "hatch_spacing", "angle_deg", "exposure_time", "T_l", "x")
+_REQUIRED_ATTRS = (
+    "mat_name", "pattern", "hatch_spacing", "angle_deg", "exposure_time", *_DEFAULT_CONDITIONING_KEYS,
+)  # fmt: skip
 
 
 class ValidationError(ValueError):

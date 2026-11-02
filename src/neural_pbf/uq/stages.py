@@ -218,62 +218,65 @@ def _timeline(cfg: UQConfig, seconds_per_run: float) -> dict[str, Any]:
     }
 
 
-def s1_generate(ctx: Context) -> dict[str, Any]:
+def _is_valid_run(cfg: UQConfig, path: Path, deep: bool = False) -> bool:
     from neural_pbf.uq.validate import ValidationError, validate_run_file
 
+    try:
+        validate_run_file(str(path), cfg.gen.samples_per_run, deep=deep)
+        return True
+    except ValidationError as exc:
+        logger.warning("%s", exc)
+        return False
+
+
+def _run_generator(cfg: UQConfig, run: int, out: Path, log_dir: Path) -> int:
+    with (log_dir / f"run_{run:03d}.log").open("a") as log:
+        try:
+            return subprocess.run(
+                _generator_cmd(cfg, run, out), stdout=log, stderr=subprocess.STDOUT, timeout=cfg.gen.run_timeout_s
+            ).returncode
+        except subprocess.TimeoutExpired:
+            logger.error("run %d exceeded %d s", run, cfg.gen.run_timeout_s)
+            return -1
+
+
+def _generate_one(cfg: UQConfig, run: int, path: Path, log_dir: Path) -> None:
+    """Generate one run with retries; the final file appears atomically, and only after deep validation."""
+    partial = path.with_suffix(".partial.h5")
+    for attempt in range(cfg.gen.max_retries_per_run + 1):
+        partial.unlink(missing_ok=True)
+        code = _run_generator(cfg, run, partial, log_dir)
+        # Deep check now: bad data must stop the job after one run, not after all of them.
+        if code == 0 and _is_valid_run(cfg, partial, deep=True):
+            os.replace(partial, path)
+            for leftover in path.parent.glob(f"{path.stem}.partial.run*.metrics.json"):
+                leftover.unlink()
+            return
+        logger.error("run %d attempt %d failed (exit %d)", run, attempt + 1, code)
+        if not gpu_alive():
+            raise GpuLost(f"GPU lost while generating run {run}")
+        time.sleep(cfg.gen.backoff_s * (attempt + 1))
+    partial.unlink(missing_ok=True)
+    raise PipelineError(f"run {run} failed {cfg.gen.max_retries_per_run + 1} times; see {log_dir}")
+
+
+def s1_generate(ctx: Context) -> dict[str, Any]:
     cfg = ctx.cfg
-    data = Path(cfg.data_dir)
-    disk_guard(data, cfg.run.min_free_gb_generate if not any(data.glob("run_*.h5")) else 5.0, "generation")
     log_dir = Path(cfg.log_dir) / "generation"
     log_dir.mkdir(parents=True, exist_ok=True)
     paths = _run_paths(cfg)
-
-    def valid(path: Path, deep: bool = False) -> bool:
-        try:
-            validate_run_file(str(path), cfg.gen.samples_per_run, deep=deep)
-            return True
-        except ValidationError as exc:
-            logger.warning("%s", exc)
-            return False
-
     for path in paths:
-        if path.exists() and not valid(path):
-            quarantine = path.with_suffix(".invalid")
-            logger.warning("moving invalid run aside: %s -> %s", path, quarantine)
-            os.replace(path, quarantine)
-
-    done = sum(p.exists() for p in paths)
+        if path.exists() and not _is_valid_run(cfg, path):
+            logger.warning("moving invalid run aside: %s", path)
+            os.replace(path, path.with_suffix(".invalid"))
+    missing = [(run, path) for run, path in enumerate(paths) if not path.exists()]
+    disk_guard(cfg.data_dir, cfg.run.min_free_gb_generate * len(missing) / len(paths), "generation")
+    done = len(paths) - len(missing)
     ctx.progress(done, len(paths))
     measured: list[float] = []
-    for run, path in enumerate(paths):
-        if path.exists():
-            continue
-        partial = path.with_suffix(".partial.h5")
+    for run, path in missing:
         t0 = time.time()
-        for attempt in range(cfg.gen.max_retries_per_run + 1):
-            partial.unlink(missing_ok=True)
-            with (log_dir / f"run_{run:03d}.log").open("a") as log:
-                try:
-                    code = subprocess.run(
-                        _generator_cmd(cfg, run, partial), stdout=log, stderr=subprocess.STDOUT,
-                        timeout=cfg.gen.run_timeout_s,
-                    ).returncode  # fmt: skip
-                except subprocess.TimeoutExpired:
-                    logger.error("run %d exceeded %d s", run, cfg.gen.run_timeout_s)
-                    code = -1
-            # Deep check now: bad data must stop the job after one run, not after all of them.
-            if code == 0 and valid(partial, deep=True):
-                os.replace(partial, path)
-                break
-            logger.error("run %d attempt %d failed (exit %d)", run, attempt + 1, code)
-            if not gpu_alive():
-                raise GpuLost(f"GPU lost while generating run {run}")
-            time.sleep(cfg.gen.backoff_s * (attempt + 1))
-        else:
-            partial.unlink(missing_ok=True)
-            raise PipelineError(f"run {run} failed {cfg.gen.max_retries_per_run + 1} times; see {log_dir}")
-        for leftover in data.glob(f"run_{run:03d}.partial.run*.metrics.json"):
-            leftover.unlink()
+        _generate_one(cfg, run, path, log_dir)
         measured.append(time.time() - t0)
         done += 1
         timeline = _timeline(cfg, sum(measured) / len(measured))
@@ -301,13 +304,15 @@ def s2_validate(ctx: Context) -> dict[str, Any]:
 def s3_split(ctx: Context) -> dict[str, Any]:
     from neural_pbf.data.fm_dataset import _DEFAULT_CONDITIONING_KEYS
     from neural_pbf.data.splits import make_manifest, save_manifest
-    from neural_pbf.uq.guard import check_no_shared_conditioning, freeze_prereg
+    from neural_pbf.uq.guard import TestAccessGuard, check_no_shared_conditioning, freeze_prereg
 
     cfg = ctx.cfg
     manifest = make_manifest([str(p) for p in _run_paths(cfg)], cfg.split.seed, cfg.split.fractions, cfg.split.min_runs)
-    check_no_shared_conditioning(manifest, _DEFAULT_CONDITIONING_KEYS)
     save_manifest(manifest, ctx.manifest_path)
     prereg = freeze_prereg(cfg, ctx.prereg_path)
+    guard = TestAccessGuard(ctx.root / "test_access.jsonl", prereg)
+    guard.log_access("conditioning_check", note="reads conditioning attributes only, no targets")
+    check_no_shared_conditioning(manifest, _DEFAULT_CONDITIONING_KEYS)
     logger.info("manifest %s, runs %s", manifest["hash"], {k: len(v) for k, v in manifest["sets"].items()})
     return {
         "output_hash": manifest["hash"],
@@ -423,26 +428,18 @@ def s5_sampling(ctx: Context) -> dict[str, Any]:
 # --- S6 --------------------------------------------------------------------------------
 
 
-def s6_evaluate(ctx: Context) -> dict[str, Any]:
-    import mlflow
+def _load_results(ctx: Context, manifest: dict[str, Any]) -> list[dict[str, Any]]:
     import torch
 
-    from neural_pbf.data.splits import load_manifest
-    from neural_pbf.uq.guard import TestAccessGuard, leakage_label, verify_prereg
+    from neural_pbf.uq.guard import leakage_label
     from neural_pbf.uq.harness import legacy_own_split, load_draws
-    from neural_pbf.uq.report import build_report
 
-    cfg = ctx.cfg
-    prereg = verify_prereg(cfg, ctx.prereg_path)
-    manifest = load_manifest(ctx.manifest_path)
     ckpt = torch.load(ctx.ckpt_dir / "best.pt", map_location="cpu", weights_only=True)
-    legacy = torch.load(cfg.run.legacy_checkpoint, map_location="cpu", weights_only=True)
+    legacy = torch.load(ctx.cfg.run.legacy_checkpoint, map_location="cpu", weights_only=True)
     _, own_test = legacy_own_split(list(legacy["dataset_cfg"]["h5_paths"]))
     own_manifest = {"hash": None, "sets": {"test": own_test}}
-
     new_dir, legacy_dir = ctx.draws_dir / "baseline_pre", ctx.draws_dir / "legacy_baseline"
-    guard = TestAccessGuard(ctx.root / "test_access.jsonl", prereg)
-    results = [
+    return [
         {"name": "Baseline (pre-step mask)", "label": leakage_label(ckpt, manifest, "test"), "role": "primary",
          "cal": load_draws(new_dir / "cal"), "test": load_draws(new_dir / "test"),
          "second": load_draws(new_dir / "test_seed2")},
@@ -453,8 +450,38 @@ def s6_evaluate(ctx: Context) -> dict[str, Any]:
          "role": "leakage_demo", "cal": load_draws(legacy_dir / "new_cal"), "test": load_draws(legacy_dir / "new_test"),
          "second": None},
     ]  # fmt: skip
-    guard.begin_evaluation(ctx.allow_reeval)
 
+
+def _log_evaluation(ctx: Context, rows: Any, result: dict[str, Any], manifest_hash: str, prereg: str) -> None:
+    import mlflow
+
+    cfg = ctx.cfg
+    mlflow.set_tracking_uri(cfg.run.mlflow_uri)
+    mlflow.set_experiment(cfg.run.mlflow_experiment)
+    with mlflow.start_run(run_name=f"uq_eval_{cfg.mode}"):
+        mlflow.log_params({"manifest_hash": manifest_hash, "prereg_hash": prereg, "K": cfg.prereg.K})
+        mlflow.set_tag("leakage_label", result["label"])
+        row: Any
+        for row in rows[(rows.model == result["name"]) & (rows.stratum_type == "all")].itertuples():
+            prefix = f"{row.quantity}.{row.method}.a{row.alpha}"
+            mlflow.log_metric(f"{prefix}.coverage", float(row.coverage))
+            if float(row.mean_width) != float("inf"):
+                mlflow.log_metric(f"{prefix}.mean_width", float(row.mean_width))
+        mlflow.log_artifact(cfg.report_path)
+        mlflow.log_artifact(str(ctx.root / "coverage_rows.csv"))
+
+
+def s6_evaluate(ctx: Context) -> dict[str, Any]:
+    from neural_pbf.data.splits import load_manifest
+    from neural_pbf.uq.guard import TestAccessGuard, verify_prereg
+    from neural_pbf.uq.report import build_report
+
+    cfg = ctx.cfg
+    prereg = verify_prereg(cfg, ctx.prereg_path)
+    manifest = load_manifest(ctx.manifest_path)
+    results = _load_results(ctx, manifest)
+    guard = TestAccessGuard(ctx.root / "test_access.jsonl", prereg)
+    guard.begin_evaluation(ctx.allow_reeval)
     train_result = json.loads((ctx.root / "train_result.json").read_text())
     meta = {
         "split_type": "run-level (grouped by scan family, stratified by material)",
@@ -466,38 +493,33 @@ def s6_evaluate(ctx: Context) -> dict[str, Any]:
     }
     rows = build_report(results, meta, cfg, cfg.report_path, cfg.figure_dir)
     rows.to_csv(ctx.root / "coverage_rows.csv", index=False)
-
-    mlflow.set_tracking_uri(cfg.run.mlflow_uri)
-    mlflow.set_experiment(cfg.run.mlflow_experiment)
-    with mlflow.start_run(run_name=f"uq_eval_{cfg.mode}"):
-        mlflow.log_params({"manifest_hash": manifest["hash"], "prereg_hash": prereg, "K": cfg.prereg.K})
-        mlflow.set_tag("leakage_label", results[0]["label"])
-        primary = rows[(rows.model == results[0]["name"]) & (rows.stratum_type == "all")]
-        row: Any
-        for row in primary.itertuples():
-            prefix = f"{row.quantity}.{row.method}.a{row.alpha}"
-            mlflow.log_metric(f"{prefix}.coverage", float(row.coverage))
-            width = float(row.mean_width)
-            if width != float("inf"):
-                mlflow.log_metric(f"{prefix}.mean_width", width)
-        mlflow.log_artifact(cfg.report_path)
-        mlflow.log_artifact(str(ctx.root / "coverage_rows.csv"))
+    _log_evaluation(ctx, rows, results[0], manifest["hash"], prereg)
     return {"output_hash": _sha256(ctx.root / "coverage_rows.csv")}
 
 
 # --- S7 --------------------------------------------------------------------------------
 
 
+def accumulated_seconds(status: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Time per stage over every execution, including ones lost to crashes and restarts."""
+    totals: dict[str, dict[str, Any]] = {}
+    for attempt in status.get("attempts", []):
+        entry = totals.setdefault(attempt["stage"], {"seconds": 0.0, "executions": 0})
+        entry["seconds"] += attempt["last"] - attempt["start"]
+        entry["executions"] += 1
+    return totals
+
+
 def s7_summary(ctx: Context) -> dict[str, Any]:
     status = json.loads((ctx.root / "status.json").read_text())
-    lines = ["\n## Timeline actually used\n", "| stage | seconds (last execution) |", "| --- | --- |"]
-    total = 0.0
+    totals = accumulated_seconds(status)
+    lines = ["\n## Timeline actually used\n", "Includes time lost to crashes and restarts.\n",
+             "| stage | seconds, all executions | executions |", "| --- | --- | --- |"]  # fmt: skip
     for stage in STAGE_IDS[:-1]:
-        marker = ctx.root / "markers" / f"{stage}.done.json"
-        duration = json.loads(marker.read_text())["provenance"]["duration_s"] if marker.exists() else 0.0
-        total += duration
-        lines.append(f"| {stage} {STAGE_DEFS[stage]['title']} | {duration:.0f} |")
-    lines.append(f"| total | {total:.0f} ({total / 3600:.1f} h) |")
+        entry = totals.get(stage, {"seconds": 0.0, "executions": 0})
+        lines.append(f"| {stage} {STAGE_DEFS[stage]['title']} | {entry['seconds']:.0f} | {entry['executions']} |")
+    total = sum(entry["seconds"] for stage, entry in totals.items() if stage != "S7")
+    lines.append(f"| total | {total:.0f} ({total / 3600:.1f} h) | |")
     section = "\n".join(lines) + "\n"
     report = Path(ctx.cfg.report_path)
     body = report.read_text().split("\n## Timeline actually used\n")[0].rstrip() + "\n"
@@ -508,7 +530,7 @@ def s7_summary(ctx: Context) -> dict[str, Any]:
 
 
 STAGE_DEFS: dict[str, dict[str, Any]] = {
-    "S0": {"title": "preflight", "fn": s0_preflight, "config": ("run",), "upstream": (), "code": ["uv.lock"]},
+    "S0": {"title": "preflight", "fn": s0_preflight, "config": (), "upstream": (), "code": ["uv.lock"]},
     "S1": {"title": "generate runs", "fn": s1_generate, "config": ("gen",), "upstream": ("S0",), "code": _PHYSICS_CODE},
     "S2": {
         "title": "validate dataset", "fn": s2_validate, "config": ("gen",), "upstream": ("S1",),
@@ -523,7 +545,8 @@ STAGE_DEFS: dict[str, dict[str, Any]] = {
         "wipe": lambda c: [Path(c.root) / "ckpt"],
     },
     "S5": {
-        "title": "K-draw sampling", "fn": s5_sampling, "config": ("prereg",), "upstream": ("S3", "S4"),
+        "title": "K-draw sampling", "fn": s5_sampling, "config": ("prereg",),
+        "run_fields": ("chunk_size", "legacy_sample_limit"), "upstream": ("S3", "S4"),
         "code": _SAMPLING_CODE, "wipe": lambda c: [Path(c.root) / "draws"],
     },
     "S6": {

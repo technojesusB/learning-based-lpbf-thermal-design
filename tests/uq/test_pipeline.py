@@ -253,3 +253,132 @@ def test_timeline_projection_scales_with_runs():
     t = _timeline(UQConfig.full(), 800.0)
     assert t["projected_generation_h"] == pytest.approx(10.0)
     assert t["projected_total_h"] > t["projected_generation_h"]
+
+
+# --- review fixes: stale PID file ------------------------------------------------------
+
+
+def _write_pid(root, pid):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "driver.pid").write_text(str(pid))
+
+
+@pytest.mark.integration
+def test_stale_pid_of_unrelated_process_does_not_block_or_get_killed(tmp_path):
+    import subprocess
+
+    from neural_pbf.uq.pipeline import _claim_lock, _stop
+
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        _write_pid(tmp_path, other.pid)
+        assert _stop(UQConfig.smoke(tmp_path)) == 0
+        assert other.poll() is None, "--stop must not signal an unrelated process"
+        assert not (tmp_path / "driver.pid").exists()
+        _write_pid(tmp_path, other.pid)
+        assert _claim_lock(tmp_path).read_text() != str(other.pid)
+    finally:
+        other.kill()
+        other.wait()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("content", ["999999", "", "garbage"])
+def test_stop_with_dead_or_broken_pid_does_not_crash(tmp_path, content):
+    from neural_pbf.uq.pipeline import _stop
+
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "driver.pid").write_text(content)
+    assert _stop(UQConfig.smoke(tmp_path)) == 0
+
+
+@pytest.mark.integration
+def test_live_driver_is_still_recognized(tmp_path):
+    import subprocess
+
+    from neural_pbf.uq.pipeline import _claim_lock
+
+    fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "neural_pbf.uq.pipeline"])
+    try:
+        _write_pid(tmp_path, fake.pid)
+        with pytest.raises(PipelineError, match="already running"):
+            _claim_lock(tmp_path)
+    finally:
+        fake.kill()
+        fake.wait()
+
+
+# --- review fixes: timeline, hashing, failure classes -----------------------------------
+
+
+@pytest.mark.unit
+def test_time_accumulates_across_restarts_including_hard_crash(tmp_path):
+    from neural_pbf.uq.pipeline import Status
+    from neural_pbf.uq.stages import accumulated_seconds
+
+    first = Status(tmp_path, "smoke")
+    first.begin_attempt("S4")
+    first.data["attempts"][-1].update(start=100.0, last=3700.0)  # 1 h, then the process dies without cleanup
+    first.update()
+    second = Status(tmp_path, "smoke")
+    second.begin_attempt("S4")
+    second.data["attempts"][-1].update(start=9000.0, last=9060.0)
+    second.begin_attempt("S5")
+    second.data["attempts"][-1].update(start=9060.0, last=9070.0)
+    totals = accumulated_seconds(second.data)
+    assert totals["S4"] == {"seconds": 3660.0, "executions": 2}
+    assert totals["S5"] == {"seconds": 10.0, "executions": 1}
+
+
+@pytest.mark.unit
+def test_tick_advances_attempt_end_without_progress_file(tmp_path):
+    from neural_pbf.uq.pipeline import Status
+
+    s = Status(tmp_path, "smoke")
+    s.begin_attempt("S0")
+    s.data["attempts"][-1]["last"] = 0.0
+    s.tick("S0")
+    assert s.data["attempts"][-1]["last"] > 0.0
+
+
+def _with_run(cfg, **kw):
+    return cfg.model_copy(update={"run": cfg.run.model_copy(update=kw)})
+
+
+def _markers(root):
+    for stage in ("S3", "S4"):
+        write_marker(root, stage, "i", "o", {})
+
+
+@pytest.mark.unit
+def test_draw_batch_does_not_invalidate_finished_stages(tmp_path):
+    from neural_pbf.uq.pipeline import input_hash
+
+    _markers(tmp_path)
+    cfg = UQConfig.smoke(tmp_path)
+    lowered = _with_run(cfg, draw_batch=1)
+    assert input_hash(cfg, "S0", tmp_path) == input_hash(lowered, "S0", tmp_path)
+    assert input_hash(cfg, "S5", tmp_path) == input_hash(lowered, "S5", tmp_path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field,value", [("chunk_size", 99), ("legacy_sample_limit", 99)])
+def test_settings_that_change_sampling_output_invalidate_s5(tmp_path, field, value):
+    from neural_pbf.uq.pipeline import input_hash
+
+    _markers(tmp_path)
+    cfg = UQConfig.smoke(tmp_path)
+    assert input_hash(cfg, "S5", tmp_path) != input_hash(_with_run(cfg, **{field: value}), "S5", tmp_path)
+
+
+@pytest.mark.unit
+def test_ordinary_error_mentioning_driver_is_not_gpu_failure():
+    assert classify_failure(1, "ValueError: unsupported database driver") == "fatal"
+    assert classify_failure(1, "Triton Error: Invalid argument in kernel") == "fatal"
+    assert classify_failure(1, "Failed to initialize NVML: Driver/library version mismatch") == "gpu"
+
+
+@pytest.mark.unit
+def test_smoke_mlflow_is_kept_out_of_the_main_database(tmp_path):
+    assert UQConfig.smoke(tmp_path).run.mlflow_uri == f"sqlite:///{tmp_path}/mlflow.db"
+    assert UQConfig.full().run.mlflow_uri == "sqlite:///mlflow.db"

@@ -38,6 +38,13 @@ def _strata(
             ("depth_stratum", "zero_depth", y == 0),
             ("depth_stratum", "domain_limited", y >= test["nz"]),
         ]
+    if quantity == "volume_vox":
+        limited = test["volume_limited"].astype(bool)
+        out += [
+            ("volume_stratum", "zero_volume", y == 0),
+            ("volume_stratum", "patch_limited", limited),
+            ("volume_stratum", "melt_unlimited", (y > 0) & ~limited),
+        ]
     if quantity == "T_max_K":
         edges = [-np.inf, *bins, np.inf]
         for lo, hi in zip(edges[:-1], edges[1:], strict=True):
@@ -56,30 +63,53 @@ def evaluate(
     ``allow_shared_runs`` exists only for the labelled leakage demonstration.
     """
     _check(cal, test, allow_shared_runs)
-    n_cal_runs = np.unique(cal["run_id"]).size
+    n_cal_runs = int(np.unique(cal["run_id"]).size)
     rows: list[dict[str, Any]] = []
     for q_index, quantity in enumerate(QUANTITIES):
-        y_cal, d_cal = cal["truth"][:, q_index], cal["draws"][:, :, q_index]
-        y, draws = test["truth"][:, q_index], test["draws"][:, :, q_index]
         strata = _strata(test, q_index, quantity, prereg.T_max_bins_K)
         for alpha in prereg.alphas:
             for method in METHODS:
-                fitted = calibrate(method, y_cal, d_cal, alpha)
-                lo, hi = predict(method, fitted, draws)
-                for kind, name, keep in strata:
-                    if not keep.any():
-                        continue
-                    stats = coverage_stats(
-                        y[keep], lo[keep], hi[keep], test["run_id"][keep], alpha, prereg.bootstrap_seed, prereg.n_boot
-                    )
-                    rows.append(
-                        {
-                            "quantity": quantity, "alpha": alpha, "method": method, "stratum_type": kind,
-                            "stratum": name, "q": fitted.q, "n_cal": y_cal.size, "n_cal_runs": int(n_cal_runs),
-                            "run_level_supported": run_level_supported(int(n_cal_runs), alpha), **stats,
-                        }
-                    )  # fmt: skip
+                rows += _method_rows(cal, test, q_index, quantity, alpha, method, strata, n_cal_runs, prereg)
     return pd.DataFrame(rows)
+
+
+def _method_rows(
+    cal: dict[str, np.ndarray],
+    test: dict[str, np.ndarray],
+    q_index: int,
+    quantity: str,
+    alpha: float,
+    method: str,
+    strata: list[tuple[str, str, np.ndarray]],
+    n_cal_runs: int,
+    prereg: PreregConfig,
+) -> list[dict[str, Any]]:
+    """Calibrate one method on one quantity once, then score it on every reporting stratum."""
+    y_cal = cal["truth"][:, q_index]
+    y = test["truth"][:, q_index]
+    fitted = calibrate(method, y_cal, cal["draws"][:, :, q_index], alpha)
+    lo, hi = predict(method, fitted, test["draws"][:, :, q_index])
+    fixed = {
+        "quantity": quantity,
+        "alpha": alpha,
+        "method": method,
+        "q": fitted.q,
+        "n_cal": y_cal.size,
+        "n_cal_runs": n_cal_runs,
+        "run_level_supported": run_level_supported(n_cal_runs, alpha),
+    }
+    return [
+        {
+            **fixed,
+            "stratum_type": kind,
+            "stratum": name,
+            **coverage_stats(
+                y[keep], lo[keep], hi[keep], test["run_id"][keep], alpha, prereg.bootstrap_seed, prereg.n_boot
+            ),
+        }
+        for kind, name, keep in strata
+        if keep.any()
+    ]
 
 
 def point_errors(part: dict[str, np.ndarray]) -> pd.DataFrame:

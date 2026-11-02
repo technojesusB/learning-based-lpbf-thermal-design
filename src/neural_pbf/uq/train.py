@@ -11,6 +11,7 @@ import math
 import os
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -68,10 +69,142 @@ def _validate(loader: Any, model: Any, encoder: Any, device: torch.device) -> fl
 def _load_resume(path: Path, manifest_hash: str, device: torch.device) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    state = torch.load(path, map_location=device, weights_only=False)
+    state = torch.load(path, map_location=device, weights_only=True)
     if state["manifest_hash"] != manifest_hash:
         raise TrainingError(f"{path} was trained under another manifest; refuse to resume")
     return state
+
+
+@dataclass
+class _History:
+    """Everything that decides early stopping; mutated once per epoch and saved in latest.pt."""
+
+    val: list[float] = field(default_factory=list)
+    train: list[float] = field(default_factory=list)
+    best: float = math.inf
+    since_best: int = 0
+    stopped: bool = False
+
+
+@dataclass
+class _Session:
+    cfg: UQConfig
+    out: Path
+    device: torch.device
+    manifest: dict[str, Any]
+    manifest_path: str
+    h5_paths: list[str]
+    git_commit: str
+    split: Any
+    fm_cfg: FMConfig
+    model: Any
+    encoder: Any
+    optimizer: Any
+
+
+def _build_session(cfg: UQConfig, manifest_path: str | Path, out: Path, git_commit: str) -> _Session:
+    t = cfg.train
+    manifest = load_manifest(manifest_path)
+    h5_paths = sorted({p for runs in manifest["sets"].values() for r in runs for p, _ in r["sample_keys"]})
+    device = torch.device(cfg.run.device)
+    torch.manual_seed(t.seed)
+    split = build_patch_data(
+        h5_paths, patch_size=t.patch_size, batch_size=t.batch_size, seed=t.seed,
+        manifest_path=str(manifest_path), mask_source=t.mask_source,
+    )  # fmt: skip
+    if not len(split.train_ds) or not len(split.val_ds):
+        raise TrainingError("train or val set is empty")
+    fm_cfg = FMConfig(
+        base_channels=t.base_channels, depth=t.depth,
+        cond_dim=len(split.ds_cfg.conditioning_keys), cond_embed_dim=t.cond_embed_dim,
+        tau_embed_dim=t.cond_embed_dim,
+    )  # fmt: skip
+    model = VelocityNet(fm_cfg).to(device)
+    encoder = ConditioningEncoder(fm_cfg.cond_dim, t.cond_embed_dim).to(device)
+    optimizer = torch.optim.AdamW(list(model.parameters()) + list(encoder.parameters()), lr=t.lr)
+    return _Session(
+        cfg, out, device, manifest, str(manifest_path), h5_paths, git_commit, split, fm_cfg, model, encoder, optimizer
+    )
+
+
+def _restore(s: _Session) -> _History:
+    """Load latest.pt when it exists; model, optimizer, and RNG continue exactly where they stopped."""
+    state = _load_resume(s.out / "latest.pt", s.manifest["hash"], s.device)
+    if state is None:
+        return _History()
+    s.model.load_state_dict(state["model_state"])
+    s.encoder.load_state_dict(state["cond_encoder_state"])
+    s.optimizer.load_state_dict(state["optimizer_state"])
+    torch.set_rng_state(state["rng_cpu"].cpu())
+    if s.device.type == "cuda" and state["rng_cuda"] is not None:
+        torch.cuda.set_rng_state(state["rng_cuda"].cpu(), s.device)
+    history = _History(
+        list(state["val_history"]), list(state["train_history"]), state["best_val"], state["since_best"],
+        state["stopped_early"],
+    )  # fmt: skip
+    logger.info("Resuming at epoch %d (best val %.6f)", len(history.val), history.best)
+    return history
+
+
+def _checkpoint(s: _Session, epoch: int, val_loss: float) -> dict[str, Any]:
+    return {
+        "model_state": s.model.state_dict(),
+        "cond_encoder_state": s.encoder.state_dict(),
+        "fm_cfg": s.fm_cfg.model_dump(),
+        "dataset_cfg": s.split.ds_cfg.model_dump(),
+        "grid_attrs": dict(read_grid_attrs(s.h5_paths[0])),
+        "epoch": epoch,
+        "val_loss": val_loss,
+        "manifest_hash": s.manifest["hash"],
+        "manifest_path": s.manifest_path,
+        "git_commit": s.git_commit,
+    }
+
+
+def _train_epoch(s: _Session, epoch: int) -> float:
+    s.model.train()
+    s.encoder.train()
+    total = 0.0
+    for batch in s.split.train_loader:
+        loss = _loss(batch, s.model, s.encoder, s.device, None)
+        if not torch.isfinite(loss):
+            raise TrainingError(f"non-finite training loss at epoch {epoch}")
+        s.optimizer.zero_grad()
+        loss.backward()
+        s.optimizer.step()
+        total += loss.item()
+    return total / len(s.split.train_loader)
+
+
+def _run_epoch(s: _Session, h: _History, epoch: int) -> None:
+    """Train, validate, select on val only, and save a resumable state."""
+    train_loss = _train_epoch(s, epoch)
+    val_loss = _validate(s.split.val_loader, s.model, s.encoder, s.device)
+    if not math.isfinite(val_loss):
+        raise TrainingError(f"non-finite validation loss at epoch {epoch}")
+    h.train.append(train_loss)
+    h.val.append(val_loss)
+    mlflow.log_metrics({"train_loss": train_loss, "val_loss": val_loss}, step=epoch)
+    if val_loss < h.best:
+        h.best, h.since_best = val_loss, 0
+        _atomic_torch_save(_checkpoint(s, epoch, val_loss), s.out / "best.pt")
+        mlflow.log_metric("best_val_loss", val_loss, step=epoch)
+    else:
+        h.since_best += 1
+    h.stopped = h.since_best >= s.cfg.train.patience
+    state = {
+        **_checkpoint(s, epoch, val_loss),
+        "optimizer_state": s.optimizer.state_dict(),
+        "val_history": h.val,
+        "train_history": h.train,
+        "best_val": h.best,
+        "since_best": h.since_best,
+        "stopped_early": h.stopped,
+        "rng_cpu": torch.get_rng_state(),
+        "rng_cuda": torch.cuda.get_rng_state(s.device) if s.device.type == "cuda" else None,
+    }
+    _atomic_torch_save(state, s.out / "latest.pt")
+    logger.info("epoch %d train=%.6f val=%.6f best=%.6f", epoch, train_loss, val_loss, h.best)
 
 
 def train_baseline(
@@ -83,126 +216,35 @@ def train_baseline(
 ) -> dict[str, Any]:
     """Train or resume; ``best.pt`` is selected on the manifest's val runs only."""
     t = cfg.train
-    device = torch.device(cfg.run.device)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest(manifest_path)
-    h5_paths = sorted({p for runs in manifest["sets"].values() for r in runs for p, _ in r["sample_keys"]})
-
-    torch.manual_seed(t.seed)
-    split = build_patch_data(
-        h5_paths, patch_size=t.patch_size, batch_size=t.batch_size, seed=t.seed,
-        manifest_path=str(manifest_path), mask_source=t.mask_source,
-    )  # fmt: skip
-    if not len(split.train_ds) or not len(split.val_ds):
-        raise TrainingError("train or val set is empty")
-
-    fm_cfg = FMConfig(
-        base_channels=t.base_channels, depth=t.depth,
-        cond_dim=len(split.ds_cfg.conditioning_keys), cond_embed_dim=t.cond_embed_dim,
-        tau_embed_dim=t.cond_embed_dim,
-    )  # fmt: skip
-    model = VelocityNet(fm_cfg).to(device)
-    encoder = ConditioningEncoder(fm_cfg.cond_dim, t.cond_embed_dim).to(device)
-    params = list(model.parameters()) + list(encoder.parameters())
-    optimizer = torch.optim.AdamW(params, lr=t.lr)
-
-    val_history: list[float] = []
-    train_history: list[float] = []
-    best, since_best, start, stopped = math.inf, 0, 0, False
-    resume = _load_resume(out / "latest.pt", manifest["hash"], device)
-    if resume is not None:
-        model.load_state_dict(resume["model_state"])
-        encoder.load_state_dict(resume["cond_encoder_state"])
-        optimizer.load_state_dict(resume["optimizer_state"])
-        val_history, train_history = list(resume["val_history"]), list(resume["train_history"])
-        best, since_best, stopped = resume["best_val"], resume["since_best"], resume["stopped_early"]
-        start = len(val_history)
-        torch.set_rng_state(resume["rng_cpu"].cpu())
-        if device.type == "cuda" and resume["rng_cuda"] is not None:
-            torch.cuda.set_rng_state(resume["rng_cuda"].cpu(), device)
-        logger.info("Resuming at epoch %d (best val %.6f)", start, best)
-
-    def payload(epoch: int, val_loss: float) -> dict[str, Any]:
-        return {
-            "model_state": model.state_dict(),
-            "cond_encoder_state": encoder.state_dict(),
-            "fm_cfg": fm_cfg.model_dump(),
-            "dataset_cfg": split.ds_cfg.model_dump(),
-            "grid_attrs": dict(read_grid_attrs(h5_paths[0])),
-            "epoch": epoch,
-            "val_loss": val_loss,
-            "manifest_hash": manifest["hash"],
-            "manifest_path": str(manifest_path),
-            "git_commit": git_commit,
-        }
-
-    ran = 0
+    session = _build_session(cfg, manifest_path, out, git_commit)
+    history = _restore(session)
+    start = len(history.val)
     args = SimpleNamespace(
         mlflow_uri=cfg.run.mlflow_uri, mlflow_experiment=cfg.run.mlflow_experiment, checkpoint_dir=str(out)
     )
     tracker, _ = setup_run(args, timestamped=False)
     with tracker.start_run(
         run_name=f"uq_baseline_{cfg.mode}",
-        config={**t.model_dump(mode="json"), "manifest_hash": manifest["hash"], "manifest_path": str(manifest_path),
-                "resumed_at_epoch": start, "git_commit": git_commit},
+        config={**t.model_dump(mode="json"), "manifest_hash": session.manifest["hash"],
+                "manifest_path": str(manifest_path), "resumed_at_epoch": start, "git_commit": git_commit},
         tags={"type": "fm_training", "mode": "uq_run_level", "mask_source": t.mask_source},
     ):  # fmt: skip
         for epoch in range(start, t.max_epochs):
-            if stopped:
+            if history.stopped:
                 break
-            model.train()
-            encoder.train()
-            total = 0.0
-            for batch in split.train_loader:
-                loss = _loss(batch, model, encoder, device, None)
-                if not torch.isfinite(loss):
-                    raise TrainingError(f"non-finite training loss at epoch {epoch}")
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                total += loss.item()
-            train_loss = total / len(split.train_loader)
-            val_loss = _validate(split.val_loader, model, encoder, device)
-            if not math.isfinite(val_loss):
-                raise TrainingError(f"non-finite validation loss at epoch {epoch}")
-            train_history.append(train_loss)
-            val_history.append(val_loss)
-            mlflow.log_metrics({"train_loss": train_loss, "val_loss": val_loss}, step=epoch)
-            ran += 1
-
-            if val_loss < best:
-                best, since_best = val_loss, 0
-                _atomic_torch_save(payload(epoch, val_loss), out / "best.pt")
-                mlflow.log_metric("best_val_loss", val_loss, step=epoch)
-            else:
-                since_best += 1
-            stopped = since_best >= t.patience
-
-            state = {
-                **payload(epoch, val_loss),
-                "optimizer_state": optimizer.state_dict(),
-                "val_history": val_history,
-                "train_history": train_history,
-                "best_val": best,
-                "since_best": since_best,
-                "stopped_early": stopped,
-                "rng_cpu": torch.get_rng_state(),
-                "rng_cuda": torch.cuda.get_rng_state(device) if device.type == "cuda" else None,
-            }
-            _atomic_torch_save(state, out / "latest.pt")
-            logger.info("epoch %d train=%.6f val=%.6f best=%.6f", epoch, train_loss, val_loss, best)
+            _run_epoch(session, history, epoch)
             if progress is not None:
                 progress(epoch + 1, t.max_epochs)
-
     if not (out / "best.pt").exists():
         raise TrainingError("training ended without a best checkpoint")
     return {
-        "val_history": val_history,
-        "train_history": train_history,
-        "best_val": best,
-        "best_epoch": val_history.index(min(val_history)),
-        "epochs_run": len(val_history),
-        "epochs_run_this_call": ran,
-        "stopped_early": stopped,
+        "val_history": history.val,
+        "train_history": history.train,
+        "best_val": history.best,
+        "best_epoch": history.val.index(min(history.val)),
+        "epochs_run": len(history.val),
+        "epochs_run_this_call": len(history.val) - start,
+        "stopped_early": history.stopped,
     }

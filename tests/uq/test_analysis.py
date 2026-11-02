@@ -26,7 +26,7 @@ def _set(n_runs=12, per_run=20, K=16, seed=0, nz=64, offset=0):
         "draws": draws, "truth": truth, "run_id": runs,
         "material": np.repeat(np.resize(["SS316L", "Ti64", "IN718"], n_runs), per_run),
         "pattern": np.repeat(np.resize(["raster", "zigzag"], n_runs), per_run),
-        "nz": np.full(n, nz), "sample_index": np.arange(n),
+        "nz": np.full(n, nz), "sample_index": np.arange(n), "volume_limited": depth >= nz,
     }
 
 
@@ -121,7 +121,8 @@ def test_report_contains_only_generated_numbers_and_required_statements(cfg, tmp
     build_report(results, meta, cfg, out, tmp_path / "fig")
     text = out.read_text()
     for needle in ("run-level", "n_cal", "n_test", "Wilson", "bootstrap", "run-disjoint: yes", "run-disjoint: no",
-                   "not supported at run level", "simulated data only", "post-step mask", "zero-depth", "abc", "def"):
+                   "not supported at run level", "simulated data only", "post-step mask", "zero-depth", "abc", "def",
+                   "patch-limited", "zero-volume", "SeedSequence", "capped by the patch"):
         assert needle in text, needle
     assert (tmp_path / "fig" / "coverage_nominal_vs_empirical.png").exists()
     assert (tmp_path / "fig" / "width_vs_error.png").exists()
@@ -156,3 +157,17 @@ def test_material_figure_survives_estimate_outside_bootstrap_interval(tmp_path):
                         "stratum": "SS316L", "coverage": 0.5, "boot_lo": 0.6, "boot_hi": 0.7} for q in Q])
     _fig_material(df, "absolute", 0.1, tmp_path / "f.png")
     assert (tmp_path / "f.png").exists()
+
+
+@pytest.mark.unit
+def test_volume_strata_separate_zero_and_patch_limited(cfg):
+    test = _set(n_runs=9, seed=1, offset=50)
+    test["truth"][:7, 2] = 0.0
+    test["volume_limited"][:7] = False
+    df = evaluate(_set(), test, cfg.prereg)
+    s = df[(df.stratum_type == "volume_stratum") & (df.method == "absolute") & (df.alpha == 0.1)]
+    strata = dict(zip(s.stratum, s.n, strict=True))
+    assert strata["zero_volume"] == 7
+    assert strata["patch_limited"] == int(test["volume_limited"].sum())
+    assert strata["melt_unlimited"] + strata["patch_limited"] + strata["zero_volume"] == test["truth"].shape[0]
+    assert set(df[df.stratum_type == "volume_stratum"]["quantity"]) == {"volume_vox"}

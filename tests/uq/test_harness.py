@@ -46,6 +46,7 @@ def test_sampling_writes_chunks_with_expected_shapes(trained, tmp_path):
     assert len(list(tmp_path.glob("chunk_*.npz"))) == 2
     assert np.isfinite(d["draws"]).all()
     assert set(d["run_id"]) == {manifest["sets"]["test"][0]["run_id"]}
+    assert d["volume_limited"].dtype == bool and (d["draw_batch"] == cfg.run.draw_batch).all()
 
 
 @pytest.mark.integration
