@@ -82,7 +82,9 @@ def read_marker(root: Path, stage: str) -> dict[str, Any] | None:
 
 
 def mark_started(root: Path, stage: str, input_hash: str) -> None:
+    """A stage being executed is no longer done, even if this attempt is interrupted."""
     atomic_write_text(Path(root) / "markers" / f"{stage}.started.json", json.dumps({"input_hash": input_hash}))
+    (Path(root) / "markers" / f"{stage}.done.json").unlink(missing_ok=True)
 
 
 def decide_stage(root: Path, stage: str, input_hash: str, force: bool, upstream_reran: bool) -> StageState:

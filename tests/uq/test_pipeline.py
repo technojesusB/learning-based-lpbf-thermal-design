@@ -382,3 +382,13 @@ def test_ordinary_error_mentioning_driver_is_not_gpu_failure():
 def test_smoke_mlflow_is_kept_out_of_the_main_database(tmp_path):
     assert UQConfig.smoke(tmp_path).run.mlflow_uri == f"sqlite:///{tmp_path}/mlflow.db"
     assert UQConfig.full().run.mlflow_uri == "sqlite:///mlflow.db"
+
+
+@pytest.mark.unit
+def test_interrupted_rerun_is_not_skipped_as_done(tmp_path):
+    from neural_pbf.uq.pipeline import mark_started
+
+    write_marker(tmp_path, "S5", "h", "o", {})
+    mark_started(tmp_path, "S5", "h")  # the forced rerun began, its output is gone, then it was stopped
+    assert read_marker(tmp_path, "S5") is None
+    assert decide_stage(tmp_path, "S5", "h", force=False, upstream_reran=False) == StageState.RUN
