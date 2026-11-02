@@ -88,7 +88,7 @@ ensure_newline_before_comments = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q"
+addopts = "-ra -q -m 'not slow'"
 testpaths = [
     "tests",
 ]

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import mlflow
+import numpy as np
 import torch
 
 from neural_pbf.data.patch_dataset import read_grid_attrs
@@ -176,8 +177,15 @@ def _train_epoch(s: _Session, epoch: int) -> float:
     return total / len(s.split.train_loader)
 
 
+def seed_epoch_shuffle(loader: Any, base_seed: int, epoch: int) -> None:
+    """The epoch order depends only on seed and epoch, so a resumed run shuffles like an uninterrupted one."""
+    seed = int(np.random.SeedSequence([base_seed, epoch]).generate_state(1)[0])
+    loader.sampler.generator = torch.Generator().manual_seed(seed)
+
+
 def _run_epoch(s: _Session, h: _History, epoch: int) -> None:
     """Train, validate, select on val only, and save a resumable state."""
+    seed_epoch_shuffle(s.split.train_loader, s.cfg.train.seed, epoch)
     train_loss = _train_epoch(s, epoch)
     val_loss = _validate(s.split.val_loader, s.model, s.encoder, s.device)
     if not math.isfinite(val_loss):
@@ -213,14 +221,19 @@ def train_baseline(
     out_dir: str | Path,
     progress: Callable[[int, int], None] | None = None,
     git_commit: str = "unknown",
+    should_pause: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Train or resume; ``best.pt`` is selected on the manifest's val runs only."""
+    """Train or resume; ``best.pt`` is selected on the manifest's val runs only.
+
+    ``should_pause`` is asked before each epoch once one is saved, so finished training never pauses.
+    """
     t = cfg.train
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     session = _build_session(cfg, manifest_path, out, git_commit)
     history = _restore(session)
     start = len(history.val)
+    paused = False
     args = SimpleNamespace(
         mlflow_uri=cfg.run.mlflow_uri, mlflow_experiment=cfg.run.mlflow_experiment, checkpoint_dir=str(out)
     )
@@ -233,6 +246,9 @@ def train_baseline(
     ):  # fmt: skip
         for epoch in range(start, t.max_epochs):
             if history.stopped:
+                break
+            if should_pause is not None and history.val and should_pause():
+                paused = True
                 break
             _run_epoch(session, history, epoch)
             if progress is not None:
@@ -247,4 +263,5 @@ def train_baseline(
         "epochs_run": len(history.val),
         "epochs_run_this_call": len(history.val) - start,
         "stopped_early": history.stopped,
+        "paused": paused,
     }

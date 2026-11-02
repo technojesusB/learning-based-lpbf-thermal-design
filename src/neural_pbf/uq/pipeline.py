@@ -1,13 +1,14 @@
 """UQ pipeline driver. Start it through scripts/run_uq_pipeline.sh.
 
 Each stage runs in a child process so a GPU failure cannot take the driver down.
-Exit codes: 0 ok, 1 failed, 2 refused (validation or guard), 3 GPU lost, 130 stopped.
+Exit codes: 0 ok or paused, 1 failed, 2 refused (validation or guard), 3 GPU lost, 130 stopped.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime
 import enum
 import hashlib
@@ -29,6 +30,7 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 from neural_pbf.uq.config import UQConfig  # noqa: E402
 from neural_pbf.uq.guard import atomic_write_text  # noqa: E402
 from neural_pbf.uq.stages import (  # noqa: E402
+    EXIT_PAUSED,
     STAGE_DEFS,
     STAGE_IDS,
     PipelineError,
@@ -71,8 +73,14 @@ def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def write_marker(root: Path, stage: str, input_hash: str, output_hash: str, provenance: dict[str, Any]) -> None:
-    marker = {"input_hash": input_hash, "output_hash": output_hash, "finished": _now(), "provenance": provenance}
+def write_marker(
+    root: Path, stage: str, input_hash: str, output_hash: str, provenance: dict[str, Any],
+    inputs: dict[str, Any] | None = None,
+) -> None:  # fmt: skip
+    marker = {
+        "input_hash": input_hash, "output_hash": output_hash, "finished": _now(), "provenance": provenance,
+        "inputs": inputs,
+    }  # fmt: skip
     atomic_write_text(Path(root) / "markers" / f"{stage}.done.json", json.dumps(marker, indent=1))
     (Path(root) / "markers" / f"{stage}.started.json").unlink(missing_ok=True)
 
@@ -82,9 +90,10 @@ def read_marker(root: Path, stage: str) -> dict[str, Any] | None:
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def mark_started(root: Path, stage: str, input_hash: str) -> None:
+def mark_started(root: Path, stage: str, input_hash: str, inputs: dict[str, Any] | None = None) -> None:
     """A stage being executed is no longer done, even if this attempt is interrupted."""
-    atomic_write_text(Path(root) / "markers" / f"{stage}.started.json", json.dumps({"input_hash": input_hash}))
+    record = {"input_hash": input_hash, "inputs": inputs}
+    atomic_write_text(Path(root) / "markers" / f"{stage}.started.json", json.dumps(record))
     (Path(root) / "markers" / f"{stage}.done.json").unlink(missing_ok=True)
 
 
@@ -174,6 +183,8 @@ def _run_child_once(cmd: list[str], log_path: Path, attempt: str, **wait_kwargs:
         log.write(f"\n=== {_now()} attempt {attempt}: {' '.join(cmd)}\n".encode())
         log.flush()
         _current_child = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        if STOP_REQUESTED.is_set():  # the signal came just before the child existed, or during a retry backoff
+            os.killpg(_current_child.pid, signal.SIGTERM)
         code = _wait_for_child(_current_child, log, **wait_kwargs)
         _current_child = None
     return code, _tail(log_path, min(6000, log_path.stat().st_size - start))
@@ -201,6 +212,8 @@ def run_child_with_retries(
             return EXIT_OK
         if code == EXIT_STOPPED or STOP_REQUESTED.is_set():
             return EXIT_STOPPED
+        if code == EXIT_PAUSED:
+            return EXIT_PAUSED
         kind = classify_failure(code, tail)
         print(f"[{_now()}] stage child failed: exit {code}, class {kind}, see {log_path}", flush=True)
         if kind == "fatal":
@@ -227,6 +240,11 @@ def load_status(path: Path) -> dict[str, Any]:
 
 def format_status(status: dict[str, Any]) -> str:
     lines = [f"Stage: {status.get('stage')}  state: {status.get('state')}"]
+    if status.get("next_stage"):
+        lines.append(f"Next stage: {status['next_stage']}. Continue with: {status.get('resume_command')}")
+    if status.get("state") == "running":
+        planned = {"--stop-after-stage": status.get("stop_after_stage"), "--stop-at-time": status.get("stop_at_time")}
+        lines += [f"Pause planned: {flag} {value}" for flag, value in planned.items() if value]
     progress = status.get("progress") or {}
     if progress:
         lines.append(f"Progress: {progress.get('done')}/{progress.get('total')}")
@@ -295,7 +313,7 @@ class Status:
             self.update()
 
 
-def input_hash(cfg: UQConfig, stage: str, root: Path) -> str:
+def input_payload(cfg: UQConfig, stage: str, root: Path) -> dict[str, Any]:
     definition = STAGE_DEFS[stage]
     upstream: dict[str, str] = {}
     for dep in definition["upstream"]:
@@ -303,22 +321,57 @@ def input_hash(cfg: UQConfig, stage: str, root: Path) -> str:
         if marker is None:
             raise PipelineError(f"{stage} needs {dep}, which has not finished")
         upstream[dep] = marker["output_hash"]
-    payload = {
+    return {
         "stage": stage,
         "config": {section: getattr(cfg, section).model_dump(mode="json") for section in definition["config"]},
         "run": {name: getattr(cfg.run, name) for name in definition.get("run_fields", ())},
         "code": code_tree_hash(definition["code"]),
         "upstream": upstream,
     }
+
+
+def hash_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _child_cmd(args: argparse.Namespace, stage: str) -> list[str]:
+def input_hash(cfg: UQConfig, stage: str, root: Path) -> str:
+    return hash_payload(input_payload(cfg, stage, root))
+
+
+def _changed_files(path: str, old: str, new: str) -> list[str]:
+    """A file names itself; for a directory, ask git which files differ between the two recorded trees."""
+    try:
+        cmd = ["git", "diff-tree", "-r", "--name-only", old, new]
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError):  # a file, or a tree that git no longer has
+        return [path]
+    return [f"{path}/{name}" for name in out.stdout.splitlines()] or [path]
+
+
+def stale_reasons(old: dict[str, Any] | None, new: dict[str, Any]) -> list[str]:
+    """What differs between the inputs a stage last ran with and the current ones."""
+    if old is None:
+        return ["inputs not recorded in this marker"]
+    reasons = [f"{path} (no longer hashed)" for path in old["code"] if path not in new["code"]]
+    for path, tree in new["code"].items():
+        if old["code"].get(path) != tree:
+            reasons += _changed_files(path, old["code"][path], tree) if path in old["code"] else [path]
+    for section, fields in new["config"].items():
+        previous = old["config"].get(section, {})
+        reasons += [f"config {section}.{k}" for k, v in fields.items() if previous.get(k) != v]
+    reasons += [f"run {k}" for k, v in new["run"].items() if old["run"].get(k) != v]
+    reasons += [f"upstream {k} output" for k, v in new["upstream"].items() if old["upstream"].get(k) != v]
+    return reasons
+
+
+def _child_cmd(args: argparse.Namespace, stage: str, deadline: float | None = None) -> list[str]:
     cmd = [sys.executable, "-u", "-m", "neural_pbf.uq.pipeline", "--child", stage]
     if args.smoke:
         cmd.append("--smoke")
     if args.allow_reeval:
         cmd.append("--allow-reeval")
+    if deadline is not None:
+        cmd += ["--stop-deadline", str(deadline)]
     return cmd
 
 
@@ -367,11 +420,13 @@ def _provenance(cfg: UQConfig, output: dict[str, Any], duration: float) -> dict[
 
 
 def _execute_stage(
-    cfg: UQConfig, args: argparse.Namespace, stage: str, hash_in: str, status: Status, stamp: str
-) -> int:
+    cfg: UQConfig, args: argparse.Namespace, stage: str, inputs: dict[str, Any], status: Status, stamp: str,
+    deadline: float | None = None,
+) -> int:  # fmt: skip
     """Run one stage in a child process and write its done-marker on success."""
     root = Path(cfg.root)
-    mark_started(root, stage, hash_in)
+    hash_in = hash_payload(inputs)
+    mark_started(root, stage, hash_in, inputs)
     print(f"[{_now()}] {stage}: {STAGE_DEFS[stage]['title']}", flush=True)
     progress_path = root / "progress" / f"{stage}.json"
     progress_path.unlink(missing_ok=True)
@@ -381,12 +436,15 @@ def _execute_stage(
     log_path = Path(cfg.log_dir) / f"{stamp}_{stage}.log"
     t0 = time.time()
     code = run_child_with_retries(
-        _child_cmd(args, stage), log_path, cfg.run.max_stage_retries, cfg.run.retry_backoff_s, gpu_alive,
+        _child_cmd(args, stage, deadline), log_path, cfg.run.max_stage_retries, cfg.run.retry_backoff_s, gpu_alive,
         on_tick=lambda: status.tick(stage), progress_path=progress_path,
         stall_timeout_s=cfg.run.stall_timeout_s if stage in ("S4", "S5") else None,
     )  # fmt: skip
     duration = round(time.time() - t0, 1)
     status.tick(stage)
+    if code == EXIT_PAUSED:
+        status.stage(stage, state="paused", duration_s=duration)
+        return EXIT_PAUSED
     if code != EXIT_OK:
         state = "stopped" if STOP_REQUESTED.is_set() else "failed"
         status.stage(stage, state=state, duration_s=duration, exit_code=code)
@@ -394,13 +452,127 @@ def _execute_stage(
         print(f"[{_now()}] {stage}: {state} with exit {code}. Log: {log_path}", flush=True)
         return EXIT_STOPPED if STOP_REQUESTED.is_set() else code
     output = json.loads((root / "outputs" / f"{stage}.json").read_text())
-    write_marker(root, stage, hash_in, output["output_hash"], _provenance(cfg, output, duration))
+    write_marker(root, stage, hash_in, output["output_hash"], _provenance(cfg, output, duration), inputs)
     status.stage(stage, state="done", duration_s=duration)
     print(f"[{_now()}] {stage}: done in {duration}s", flush=True)
     return EXIT_OK
 
 
-def drive(cfg: UQConfig, args: argparse.Namespace) -> int:
+def parse_stop_time(text: str, now: datetime.datetime) -> datetime.datetime:
+    """HH:MM means today; a time that has passed is refused, never moved to tomorrow."""
+    hint = f"use HH:MM or YYYY-MM-DDTHH:MM, e.g. {(now + datetime.timedelta(days=1)).date()}T10:30"
+    if not re.fullmatch(r"(\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}(:\d{2})?", text):
+        raise PipelineError(f"--stop-at-time {text!r}: {hint}")
+    try:
+        target = datetime.datetime.fromisoformat(text if "-" in text else f"{now.date()}T{text}")
+    except ValueError as exc:
+        raise PipelineError(f"--stop-at-time {text!r}: {exc}; {hint}") from exc
+    if target <= now:
+        raise PipelineError(f"--stop-at-time {text!r} is in the past ({target}, now {now}); {hint}")
+    if target.replace(fold=0).timestamp() != target.replace(fold=1).timestamp():
+        raise PipelineError(f"--stop-at-time {text!r} falls in a clock change, so it is not one moment; {hint}")
+    return target
+
+
+@dataclasses.dataclass(frozen=True)
+class PausePlan:
+    after: str | None = None
+    label: str | None = None
+    deadline: float | None = None
+
+
+def pause_plan(args: argparse.Namespace) -> PausePlan:
+    """Refuse contradictions before anything has started."""
+    after, at = args.stop_after_stage, args.stop_at_time
+    if not (after or at):
+        return PausePlan()
+    for flag, on in (("--stop", args.stop), ("--render-figures", args.render_figures)):
+        if on:
+            raise PipelineError(f"{flag} cannot be combined with --stop-after-stage or --stop-at-time")
+    if after and args.only_stage:
+        raise PipelineError("--stop-after-stage cannot be combined with --only-stage, which already runs one stage")
+    if after and args.from_stage and STAGE_IDS.index(after) < STAGE_IDS.index(args.from_stage):
+        raise PipelineError(f"--stop-after-stage {after} comes before --from-stage {args.from_stage}")
+    if not at:
+        return PausePlan(after)
+    target = parse_stop_time(at, datetime.datetime.now())
+    return PausePlan(after, target.isoformat(timespec="minutes"), target.timestamp())
+
+
+def _resume_command(args: argparse.Namespace, pending_force: list[str]) -> str:
+    """A force stays only for stages not started yet: repeating it for others would wipe what the pause saved."""
+    parts = ["scripts/run_uq_pipeline.sh"]
+    parts += ["--smoke"] if args.smoke else []
+    parts += ["--allow-reeval"] if args.allow_reeval else []
+    parts += ["--only-stage", args.only_stage] if args.only_stage else []
+    for stage in pending_force:
+        parts += ["--force-stage", stage]
+    return " ".join(parts)
+
+
+def _pause(cfg: UQConfig, status: Status, label: str, next_stage: str, command: str, rerun_from: str | None) -> int:
+    status.update(
+        state=f"paused: {label}", next_stage=next_stage, resume_command=command, rerun_from=rerun_from, eta_s=None
+    )
+    message = f"[{_now()}] Paused ({label}). Next stage: {next_stage}. Continue with: {command}"
+    print(message, flush=True)
+    Path(cfg.log_dir).mkdir(parents=True, exist_ok=True)
+    with (Path(cfg.log_dir) / "driver.log").open("a") as log:
+        log.write(message + "\n")
+    return EXIT_OK
+
+
+def _deadline_passed(plan: PausePlan) -> bool:
+    return plan.deadline is not None and time.time() >= plan.deadline
+
+
+def _run_stages(
+    cfg: UQConfig, args: argparse.Namespace, plan: PausePlan, status: Status, ordered: list[str], forced: set[str],
+    rerun_from: str | None,
+) -> int:  # fmt: skip
+    root = Path(cfg.root)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    upstream_reran = False  # anything downstream of an executed stage may legitimately be stale
+    executed: set[str] = set()
+
+    def pause(label: str, next_stage: str) -> int:
+        command = _resume_command(args, [s for s in ordered if s in forced - executed])
+        # Only stages from the pause point on may be stale because of this rerun; earlier ones stay guarded.
+        return _pause(cfg, status, label, next_stage, command, next_stage if upstream_reran else rerun_from)
+
+    at_time = f"--stop-at-time {plan.label}"
+    for i, stage in enumerate(ordered):
+        if STOP_REQUESTED.is_set():  # the signal came while no child was running
+            status.update(state="stopped")
+            print(f"[{_now()}] Stopped before {stage}. Rerun the start command to resume.", flush=True)
+            return EXIT_STOPPED
+        if i and ordered[i - 1] == plan.after:
+            return pause(f"--stop-after-stage {plan.after}", stage)
+        if rerun_from and STAGE_IDS.index(stage) >= STAGE_IDS.index(rerun_from):
+            upstream_reran = True
+        inputs = input_payload(cfg, stage, root)
+        force = stage in forced
+        if decide_stage(root, stage, hash_payload(inputs), force, upstream_reran) is StageState.SKIP:
+            print(f"[{_now()}] {stage}: done, skipping", flush=True)
+            status.stage(stage, state="done (skipped)")
+            continue
+        if _deadline_passed(plan):
+            return pause(at_time, stage)
+        if force:
+            _wipe(cfg, stage)
+        executed.add(stage)
+        code = _execute_stage(cfg, args, stage, inputs, status, stamp, plan.deadline)
+        if code == EXIT_PAUSED:
+            return pause(at_time, stage)
+        if code != EXIT_OK:
+            return code
+        upstream_reran = True
+    status.update(state="finished", progress=None, eta_s=None)
+    print(f"[{_now()}] Pipeline finished. Report: {cfg.report_path}", flush=True)
+    return EXIT_OK
+
+
+def drive(cfg: UQConfig, args: argparse.Namespace, plan: PausePlan) -> int:
     root = Path(cfg.root)
     root.mkdir(parents=True, exist_ok=True)
     dirty = dirty_code_paths()
@@ -409,32 +581,23 @@ def drive(cfg: UQConfig, args: argparse.Namespace) -> int:
     selected = select_stages(args.from_stage, args.only_stage)
     forced = set(args.force_stage or [])
     if args.dry_run:
-        return _dry_run(cfg, root, selected, forced)
+        return _dry_run(cfg, plan, root, selected, forced, dirty)
 
     lock = _claim_lock(root)
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
     status = Status(root, cfg.mode)
-    status.update(state="running", started=_now(), git_commit=git_commit())
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    upstream_reran = False  # anything downstream of an executed stage may legitimately be stale
+    previous = {k: status.data.get(k) for k in ("state", "next_stage", "resume_command", "rerun_from")}
+    status.update(
+        state="running", started=_now(), git_commit=git_commit(), next_stage=None, resume_command=None,
+        rerun_from=None, stop_after_stage=plan.after, stop_at_time=plan.label,
+    )  # fmt: skip
     try:
-        for stage in (s for s in STAGE_IDS if s in selected):
-            hash_in = input_hash(cfg, stage, root)
-            force = stage in forced
-            if decide_stage(root, stage, hash_in, force, upstream_reran) is StageState.SKIP:
-                print(f"[{_now()}] {stage}: done, skipping", flush=True)
-                status.stage(stage, state="done (skipped)")
-                continue
-            if force:
-                _wipe(cfg, stage)
-            code = _execute_stage(cfg, args, stage, hash_in, status, stamp)
-            if code != EXIT_OK:
-                return code
-            upstream_reran = True
-        status.update(state="finished", progress=None, eta_s=None)
-        print(f"[{_now()}] Pipeline finished. Report: {cfg.report_path}", flush=True)
-        return EXIT_OK
+        ordered = [s for s in STAGE_IDS if s in selected]
+        return _run_stages(cfg, args, plan, status, ordered, forced, previous["rerun_from"])
+    except PipelineError:  # refused: nothing changed, so what the status said before still holds
+        status.update(**{**previous, "state": previous["state"] or "refused"})
+        raise
     finally:
         lock.unlink(missing_ok=True)
 
@@ -445,23 +608,47 @@ def _wipe(cfg: UQConfig, stage: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _dry_run(cfg: UQConfig, root: Path, selected: list[str], forced: set[str]) -> int:
+def _dry_run_action(cfg: UQConfig, root: Path, stage: str) -> str:
+    marker = read_marker(root, stage)
+    started = root / "markers" / f"{stage}.started.json"
+    record, what = (marker, "stale") if marker else (None, "")
+    if marker is None and started.exists():
+        record, what = json.loads(started.read_text()), "partial output from other inputs"
+    if record is None:
+        return "RUN"
+    try:
+        current = input_payload(cfg, stage, root)
+    except PipelineError as exc:
+        return f"BLOCKED ({exc})"
+    if record["input_hash"] == hash_payload(current):
+        return "SKIP (done)" if marker else "RUN (resumes)"
+    changed = ", ".join(stale_reasons(record.get("inputs"), current))
+    return f"BLOCKED ({what}: {changed}; needs --force-stage {stage})"
+
+
+def _dry_run(
+    cfg: UQConfig, plan: PausePlan, root: Path, selected: list[str], forced: set[str], dirty: list[str]
+) -> int:
+    if dirty:
+        print(f"WARNING: a real start is refused until these are committed: {dirty}")
+    after = plan.after
+    ordered = [s for s in STAGE_IDS if s in selected]
+    pause_after = after if after and after != ordered[-1] else None
+    reached = True
     for stage in STAGE_IDS:
         if stage not in selected:
             print(f"{stage}: not selected")
             continue
-        marker = read_marker(root, stage)
-        if stage in forced:
-            action = "RUN (forced)"
-        elif marker is None:
-            action = "RUN"
-        else:
-            try:
-                same = marker["input_hash"] == input_hash(cfg, stage, root)
-                action = "SKIP (done)" if same else "BLOCKED (stale; needs --force-stage)"
-            except PipelineError as exc:
-                action = f"BLOCKED ({exc})"
+        if not reached:
+            print(f"{stage}: not reached (--stop-after-stage {after})")
+            continue
+        action = "RUN (forced)" if stage in forced else _dry_run_action(cfg, root, stage)
         print(f"{stage}: {action}  {STAGE_DEFS[stage]['title']}")
+        if stage == pause_after:
+            print(f"PAUSE after {stage} (--stop-after-stage {stage})")
+            reached = False
+    if plan.label:
+        print(f"PAUSE at the first safe boundary after {plan.label} (--stop-at-time), if still running")
     return EXIT_OK
 
 
@@ -506,12 +693,23 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--stop", action="store_true")
     p.add_argument("--smoke", action="store_true")
     p.add_argument(
+        "--stop-after-stage", choices=STAGE_IDS, metavar="Sx",
+        help="run up to and including Sx, then pause with exit 0; a later start continues with the next stage",
+    )  # fmt: skip
+    p.add_argument(
+        "--stop-at-time", metavar="[YYYY-MM-DDT]HH:MM",
+        help="pause with exit 0 at the first safe boundary after this local time (S1: after the current run, "
+        "S4: after the current epoch, S5: after the current chunk, others: before the next stage); "
+        "a past time is refused",
+    )  # fmt: skip
+    p.add_argument(
         "--allow-reeval", action="store_true", help="permit a second test evaluation; recorded in the report"
     )
     p.add_argument(
         "--render-figures", action="store_true", help="re-render figures from saved tables; no GPU, no test access"
     )
     p.add_argument("--child", help=argparse.SUPPRESS)
+    p.add_argument("--stop-deadline", type=float, help=argparse.SUPPRESS)
     return p
 
 
@@ -520,15 +718,16 @@ def main(argv: list[str] | None = None) -> int:
     cfg = UQConfig.smoke() if args.smoke else UQConfig.full()
     try:
         if args.child:
-            return run_stage(args.child, cfg, allow_reeval=args.allow_reeval)
-        if args.render_figures:
-            return _render_figures(cfg)
-        if args.status:
+            return run_stage(args.child, cfg, allow_reeval=args.allow_reeval, stop_deadline=args.stop_deadline)
+        if args.status and not args.render_figures:
             print(format_status(load_status(Path(cfg.root) / "status.json")))
             return EXIT_OK
+        plan = pause_plan(args)
+        if args.render_figures:
+            return _render_figures(cfg)
         if args.stop:
             return _stop(cfg)
-        return drive(cfg, args)
+        return drive(cfg, args, plan)
     except PipelineError as exc:
         print(f"REFUSED: {exc}", file=sys.stderr, flush=True)
         return EXIT_REFUSED

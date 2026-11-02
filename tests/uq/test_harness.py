@@ -84,3 +84,25 @@ def test_legacy_own_split_matches_recorded_baseline_sizes(tmp_path):
     assert sum(len(r["sample_keys"]) for r in test) == 15
     runs, _ = discover_runs([h5])
     assert {r["run_id"] for r in test} <= {r.run_id for r in runs}
+
+
+class _Paused(Exception):
+    pass
+
+
+@pytest.mark.integration
+def test_pause_at_chunk_boundary_resumes_to_the_same_result(trained, tmp_path):
+    cfg, manifest, spec = trained
+    a, b = tmp_path / "a", tmp_path / "b"
+    _sample(cfg, manifest, spec, a)
+
+    def pause_after_first_chunk(done, total):
+        if done == 1:
+            raise _Paused
+
+    with pytest.raises(_Paused):
+        _sample(cfg, manifest, spec, b, progress=pause_after_first_chunk)
+    assert len(list(b.glob("chunk_*.npz"))) == 1 and not list(b.glob("*.tmp"))
+    _sample(cfg, manifest, spec, b)
+    for key, value in load_draws(a).items():
+        assert np.array_equal(value, load_draws(b)[key])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -98,13 +99,14 @@ class UQConfig(_Frozen):
         return cls()
 
     @classmethod
-    def smoke(cls, root: str | Path = "artifacts/uq_smoke") -> UQConfig:
+    def smoke(cls, root: str | Path | None = None) -> UQConfig:
         """Whole chain on a tiny grid.
 
         Uses 4 runs of one material: four disjoint sets need at least 4 runs, and every
-        calibration or test material must also be in train.
+        calibration or test material must also be in train. UQ_SMOKE_ROOT moves the output, also for
+        stage children, so tests leave artifacts/uq_smoke alone.
         """
-        root = str(root)
+        root = str(root or os.environ.get("UQ_SMOKE_ROOT", "artifacts/uq_smoke"))
         return cls(
             mode="smoke",
             root=root,

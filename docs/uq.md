@@ -102,11 +102,80 @@ has a `Q_saturated` dataset that no committed generator version writes.
 scripts/run_uq_pipeline.sh --smoke      # whole chain on a tiny grid; writes to artifacts/uq_smoke
 scripts/run_uq_pipeline.sh              # full run, or resume; finished stages are skipped
 scripts/run_uq_pipeline.sh --status     # progress, ETA, heartbeat
-scripts/run_uq_pipeline.sh --stop       # stop cleanly; finished work is kept
+scripts/run_uq_pipeline.sh --stop       # stop now; the stage in progress is cut off, finished work is kept
 scripts/run_uq_pipeline.sh --dry-run    # what would run
 ```
 
-Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`, `--render-figures`.
+Other options: `--from-stage`, `--only-stage`, `--force-stage`, `--allow-reeval`, `--render-figures`,
+`--stop-after-stage`, `--stop-at-time`.
+
+### Pausing
+
+```bash
+scripts/run_uq_pipeline.sh --stop-after-stage S2              # run S0 to S2, then pause
+scripts/run_uq_pipeline.sh --stop-at-time 10:30               # today; a past time is refused
+scripts/run_uq_pipeline.sh --stop-at-time 2026-11-03T10:30    # local time with a date
+scripts/run_uq_pipeline.sh                                    # continue; --from-stage S3 also works
+```
+
+A pause exits 0. `--status` and `status.json` show `paused: --stop-after-stage S2` or
+`paused: --stop-at-time ...`, the next stage, and the command to continue. That command is also in
+`logs/uq/driver.log`. Done-markers stay valid, so finished stages are not rerun.
+
+`--stop-at-time` never kills work. It takes effect at the first safe boundary after the given time,
+so the actual stop can be later by up to the length of the unit in progress:
+
+| Stage | Stops | Continues with |
+| --- | --- | --- |
+| S1 | After the current run is finished and validated | The missing runs |
+| S4 | After the current epoch, once `latest.pt` is saved | The next epoch, with the same shuffle order |
+| S5 | After the current chunk | The missing chunks |
+| S0, S2, S3, S6, S7 | Run to the end, then before the next stage | The next stage |
+
+If both options are given, whichever comes first wins and the status names it. A deadline reached
+during the last stage, or with only finished stages left, is a normal finish. Neither option can be
+combined with `--stop` or `--render-figures`, and `--stop-after-stage` cannot be combined with
+`--only-stage` or name a stage before `--from-stage`. `--dry-run` prints the pause point. A time
+inside a daylight-saving change is refused.
+
+Use the printed continue command. It keeps `--force-stage` only for stages that have not started,
+because repeating it for a stage in progress wipes its saved S4 or S5 progress. After a pause, stages
+from the pause point on may rerun because of a rerun before it, as in an uninterrupted chain; earlier
+stages are still refused if stale. After `--stop` or a crash, such a rerun is refused instead.
+
+`--stop` is separate. It kills the running stage child and exits 130, and it is also honored when
+the signal arrives between stages.
+
+### What a stage hashes
+
+A stage is skipped only if its inputs still hash the same. Inputs are the committed state of these
+paths, the named config sections, and the output hash of its upstream stages.
+
+| Stage | Code paths | Config | Upstream |
+| --- | --- | --- | --- |
+| S0 | `uv.lock` | None | None |
+| S1 | `experiments/generate_offline_dataset.py`, `src/neural_pbf/physics`, `src/neural_pbf/integrator/stepper.py`, `src/neural_pbf/scan`, `src/neural_pbf/pipelines`, `src/neural_pbf/core`, `src/neural_pbf/data/sampling.py` | gen | S0 |
+| S2 | `src/neural_pbf/uq/validate.py` | gen | S1 |
+| S3 | `src/neural_pbf/data/splits.py`, `src/neural_pbf/uq/guard.py` | split, prereg | S2 |
+| S4 | `src/neural_pbf/models/generative/fm`, `src/neural_pbf/data/fm_dataset.py`, `src/neural_pbf/data/patch_dataset.py`, `src/neural_pbf/uq/train.py`, `src/neural_pbf/training/factories.py` | train | S3 |
+| S5 | `src/neural_pbf/models/generative/fm`, `src/neural_pbf/data/fm_dataset.py`, `src/neural_pbf/data/patch_dataset.py`, `src/neural_pbf/uq/train.py`, `src/neural_pbf/training/factories.py`, `src/neural_pbf/uq/harness.py`, `src/neural_pbf/uq/sampling.py`, `src/neural_pbf/eval/benchmark`, `src/neural_pbf/eval/metrics/geometry.py`, `src/neural_pbf/integrator/fm_stepper.py` | prereg, run: chunk_size, legacy_sample_limit | S3, S4 |
+| S6 | `src/neural_pbf/uq/analysis.py`, `src/neural_pbf/uq/conformal.py`, `src/neural_pbf/uq/report.py` | prereg | S3, S5 |
+| S7 | None | None | S6 |
+
+Figure code, `uq/pipeline.py`, `uq/stages.py`, and `uq/config.py` are not hashed; config values are.
+`--dry-run` lists stale stages as `BLOCKED` and names what changed: each changed file, config field,
+or upstream output.
+
+**What can change during a pause.** Commit first: a start with uncommitted changes under `src`,
+`experiments`, `scripts/run_uq_pipeline.sh`, `pyproject.toml`, or `uv.lock` is refused.
+
+- Safe: `docs/`, `tests/`, and figure code. Paths in the table for stages that have not started are
+  also accepted, and those stages then use the new code.
+- Refused as stale: anything in the table for a finished or partly finished stage. Changing
+  `uv.lock` makes S0 stale, and physics code makes S1 stale, which would mean regenerating data.
+- Do not change: `uq/stages.py`, `uq/pipeline.py`, and `uq/config.py` defaults that are not hashed.
+  Stage logic such as the sampling job list lives in `uq/stages.py`, and a change there goes
+  **undetected**, so results could mix two versions.
 
 `--render-figures` redraws all figures from the tables S6 saved (`coverage_rows.csv`,
 `sample_points.csv`, `sensitivity_rows.csv`, `point_errors.csv`). It loads no model, uses no GPU,
@@ -130,8 +199,14 @@ A figure that fails to render does not fail S6. The report and the S7 summary na
 the `--render-figures` command to run. An MLflow failure does not fail S6 either; the S7 summary
 states it.
 
-Exit codes: 0 ok, 1 failed, 2 refused, 3 GPU lost, 130 stopped. Logs are under `logs/uq/`
+Exit codes: 0 ok or paused, 1 failed, 2 refused, 3 GPU lost, 130 stopped. Logs are under `logs/uq/`
 and status is in `artifacts/uq/status.json`.
+
+**Reproducibility.** Two identical smoke runs produce byte-identical run data, S0 to S3 outputs,
+manifest, pre-registration, and legacy-model draws and table rows. GPU training (S4) is not bitwise
+reproducible because no deterministic mode is enabled, so `best.pt`, the new model's draws, and its
+report numbers differ slightly between runs. A paused and continued chain is therefore compared with
+a normal one only on the reproducible parts. Timeline seconds also differ by nature.
 
 A stage whose inputs changed is refused, never rerun silently. `--force-stage S1` never
 deletes generated runs, because that data is expensive.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 
 import pytest
 
@@ -210,11 +211,12 @@ def test_stop_request_is_not_mistaken_for_gpu_failure(tmp_path):
 
     counter = tmp_path / "n"
     body = f"""
-import os, pathlib, signal
+import os, pathlib, signal, time
 f = pathlib.Path({str(counter)!r}); f.write_text(f.read_text() + "x" if f.exists() else "x")
+time.sleep(1)
 os.kill(os.getpid(), signal.SIGTERM)
 """
-    mod.STOP_REQUESTED.set()
+    threading.Timer(0.3, mod.STOP_REQUESTED.set).start()  # while the child runs
     try:
         assert run_child_with_retries(_script(tmp_path, body), **_common(tmp_path)) == mod.EXIT_STOPPED
     finally:

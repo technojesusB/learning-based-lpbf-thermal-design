@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 STAGE_IDS = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7")
 _GENERATOR = "experiments/generate_offline_dataset.py"
+EXIT_PAUSED = 75  # child to driver only; the driver itself exits 0 on a pause
 _REPO_CODE = ["src/neural_pbf", _GENERATOR, "pyproject.toml", "uv.lock"]
 _PHYSICS_CODE = [
     _GENERATOR,
@@ -64,6 +65,10 @@ class PipelineError(RuntimeError):
 
 class GpuLost(RuntimeError):
     """The GPU or driver is gone."""
+
+
+class StagePaused(Exception):
+    """--stop-at-time passed; finished work is on disk and the stage resumes from it."""
 
 
 def _git(*args: str) -> str:
@@ -110,8 +115,8 @@ def disk_guard(path: str | Path, min_free_gb: float, purpose: str) -> None:
 
 
 class Context:
-    def __init__(self, stage: str, cfg: UQConfig, allow_reeval: bool) -> None:
-        self.stage, self.cfg, self.allow_reeval = stage, cfg, allow_reeval
+    def __init__(self, stage: str, cfg: UQConfig, allow_reeval: bool, stop_deadline: float | None = None) -> None:
+        self.stage, self.cfg, self.allow_reeval, self.stop_deadline = stage, cfg, allow_reeval, stop_deadline
         self.root = Path(cfg.root)
         self._t0 = time.time()
         self._d0: int | None = None
@@ -131,6 +136,14 @@ class Context:
     @property
     def draws_dir(self) -> Path:
         return self.root / "draws"
+
+    def deadline_passed(self) -> bool:
+        return self.stop_deadline is not None and time.time() >= self.stop_deadline
+
+    def check_pause(self) -> None:
+        """Call only where everything so far is safely on disk."""
+        if self.deadline_passed():
+            raise StagePaused
 
     def progress(self, done: int, total: int, timeline: dict[str, Any] | None = None) -> None:
         """Report progress; the ETA counts only items finished in this attempt."""
@@ -243,11 +256,15 @@ def _run_generator(cfg: UQConfig, run: int, out: Path, log_dir: Path) -> int:
             return -1
 
 
-def _generate_one(cfg: UQConfig, run: int, path: Path, log_dir: Path) -> None:
+def _generate_one(
+    cfg: UQConfig, run: int, path: Path, log_dir: Path, check_pause: Callable[[], None] = lambda: None
+) -> None:
     """Generate one run with retries; the final file appears atomically, and only after deep validation."""
     partial = path.with_suffix(".partial.h5")
     for attempt in range(cfg.gen.max_retries_per_run + 1):
         partial.unlink(missing_ok=True)
+        if attempt:
+            check_pause()  # a failed run is not worth retrying past the deadline
         code = _run_generator(cfg, run, partial, log_dir)
         # Deep check now: bad data must stop the job after one run, not after all of them.
         if code == 0 and _is_valid_run(cfg, partial, deep=True):
@@ -278,8 +295,9 @@ def s1_generate(ctx: Context) -> dict[str, Any]:
     ctx.progress(done, len(paths))
     measured: list[float] = []
     for run, path in missing:
+        ctx.check_pause()  # between runs: a run in progress always finishes
         t0 = time.time()
-        _generate_one(cfg, run, path, log_dir)
+        _generate_one(cfg, run, path, log_dir, ctx.check_pause)
         measured.append(time.time() - t0)
         done += 1
         timeline = _timeline(cfg, sum(measured) / len(measured))
@@ -329,7 +347,11 @@ def s3_split(ctx: Context) -> dict[str, Any]:
 def s4_train(ctx: Context) -> dict[str, Any]:
     from neural_pbf.uq.train import train_baseline
 
-    result = train_baseline(ctx.cfg, ctx.manifest_path, ctx.ckpt_dir, ctx.progress, git_commit())
+    result = train_baseline(
+        ctx.cfg, ctx.manifest_path, ctx.ckpt_dir, ctx.progress, git_commit(), should_pause=ctx.deadline_passed
+    )
+    if result["paused"]:
+        raise StagePaused
     atomic_write_text(ctx.root / "train_result.json", json.dumps(result, indent=1))
     return {
         "output_hash": _sha256(ctx.ckpt_dir / "best.pt"),
@@ -397,6 +419,18 @@ def bind_draws_to_checkpoint(draws_dir: Path, ckpt_hash: str, manifest_hash: str
     atomic_write_text(binding, json.dumps(current))
 
 
+def _s5_progress(ctx: Context, job: int, n_jobs: int) -> Callable[[int, int], None]:
+    """Report overall progress and pause at a chunk boundary, unless that was the very last chunk."""
+
+    def report(done: int, total: int) -> None:
+        overall = job * 1000 + round(1000 * done / max(total, 1))
+        ctx.progress(overall, n_jobs * 1000)
+        if overall < n_jobs * 1000:
+            ctx.check_pause()
+
+    return report
+
+
 def s5_sampling(ctx: Context) -> dict[str, Any]:
     import torch
 
@@ -416,12 +450,13 @@ def s5_sampling(ctx: Context) -> dict[str, Any]:
     jobs = _jobs(ctx)
     n = len(jobs)
     for i, job in enumerate(jobs):
+        ctx.check_pause()  # before the access log: a job that does not run reads nothing
         if "test" in job["name"]:
             guard.log_access("sampling", model=job["spec"].name, set=job["name"])
         logger.info("job %d/%d: %s on %s", i + 1, n, job["spec"].name, job["name"])
         sample_set(
             job["spec"], job["runs"], ctx.draws_dir / job["spec"].name / job["name"], cfg, job["seed"],
-            progress=lambda d, t, i=i: ctx.progress(i * 1000 + round(1000 * d / max(t, 1)), n * 1000),
+            progress=_s5_progress(ctx, i, n),
             every=job.get("every", 1), limit=job.get("limit"),
         )  # fmt: skip
     hash_out = _hash_dir(ctx.draws_dir)
@@ -619,17 +654,20 @@ STAGE_DEFS: dict[str, dict[str, Any]] = {
 }  # fmt: skip
 
 
-def run_stage(stage: str, cfg: UQConfig, allow_reeval: bool = False) -> int:
-    """Child-process entry. Exit 2 = refused, 3 = GPU lost; other exceptions propagate as a traceback."""
+def run_stage(stage: str, cfg: UQConfig, allow_reeval: bool = False, stop_deadline: float | None = None) -> int:
+    """Child-process entry. Exit 2 = refused, 3 = GPU lost, 75 = paused; other exceptions propagate as a traceback."""
     from neural_pbf.data.splits import SplitError
     from neural_pbf.uq.train import TrainingError
     from neural_pbf.uq.validate import ValidationError
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", force=True)
-    ctx = Context(stage, cfg, allow_reeval)
+    ctx = Context(stage, cfg, allow_reeval, stop_deadline)
     try:
         fn: Callable[[Context], dict[str, Any]] = STAGE_DEFS[stage]["fn"]
         output = fn(ctx)
+    except StagePaused:
+        logger.info("%s paused at a safe boundary (--stop-at-time)", stage)
+        return EXIT_PAUSED
     except GpuLost as exc:
         logger.error("%s", exc)
         return 3
