@@ -194,6 +194,19 @@ def test_wrong_count_and_unreadable_file(tmp_path):
 
 
 @pytest.mark.unit
+def test_short_scan_path_expects_its_planned_count(tmp_path):
+    # A scan path with fewer points than samples_per_run yields fewer samples; the file records how many.
+    p = _run(tmp_path / "a.h5", n=2)
+    with h5py.File(p, "a") as f:
+        f.attrs["planned_samples"] = 2
+    validate_run_file(p, n_samples=3, deep=True)
+    with h5py.File(p, "a") as f:
+        del f["samples"]["sample_000001"]
+    with pytest.raises(ValidationError, match="expected 2 samples, found 1"):
+        validate_run_file(p, n_samples=3, deep=False)
+
+
+@pytest.mark.unit
 def test_dataset_rejects_duplicate_tuples_and_mixed_files(tmp_path):
     a, b = _run(tmp_path / "a.h5", 100.0), _run(tmp_path / "b.h5", 100.0)
     with pytest.raises(ValidationError, match="parameter tuple"):

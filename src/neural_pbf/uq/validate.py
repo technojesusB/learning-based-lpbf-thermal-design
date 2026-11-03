@@ -28,6 +28,8 @@ def validate_run_file(path: str, n_samples: int, deep: bool) -> None:
     except OSError as exc:
         raise ValidationError(f"{path}: unreadable: {exc}") from exc
     with f:
+        # A scan path shorter than n_samples yields fewer samples; the generator records the planned count.
+        n_samples = min(n_samples, int(f.attrs.get("planned_samples", n_samples)))
         samples: Any = f.get("samples")
         if samples is None or len(samples) != n_samples:
             found = 0 if samples is None else len(samples)

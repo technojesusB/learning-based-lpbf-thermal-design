@@ -249,6 +249,9 @@ def run_worker(
     if plan is None:
         zoo = _get_material_zoo()
         plan = prepare_trajectory(args, run_idx, zoo)
+    # ponytail: one attr per file; files that hold several runs keep only the last run's count.
+    with _open_hdf5(out_path, "a") as f:
+        f.attrs["planned_samples"] = len(plan.sample_indices)
 
     # Torch seed: set after prepare_trajectory so numpy/random state is stable.
     torch.manual_seed(plan.run_seed)
