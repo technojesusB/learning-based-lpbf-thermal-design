@@ -39,6 +39,19 @@ def test_checkpoint_carries_provenance_and_loads(tmp_path):
 
 
 @pytest.mark.integration
+def test_model_sees_t_in_and_exposure_time(tmp_path):
+    cfg, path, _, out = _setup(tmp_path)
+    assert cfg.train.in_channels == 4
+    train_baseline(cfg, path, out)
+    ckpt = torch.load(out / "best.pt", map_location="cpu", weights_only=True)
+    assert ckpt["fm_cfg"]["in_channels"] == 4
+    assert "exposure_time" in ckpt["dataset_cfg"]["conditioning_keys"]
+    assert ckpt["fm_cfg"]["cond_dim"] == len(ckpt["dataset_cfg"]["conditioning_keys"])
+    model, _, _, _ = load_model_adaptive("t", out / "best.pt", "net", torch.device("cpu"))
+    assert model.cfg.in_channels == 4
+
+
+@pytest.mark.integration
 def test_resume_continues_and_matches_uninterrupted_val_history(tmp_path):
     cfg, path, _, out = _setup(tmp_path, max_epochs=3, patience=10)
     straight = train_baseline(cfg, path, out)

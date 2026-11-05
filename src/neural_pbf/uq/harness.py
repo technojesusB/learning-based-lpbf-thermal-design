@@ -124,6 +124,11 @@ def _chunk_arrays(
     return {k: np.asarray(v, dtype=float if k in ("draws", "truth") else None) for k, v in rows.items()}
 
 
+def checkpoint_dataset_cfg(ckpt: dict[str, Any], h5_paths: list[str]) -> FMDatasetConfig:
+    """The dataset config a checkpoint was trained with, on new paths; never today's defaults."""
+    return FMDatasetConfig.from_checkpoint(ckpt["dataset_cfg"], h5_paths=h5_paths)
+
+
 def sample_set(
     spec: ModelSpec,
     runs: list[dict[str, Any]],
@@ -157,7 +162,7 @@ def sample_set(
     device = torch.device(cfg.run.device)
     model, encoder, _, grid_attrs = load_model_adaptive(spec.name, spec.checkpoint, spec.model_type, device)
     ckpt = torch.load(spec.checkpoint, map_location="cpu", weights_only=True)
-    ds_cfg = FMDatasetConfig(**{**ckpt["dataset_cfg"], "h5_paths": sorted({p for p, _, _ in items})})
+    ds_cfg = checkpoint_dataset_cfg(ckpt, sorted({p for p, _, _ in items}))
     base = FMThermalDataset(ds_cfg)
     index = {key: i for i, key in enumerate(base._keys)}
     ds = build_test_dataset(base, patch_size=cfg.train.patch_size, model_type=spec.model_type)

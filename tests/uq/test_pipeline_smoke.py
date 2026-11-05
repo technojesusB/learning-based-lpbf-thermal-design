@@ -70,7 +70,7 @@ def _assert_equal_where_reproducible(a: Path, b: Path) -> None:
     for stage in STAGE_IDS[:4]:
         assert _marker(a, stage)["input_hash"] == _marker(b, stage)["input_hash"]
         assert _marker(a, stage)["output_hash"] == _marker(b, stage)["output_hash"]
-    new_model = "draws/baseline_pre/*/chunk_*.npz"
+    new_model = "draws/baseline_tin_exp/*/chunk_*.npz"
     assert _hashes(a, new_model).keys() == _hashes(b, new_model).keys()
     for name in TABLES:
         rows_a, rows_b = _table(a, name), _table(b, name)

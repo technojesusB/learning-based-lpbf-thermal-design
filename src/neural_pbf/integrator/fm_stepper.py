@@ -25,6 +25,7 @@ from neural_pbf.core.state import SimulationState
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.config import FMConfig
 from neural_pbf.models.generative.fm.flow import sample_noise
+from neural_pbf.models.generative.fm.inputs import model_in_channels, net_inputs
 from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 
 
@@ -214,7 +215,7 @@ def euler_rollout(
             cond_emb = cond_encoder(cond)
             for i in range(n_steps):
                 tau = torch.full((T_in.shape[0],), i * dt, device=device)
-                v = model(torch.cat([x, mask, Q], dim=1), tau, cond_emb)
+                v = model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, model_in_channels(model)), tau, cond_emb)
                 x = x + v * dt
     finally:
         model.train()
@@ -275,7 +276,12 @@ def euler_rollout_rope(
             cond_emb = cond_encoder(cond)
             for i in range(n_steps):
                 tau = torch.full((B,), i * dt, device=device)
-                v = model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx)
+                v = model(
+                    net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, model_in_channels(model)),
+                    tau,
+                    cond_emb,
+                    coords_idx,
+                )
                 x = x + v * dt
     finally:
         model.train()

@@ -48,7 +48,7 @@ class TestBuildPatchData:
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_default_split_70_20_10(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42, allow_random_split=True)
         assert len(split.train_ds) == 70
         assert len(split.val_ds) == 20
         assert len(split.test_ds) == 10
@@ -57,7 +57,7 @@ class TestBuildPatchData:
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_split_sizes_sum_to_total(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(50)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0, allow_random_split=True)
         total = len(split.train_ds) + len(split.val_ds) + len(split.test_ds)
         assert total == 50
 
@@ -65,7 +65,7 @@ class TestBuildPatchData:
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_use_origins_false_produces_base_patch_dataset(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(60)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0, use_origins=False)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0, use_origins=False, allow_random_split=True)
         assert isinstance(split.patch_ds, PatchFMThermalDataset)
         assert not isinstance(split.patch_ds, PatchFMThermalDatasetWithOrigin)
 
@@ -73,46 +73,46 @@ class TestBuildPatchData:
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_use_origins_true_produces_origin_dataset(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(60)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0, use_origins=True)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=0, use_origins=True, allow_random_split=True)
         assert isinstance(split.patch_ds, PatchFMThermalDatasetWithOrigin)
 
     @patch("neural_pbf.training.factories.FMThermalDataset")
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_test_loader_always_batch_size_one(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=16, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=16, seed=42, allow_random_split=True)
         assert split.test_loader.batch_size == 1
 
     @patch("neural_pbf.training.factories.FMThermalDataset")
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_train_loader_uses_requested_batch_size(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=8, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=8, seed=42, allow_random_split=True)
         assert split.train_loader.batch_size == 8
 
     @patch("neural_pbf.training.factories.FMThermalDataset")
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_same_seed_produces_same_split(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        s1 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=7)
+        s1 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=7, allow_random_split=True)
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        s2 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=7)
+        s2 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=7, allow_random_split=True)
         assert list(s1.train_ds.indices) == list(s2.train_ds.indices)
 
     @patch("neural_pbf.training.factories.FMThermalDataset")
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_different_seeds_produce_different_splits(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        s1 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=1)
+        s1 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=1, allow_random_split=True)
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        s2 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=2)
+        s2 = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=2, allow_random_split=True)
         assert list(s1.train_ds.indices) != list(s2.train_ds.indices)
 
     @patch("neural_pbf.training.factories.FMThermalDataset")
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_returns_data_split_instance(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42, allow_random_split=True)
         assert isinstance(split, DataSplit)
 
 
@@ -127,7 +127,7 @@ class TestDataSplit:
     def test_loaders_are_mutable(self, mock_cfg_cls, mock_ds_cls):
         """Accelerate replaces DataLoaders after accelerator.prepare(); must be writable."""
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42, allow_random_split=True)
         sentinel = object()
         split.train_loader = sentinel
         assert split.train_loader is sentinel
@@ -136,7 +136,7 @@ class TestDataSplit:
     @patch("neural_pbf.training.factories.FMDatasetConfig")
     def test_all_three_loaders_replaceable(self, mock_cfg_cls, mock_ds_cls):
         mock_ds_cls.return_value = _FakeFMDataset(100)
-        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42)
+        split = build_patch_data(["fake.h5"], patch_size=8, batch_size=4, seed=42, allow_random_split=True)
         a, b, c = object(), object(), object()
         split.train_loader = a
         split.val_loader = b

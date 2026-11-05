@@ -55,7 +55,9 @@ def build_patch_data(
     val_frac: float = 0.2,
     Q_ref: float = 1.35e15,
     manifest_path: str | None = None,
-    mask_source: Literal["post", "pre"] = "post",
+    mask_source: Literal["post", "pre"] = "pre",
+    allow_random_split: bool = False,
+    conditioning_keys: tuple[str, ...] | None = None,
 ) -> DataSplit:
     """Build patch dataset with 70/20/10 train-val-test split and DataLoaders.
 
@@ -74,9 +76,21 @@ def build_patch_data(
         manifest_path: Run-level split manifest. Replaces the random split: train and val come
                      from the manifest and test_ds stays empty, so training cannot load
                      calibration or test runs. Fractions are ignored.
-        mask_source: "post" (legacy) or "pre" (mask_in, causal).
+        mask_source: "pre" (mask_in, causal) or "post" (legacy, leaks the answer).
+        allow_random_split: Without a manifest, a random split over samples is refused: samples of one
+                     run are strongly correlated, so it leaks. Set this only for tests or a single run.
+        conditioning_keys: Override the dataset's default conditioning keys.
+
+    Raises:
+        ValueError: No manifest and ``allow_random_split`` is False.
     """
-    ds_cfg = FMDatasetConfig(h5_paths=h5_paths, Q_ref=Q_ref, mask_source=mask_source)
+    if manifest_path is None and not allow_random_split:
+        raise ValueError(
+            "build_patch_data needs a run-level manifest (manifest_path); a random split over samples leaks "
+            "neighbouring samples of one run into val/test. Pass allow_random_split=True to accept that."
+        )
+    extra: dict[str, Any] = {} if conditioning_keys is None else {"conditioning_keys": conditioning_keys}
+    ds_cfg = FMDatasetConfig(h5_paths=h5_paths, Q_ref=Q_ref, mask_source=mask_source, **extra)
     full_ds = FMThermalDataset(ds_cfg)
     patch_ds: Dataset
     if use_origins:

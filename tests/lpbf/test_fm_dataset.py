@@ -60,11 +60,9 @@ def _write_sample(
     for key in ("T_in", "T_target", "Q"):
         data = (rng.random(shape) * 1500 + 300).astype(np.float16)
         grp.create_dataset(key, data=data, compression="gzip")
-    grp.create_dataset(
-        "mask",
-        data=rng.integers(0, 2, size=shape, dtype=np.uint8),
-        compression="gzip",
-    )
+    mask = rng.integers(0, 2, size=shape, dtype=np.uint8)
+    grp.create_dataset("mask", data=mask, compression="gzip")
+    grp.create_dataset("mask_in", data=mask * rng.integers(0, 2, size=shape, dtype=np.uint8), compression="gzip")
     grp.attrs.update(attrs if attrs is not None else SAMPLE_ATTRS)
 
 
@@ -117,7 +115,7 @@ def default_cfg(h5_single: str) -> FMDatasetConfig:
 
 @pytest.mark.unit
 def test_config_default_conditioning_keys(default_cfg: FMDatasetConfig) -> None:
-    expected = ("power", "sigma", "rho", "cp", "k_s", "k_l", "k_p", "L", "T_s", "T_l", "x", "y")
+    expected = ("power", "sigma", "rho", "cp", "k_s", "k_l", "k_p", "L", "T_s", "T_l", "x", "y", "exposure_time")
     assert default_cfg.conditioning_keys == expected
 
 

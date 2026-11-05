@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from neural_pbf.data.fm_dataset import _DEFAULT_CONDITIONING_KEYS
+
 METHOD_NAMES = Literal["absolute", "normalized", "constant_single_draw", "raw_ensemble"]
 
 
@@ -49,6 +51,25 @@ class TrainConfig(_Frozen):
     depth: int = 3
     cond_embed_dim: int = 128
     mask_source: Literal["pre"] = "pre"
+    # Run 2: run 1 lacked T_in and exposure_time, so the model could not see residual heat or energy dose.
+    model_name: str = "baseline_tin_exp"
+    in_channels: Literal[3, 4] = 4
+    conditioning_keys: tuple[str, ...] = _DEFAULT_CONDITIONING_KEYS
+
+
+class ExploratoryConfig(_Frozen):
+    """Analyses added after the first test evaluation; reported as exploratory, never as pre-registered.
+
+    T_boil at 1 atm, model values from LPBF simulation literature (not measured; alloys have no sharp
+    boiling point): SS316L 3090 K (3086-3090; arXiv 2201.02614, 2603.28811), IN718 3188 K (3120-3223;
+    Mater. Des. S0264127523009504), Ti64 3315 K (3533-3560 outliers, pure Ti about 3560; arXiv 2109.09480).
+    The solver has no evaporation, so temperatures above T_boil are outside its validity (keyhole regime).
+    """
+
+    T_boil_K: dict[str, float] = {"SS316L": 3090.0, "IN718": 3188.0, "Ti64": 3315.0}
+    # Usefulness criterion fixed before run 2, in the melt regime at the primary alpha.
+    criterion_min_coverage: float = 0.85
+    criterion_max_width: dict[str, float] = {"depth_vox": 25.0, "T_max_K": 1000.0}
 
 
 class PreregConfig(_Frozen):
@@ -92,6 +113,7 @@ class UQConfig(_Frozen):
     split: SplitConfig = SplitConfig()
     train: TrainConfig = TrainConfig()
     prereg: PreregConfig = PreregConfig()
+    exploratory: ExploratoryConfig = ExploratoryConfig()
     run: RunConfig = RunConfig()
 
     @classmethod

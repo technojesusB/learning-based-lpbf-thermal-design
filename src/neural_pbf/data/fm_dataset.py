@@ -7,7 +7,7 @@ Q is always returned as the 3rd spatial input channel for the FM model.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import h5py
 import numpy as np
@@ -33,6 +33,7 @@ _DEFAULT_COND_MEANS: dict[str, float] = {
     "T_l": 1723.0,
     "x": 5.0e-4,
     "y": 2.5e-4,
+    "exposure_time": 55e-6,  # prepare_trajectory draws U(30, 80) us per run
 }
 
 _DEFAULT_COND_STDS: dict[str, float] = {
@@ -48,8 +49,10 @@ _DEFAULT_COND_STDS: dict[str, float] = {
     "T_l": 50.0,
     "x": 3.0e-4,
     "y": 1.5e-4,
+    "exposure_time": 50e-6 / 12**0.5,
 }
 
+# exposure_time sets the deposited energy together with power, so the model needs both.
 _DEFAULT_CONDITIONING_KEYS: tuple[str, ...] = (
     "power",
     "sigma",
@@ -63,6 +66,7 @@ _DEFAULT_CONDITIONING_KEYS: tuple[str, ...] = (
     "T_l",
     "x",
     "y",
+    "exposure_time",
 )
 
 
@@ -98,9 +102,17 @@ class FMDatasetConfig(BaseModel):
 
     dtype: Literal["float32"] = "float32"
 
-    # "post": legacy post-step mask (derived from the predicted step, not causal).
-    # "pre":  mask_in, the material state before the predicted step.
-    mask_source: Literal["post", "pre"] = "post"
+    # "pre":  mask_in, the material state before the predicted step (causal).
+    # "post": legacy post-step mask, derived from the predicted step; leaks the answer.
+    mask_source: Literal["post", "pre"] = "pre"
+
+    @classmethod
+    def from_checkpoint(cls, dumped: dict[str, Any], **overrides: Any) -> FMDatasetConfig:
+        """Rebuild a checkpoint's dataset config without applying today's defaults to it.
+
+        Dumps older than ``mask_source`` were trained on the post-step mask.
+        """
+        return cls(**{"mask_source": "post", **dumped, **overrides})
 
 
 # ---------------------------------------------------------------------------

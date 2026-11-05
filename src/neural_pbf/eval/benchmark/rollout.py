@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from neural_pbf.eval.benchmark.constants import N_EULER_STEPS
 from neural_pbf.models.generative.fm.flow import sample_noise
+from neural_pbf.models.generative.fm.inputs import model_in_channels, net_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +85,11 @@ def run_euler_rollout(
         B = T_in.shape[0]
         x = sample_noise(T_in, generator)
         dt = 1.0 / n_steps
+        in_channels = model_in_channels(model)
 
         for i in range(n_steps):
             tau = torch.full((B,), i * dt, device=device)
-            inp = torch.cat([x, mask, Q], dim=1)
+            inp = net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, in_channels)
             v = model(inp, tau, cond_emb)
             x = x + v * dt
 

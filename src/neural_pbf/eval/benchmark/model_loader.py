@@ -56,6 +56,12 @@ def load_model_adaptive(
         grid_attrs = {"dx_m": 1.5e-05, "dy_m": 1.5e-05, "dz_m": 1.5e-05}
         logger.warning("Checkpoint for %r lacks 'grid_attrs'; using fallback: %s", name, grid_attrs)
 
+    # Channel count and conditioning width come from the weights: *_tin models have 4 channels and
+    # newer datasets add exposure_time to the conditioning.
+    embed = ckpt["model_state"].get("patch_embed.weight")
+    in_channels = int(embed.shape[1]) if embed is not None else 3
+    cond_dim = int(ckpt["cond_encoder_state"]["net.0.weight"].shape[1])
+
     if model_type == "net":
         from neural_pbf.models.generative.fm.config import FMConfig
         from neural_pbf.models.generative.fm.velocity_net import VelocityNet
@@ -69,7 +75,7 @@ def load_model_adaptive(
     elif model_type == "dit":
         from neural_pbf.models.generative.fm.dit import VelocityDiT
 
-        cond_enc = ConditioningEncoder(12, 128).to(device)
+        cond_enc = ConditioningEncoder(cond_dim, 128).to(device)
         for p_size in [4, 8]:
             try:
                 candidate = VelocityDiT(
@@ -78,7 +84,7 @@ def load_model_adaptive(
                     num_heads=8,
                     patch_size=p_size,
                     input_size=64,
-                    in_channels=3,
+                    in_channels=in_channels,
                     cond_embed_dim=128,
                 ).to(device)
                 candidate.load_state_dict(ckpt["model_state"])
@@ -95,7 +101,7 @@ def load_model_adaptive(
     elif model_type in ("rope", "triton"):
         from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE
 
-        cond_enc = ConditioningEncoder(12, 128).to(device)
+        cond_enc = ConditioningEncoder(cond_dim, 128).to(device)
         for p_size in [4, 8]:
             try:
                 candidate = VelocityDiTRoPE(
@@ -104,7 +110,7 @@ def load_model_adaptive(
                     num_heads=8,
                     patch_size=p_size,
                     input_size=64,
-                    in_channels=3,
+                    in_channels=in_channels,
                     cond_embed_dim=128,
                 ).to(device)
                 candidate.load_state_dict(ckpt["model_state"])

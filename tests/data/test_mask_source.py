@@ -42,13 +42,41 @@ def _file(path, n_runs=1, per_run=2, with_mask_in=True) -> str:
 
 
 @pytest.mark.unit
-def test_default_is_post_mask_and_old_config_dump_still_loads(tmp_path):
+def test_default_is_causal_pre_mask(tmp_path):
+    cfg = FMDatasetConfig(h5_paths=[_file(tmp_path / "a.h5")])
+    assert cfg.mask_source == "pre"
+    assert FMThermalDataset(cfg)[0]["mask"].sum() == 0
+
+
+@pytest.mark.unit
+def test_checkpoint_dump_without_mask_source_loads_as_post(tmp_path):
+    # Checkpoints older than mask_source were trained on the post-step mask; the new default must not change them.
     p = _file(tmp_path / "a.h5")
     legacy_cfg = FMDatasetConfig(h5_paths=[p]).model_dump()
-    legacy_cfg.pop("mask_source")  # a pre-existing checkpoint's dataset_cfg has no such key
-    cfg = FMDatasetConfig(**legacy_cfg)
+    legacy_cfg.pop("mask_source")
+    cfg = FMDatasetConfig.from_checkpoint(legacy_cfg, h5_paths=[p])
     assert cfg.mask_source == "post"
     assert FMThermalDataset(cfg)[0]["mask"].sum() > 0
+
+
+@pytest.mark.unit
+def test_checkpoint_dump_keeps_its_own_conditioning_and_mask(tmp_path):
+    p = _file(tmp_path / "a.h5")
+    old = FMDatasetConfig(h5_paths=["gone.h5"], conditioning_keys=("power", "sigma"), mask_source="pre").model_dump()
+    cfg = FMDatasetConfig.from_checkpoint(old, h5_paths=[p])
+    assert cfg.conditioning_keys == ("power", "sigma") and cfg.mask_source == "pre" and cfg.h5_paths == [p]
+
+
+@pytest.mark.unit
+def test_default_conditioning_includes_exposure_time(tmp_path):
+    cfg = FMDatasetConfig(h5_paths=[_file(tmp_path / "a.h5")])
+    assert "exposure_time" in cfg.conditioning_keys
+    # Uniform 30..80 us per run in prepare_trajectory: mean 55 us, std 50 us / sqrt(12).
+    assert cfg.cond_means["exposure_time"] == pytest.approx(55e-6)
+    assert cfg.cond_stds["exposure_time"] == pytest.approx(50e-6 / 12**0.5)
+    cond = FMThermalDataset(cfg)[0]["conditioning"]
+    i = cfg.conditioning_keys.index("exposure_time")
+    assert cond[i].item() == pytest.approx((5e-5 - 55e-6) / (50e-6 / 12**0.5), rel=1e-5)
 
 
 @pytest.mark.unit
@@ -90,7 +118,16 @@ def test_build_patch_data_rejects_manifest_with_unknown_samples(tmp_path):
 
 
 @pytest.mark.unit
-def test_build_patch_data_default_split_unchanged(tmp_path):
+def test_build_patch_data_without_manifest_refuses_random_split(tmp_path):
+    # A random split over samples puts neighbouring samples of one run in train and test (leakage).
     p = _file(tmp_path / "a.h5", n_runs=5)
-    split = build_patch_data([p], patch_size=64, batch_size=1, seed=42)
+    with pytest.raises(ValueError, match="manifest"):
+        build_patch_data([p], patch_size=64, batch_size=1, seed=42)
+
+
+@pytest.mark.unit
+def test_build_patch_data_random_split_only_on_request(tmp_path):
+    p = _file(tmp_path / "a.h5", n_runs=5)
+    split = build_patch_data([p], patch_size=64, batch_size=1, seed=42, allow_random_split=True)
     assert (len(split.train_ds), len(split.val_ds), len(split.test_ds)) == (7, 2, 1)
+    assert split.ds_cfg.mask_source == "pre"

@@ -372,7 +372,7 @@ def _jobs(ctx: Context) -> list[dict[str, Any]]:
     cfg = ctx.cfg
     p = cfg.prereg
     manifest = load_manifest(ctx.manifest_path)
-    new = ModelSpec("baseline_pre", str(ctx.ckpt_dir / "best.pt"), "net")
+    new = ModelSpec(cfg.train.model_name, str(ctx.ckpt_dir / "best.pt"), "net")
     legacy = ModelSpec("legacy_baseline", cfg.run.legacy_checkpoint, "net")
     if not Path(legacy.checkpoint).exists():
         raise PipelineError(f"legacy checkpoint missing: {legacy.checkpoint}")
@@ -410,6 +410,12 @@ def _hash_dir(directory: Path) -> str:
     return hashlib.sha256(json.dumps(body).encode()).hexdigest()
 
 
+def bind_model_draws(draws_dir: Path, specs: list[Any], manifest_hash: str) -> None:
+    """Bind each model's draws to that model's own checkpoint, so retraining one never touches another's."""
+    for spec in {s.name: s for s in specs}.values():
+        bind_draws_to_checkpoint(draws_dir / spec.name, _sha256(Path(spec.checkpoint)), manifest_hash)
+
+
 def bind_draws_to_checkpoint(draws_dir: Path, ckpt_hash: str, manifest_hash: str) -> None:
     """Refuse to add draws to a directory that holds draws from another checkpoint."""
     binding = draws_dir / "binding.json"
@@ -445,9 +451,9 @@ def s5_sampling(ctx: Context) -> dict[str, Any]:
     ckpt = torch.load(ctx.ckpt_dir / "best.pt", map_location="cpu", weights_only=True)
     if ckpt.get("manifest_hash") != manifest["hash"]:
         raise PipelineError(f"checkpoint manifest {ckpt.get('manifest_hash')} differs from {manifest['hash']}")
-    bind_draws_to_checkpoint(ctx.draws_dir, _sha256(ctx.ckpt_dir / "best.pt"), manifest["hash"])
-    guard = TestAccessGuard(ctx.root / "test_access.jsonl", prereg)
     jobs = _jobs(ctx)
+    bind_model_draws(ctx.draws_dir, [job["spec"] for job in jobs], manifest["hash"])
+    guard = TestAccessGuard(ctx.root / "test_access.jsonl", prereg)
     n = len(jobs)
     for i, job in enumerate(jobs):
         ctx.check_pause()  # before the access log: a job that does not run reads nothing
@@ -476,9 +482,9 @@ def _load_results(ctx: Context, manifest: dict[str, Any]) -> list[dict[str, Any]
     legacy = torch.load(ctx.cfg.run.legacy_checkpoint, map_location="cpu", weights_only=True)
     _, own_test = legacy_own_split(list(legacy["dataset_cfg"]["h5_paths"]))
     own_manifest = {"hash": None, "sets": {"test": own_test}}
-    new_dir, legacy_dir = ctx.draws_dir / "baseline_pre", ctx.draws_dir / "legacy_baseline"
+    new_dir, legacy_dir = ctx.draws_dir / ctx.cfg.train.model_name, ctx.draws_dir / "legacy_baseline"
     return [
-        {"name": "Baseline (pre-step mask)", "label": leakage_label(ckpt, manifest, "test"), "role": "primary",
+        {"name": "Baseline + T_in + exposure_time", "label": leakage_label(ckpt, manifest, "test"), "role": "primary",
          "cal": load_draws(new_dir / "cal"), "test": load_draws(new_dir / "test"),
          "second": load_draws(new_dir / "test_seed2")},
         {"name": "Legacy Baseline on its own random-split held-out samples",
@@ -644,7 +650,7 @@ STAGE_DEFS: dict[str, dict[str, Any]] = {
     "S5": {
         "title": "K-draw sampling", "fn": s5_sampling, "config": ("prereg",),
         "run_fields": ("chunk_size", "legacy_sample_limit"), "upstream": ("S3", "S4"),
-        "code": _SAMPLING_CODE, "wipe": lambda c: [Path(c.root) / "draws"],
+        "code": _SAMPLING_CODE, "wipe": lambda c: [Path(c.root) / "draws" / c.train.model_name],
     },
     "S6": {
         "title": "conformal, evaluation, report", "fn": s6_evaluate, "config": ("prereg",), "upstream": ("S3", "S5"),

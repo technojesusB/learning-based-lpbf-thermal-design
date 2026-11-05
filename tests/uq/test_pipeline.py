@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 import threading
 
@@ -203,6 +204,32 @@ def test_draws_from_another_checkpoint_are_refused(tmp_path):
     bind_draws_to_checkpoint(d, "ckpt-a", "manifest-a")  # same binding on resume is fine
     with pytest.raises(PipelineError, match="--force-stage S5"):
         bind_draws_to_checkpoint(d, "ckpt-b", "manifest-a")
+
+
+@pytest.mark.unit
+def test_each_model_binds_its_own_draws(tmp_path):
+    # Retraining the new model must not invalidate the legacy draws, which come from an unchanged checkpoint.
+    from neural_pbf.uq.harness import ModelSpec
+    from neural_pbf.uq.stages import bind_model_draws
+
+    new, legacy = tmp_path / "new.pt", tmp_path / "legacy.pt"
+    new.write_bytes(b"a")
+    legacy.write_bytes(b"l")
+    specs = [ModelSpec("baseline_tin_exp", str(new), "net"), ModelSpec("legacy_baseline", str(legacy), "net")]
+    bind_model_draws(tmp_path / "draws", specs, "m")
+    new.write_bytes(b"b")
+    with pytest.raises(PipelineError, match="baseline_tin_exp"):
+        bind_model_draws(tmp_path / "draws", specs, "m")
+    bind_model_draws(tmp_path / "draws", specs[1:], "m")  # legacy alone is still valid
+
+
+@pytest.mark.unit
+def test_forcing_s5_wipes_only_the_trained_models_draws():
+    from neural_pbf.uq.stages import STAGE_DEFS
+
+    cfg = UQConfig.full()
+    assert STAGE_DEFS["S5"]["wipe"](cfg) == [Path(cfg.root) / "draws" / cfg.train.model_name]
+    assert STAGE_DEFS["S4"]["wipe"](cfg) == [Path(cfg.root) / "ckpt"]
 
 
 @pytest.mark.integration

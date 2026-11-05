@@ -25,6 +25,7 @@ from neural_pbf.data.splits import load_manifest
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.config import FMConfig
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
+from neural_pbf.models.generative.fm.inputs import model_in_channels, net_inputs
 from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 from neural_pbf.training.factories import build_patch_data, setup_run
 from neural_pbf.uq.config import UQConfig
@@ -52,7 +53,9 @@ def _loss(batch: dict[str, Any], model: Any, encoder: Any, device: torch.device,
     cond = encoder(batch["conditioning"].to(device))
     noise = sample_noise(target, gen)
     tau = torch.rand(target.shape[0], device=device, generator=gen)
-    v = model(torch.cat([interpolate(noise, target, tau), mask, q], dim=1), tau, cond)
+    t_in = batch["T_in"].to(device).squeeze(1)
+    x = net_inputs(interpolate(noise, target, tau), {"mask": mask, "Q": q, "T_in": t_in}, model_in_channels(model))
+    v = model(x, tau, cond)
     return fm_loss(v, noise, target)
 
 
@@ -111,12 +114,12 @@ def _build_session(cfg: UQConfig, manifest_path: str | Path, out: Path, git_comm
     torch.manual_seed(t.seed)
     split = build_patch_data(
         h5_paths, patch_size=t.patch_size, batch_size=t.batch_size, seed=t.seed,
-        manifest_path=str(manifest_path), mask_source=t.mask_source,
+        manifest_path=str(manifest_path), mask_source=t.mask_source, conditioning_keys=t.conditioning_keys,
     )  # fmt: skip
     if not len(split.train_ds) or not len(split.val_ds):
         raise TrainingError("train or val set is empty")
     fm_cfg = FMConfig(
-        base_channels=t.base_channels, depth=t.depth,
+        in_channels=t.in_channels, base_channels=t.base_channels, depth=t.depth,
         cond_dim=len(split.ds_cfg.conditioning_keys), cond_embed_dim=t.cond_embed_dim,
         tau_embed_dim=t.cond_embed_dim,
     )  # fmt: skip

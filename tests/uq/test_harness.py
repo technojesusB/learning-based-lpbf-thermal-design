@@ -106,3 +106,16 @@ def test_pause_at_chunk_boundary_resumes_to_the_same_result(trained, tmp_path):
     _sample(cfg, manifest, spec, b)
     for key, value in load_draws(a).items():
         assert np.array_equal(value, load_draws(b)[key])
+
+
+@pytest.mark.unit
+def test_sampling_rebuilds_a_legacy_checkpoint_with_its_post_step_mask(tmp_path):
+    # The legacy checkpoint's dataset_cfg predates mask_source; it was trained on the post-step mask.
+    from neural_pbf.data.fm_dataset import FMDatasetConfig
+    from neural_pbf.uq.harness import checkpoint_dataset_cfg
+
+    dumped = FMDatasetConfig(h5_paths=["old.h5"]).model_dump()
+    dumped.pop("mask_source")
+    assert checkpoint_dataset_cfg({"dataset_cfg": dumped}, ["new.h5"]).mask_source == "post"
+    new = FMDatasetConfig(h5_paths=["old.h5"]).model_dump()
+    assert checkpoint_dataset_cfg({"dataset_cfg": new}, ["new.h5"]).mask_source == "pre"
