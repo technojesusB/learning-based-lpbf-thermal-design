@@ -96,7 +96,7 @@ Each HDF5 sample group contains `T_in`, `Q`, `T_target`, `T_lf` (fp16), `mask` (
 
 ### Train the Surrogate
 ```bash
-uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
+uv run accelerate launch experiments/train_fm_dit_triton.py   # run-level split from artifacts/uq/manifest.json
 ```
 
 ### Evaluate and Visualize a Trained Surrogate
@@ -104,7 +104,7 @@ uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset.h5
 uv run experiments/benchmark_suite.py \
     --models "Hero Run (v5)" \
     --metrics physics system \
-    --dataset data/offline_dataset.h5
+    --split val
 ```
 
 ---

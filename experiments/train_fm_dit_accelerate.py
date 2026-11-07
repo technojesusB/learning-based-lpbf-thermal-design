@@ -19,9 +19,9 @@ import mlflow
 import torch
 from accelerate import Accelerator
 from torch import Tensor
-from torch.utils.data import DataLoader
 
-from neural_pbf.data.fm_dataset import FMDatasetConfig
+from neural_pbf.models.generative.fm.inputs import net_inputs
+from neural_pbf.training.script_args import add_data_args, resolve_data
 from neural_pbf.data.patch_dataset import read_grid_attrs
 from neural_pbf.eval.reporting.hardware import epoch0_profiler, log_gpu_telemetry, log_step_timing
 from neural_pbf.eval.viz.logging import log_figure
@@ -60,7 +60,7 @@ _RUN_NAME = "v4_pinn_patches_4"
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--h5", type=str, required=True)
+    add_data_args(parser)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -80,6 +80,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    h5_paths, manifest_path = resolve_data(args)
     logging.basicConfig(level=logging.INFO)
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
     torch.manual_seed(args.seed)
@@ -88,19 +89,20 @@ def main() -> None:
         logger.info("Accelerate: %d process(es), mixed_precision=%s",
                     accelerator.num_processes, args.mixed_precision)
 
-    grid_attrs = read_grid_attrs(args.h5)
+    grid_attrs = read_grid_attrs(h5_paths[0])
     if accelerator.is_main_process:
         logger.info("Grid: dx=%.3e m  dy=%.3e m  dz=%.3e m",
                     grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"])
 
     split = build_patch_data(
-        [args.h5], patch_size=64, batch_size=args.batch_size,
+        h5_paths, manifest_path=manifest_path, allow_random_split=args.allow_random_split,
+        patch_size=64, batch_size=args.batch_size,
         seed=args.seed, use_origins=True,
     )
     ds_cfg = split.ds_cfg
 
     model = VelocityDiTRoPE(
-        patch_size=_MODEL_PATCH_SIZE, in_channels=3, embed_dim=_DEFAULT_EMBED_DIM,
+        patch_size=_MODEL_PATCH_SIZE, in_channels=args.in_channels, embed_dim=_DEFAULT_EMBED_DIM,
         depth=6, num_heads=8, cond_embed_dim=128,
     )
     cond_encoder = ConditioningEncoder(len(ds_cfg.conditioning_keys), 128)
@@ -139,7 +141,7 @@ def main() -> None:
         noise = sample_noise(T_tgt)
         tau = torch.rand(B, device=accelerator.device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_idx)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx)
         loss_fm = fm_loss(v_pred, noise, T_tgt)
         rho = denorm_cond_batch(cond, ds_cfg, "rho")
         cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
@@ -162,6 +164,7 @@ def main() -> None:
         T_tgt = batch["T_target"].squeeze(1)
         mask = batch["mask"].squeeze(1)
         Q = batch["Q"].squeeze(1)
+        T_in = batch["T_in"].squeeze(1)
         cond = batch["conditioning"]
         patch_origins = batch["patch_origin"]
         B, _, D, H, W = T_tgt.shape
@@ -174,7 +177,7 @@ def main() -> None:
         noise = sample_noise(T_tgt)
         tau = torch.rand(B, device=accelerator.device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb, coords_idx)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx)
         return fm_loss(v_pred, noise, T_tgt).detach().cpu().item()
 
     def _train_epoch_fn(epoch: int) -> float:
@@ -228,7 +231,7 @@ def main() -> None:
         with torch.no_grad():
             for i in range(25):
                 tau = torch.full((B,), i * dt, device=accelerator.device)
-                x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx) * dt
+                x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx) * dt
         return x
 
     # Worker processes: run training loop without tracker
@@ -238,7 +241,7 @@ def main() -> None:
         ckpt_dir_worker.mkdir(parents=True, exist_ok=True)
 
         def _noop_checkpoint(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args,
+            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(),
                             accelerator=accelerator)
 
         run_train_loop(
@@ -260,7 +263,7 @@ def main() -> None:
     ) as run:
 
         def _checkpoint_fn(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args,
+            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(),
                             accelerator=accelerator)
             mlflow.log_metric("best_val_loss", val_loss, step=epoch)
 
@@ -319,7 +322,7 @@ def main() -> None:
                 with torch.no_grad():
                     for i in range(args.test_n_steps):
                         tau = torch.full((B,), i * dt, device=accelerator.device)
-                        x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb, coords_idx) * dt
+                        x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx) * dt
                 return x.cpu(), T_tgt.cpu()
 
             gallery_samples = run_test_phase(

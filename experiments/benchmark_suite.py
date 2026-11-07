@@ -17,6 +17,7 @@ from neural_pbf.eval.benchmark.constants import (
     TRAINING_RUN_IDS,
 )
 from neural_pbf.schemas.viz import THEME
+from neural_pbf.training.script_args import DEFAULT_MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def run_benchmark(args: argparse.Namespace) -> list[str]:
     """Run the suite; returns the names of models that could not be evaluated."""
     from neural_pbf.eval.benchmark.constants import N_EULER_STEPS, PATCH_SIZE
     from neural_pbf.eval.benchmark.dataset import build_test_dataset
-    from neural_pbf.eval.benchmark.io import mlflow_log_paths, save_metrics_csv
+    from neural_pbf.eval.benchmark.io import mlflow_log_paths
     from neural_pbf.eval.benchmark.mlflow_data import fetch_mlflow_data
     from neural_pbf.eval.benchmark.model_loader import load_model_adaptive
     from neural_pbf.eval.benchmark.runner import run_physics_sweep
@@ -67,7 +68,8 @@ def run_benchmark(args: argparse.Namespace) -> list[str]:
     from neural_pbf.eval.viz.system_dashboard import plot_system_dashboard
     from neural_pbf.schemas.run_meta import RunMeta
     from neural_pbf.tracking.run_context import RunContext
-    from neural_pbf.data.fm_dataset import FMThermalDataset, FMDatasetConfig
+    from neural_pbf.data.fm_dataset import FMThermalDataset
+    from neural_pbf.eval.heldout import heldout_dataset
 
     # Enable system metrics for inference with high frequency (1s)
     import os
@@ -105,18 +107,9 @@ def run_benchmark(args: argparse.Namespace) -> list[str]:
 
         torch.manual_seed(args.seed)
 
-        # 1. Dataset Setup
-        valid_paths = [p for p in args.dataset if Path(p).exists()]
-        base_ds = FMThermalDataset(FMDatasetConfig(h5_paths=valid_paths, Q_ref=1.35e15))
-        
-        from torch.utils.data import random_split
-        n_total = len(base_ds)
-        n_train, n_val = int(n_total * 0.7), int(n_total * 0.2)
-        _, _, test_ds_raw = random_split(base_ds, [n_train, n_val, n_total - n_train - n_val], generator=torch.Generator().manual_seed(42))
-        test_indices = [idx for idx in test_ds_raw.indices if "offline_dataset_notebook.h5" not in str(base_ds._keys[idx][0])]
-        
-        spectral_ref_idx = test_indices[len(test_indices) // 2]
-        collect_indices = [spectral_ref_idx]
+        # 1. Held-out runs. Every model reads them with its own dataset config, so a model trained on 12
+        # conditioning keys and one trained with exposure_time both get the inputs they were trained on.
+        base_ds: FMThermalDataset | None = None
 
         # 2. Physics & Model Sweep (with Nested Runs for Inference Metrics)
         all_vols: dict[str, dict[int, torch.Tensor]] = {}
@@ -133,10 +126,15 @@ def run_benchmark(args: argparse.Namespace) -> list[str]:
             ckpt_path, model_type = _MODEL_REGISTRY[model_name]
             
             # Use nested run for each model to capture isolated GPU metrics
-            with mlflow.start_run(run_name=f"Eval-{model_name}", nested=True) as nested:
+            with mlflow.start_run(run_name=f"Eval-{model_name}", nested=True):
                 mlflow.set_tag("model_version", model_name)
                 try:
                     model, cond_enc, patch_size, grid_attrs = load_model_adaptive(model_name, ckpt_path, model_type, device)
+                    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                    heldout = heldout_dataset(ckpt, args.manifest, args.split, allow_test=args.allow_test)
+                    base_ds = heldout.dataset  # type: ignore[assignment]
+                    test_indices = list(heldout.indices)
+                    collect_indices = [test_indices[len(test_indices) // 2]]  # same run and sample for every model
                     ds = build_test_dataset(base_ds, patch_size=PATCH_SIZE, model_type=model_type)
                     
                     sub_df, sub_vols, throughput = run_physics_sweep(
@@ -162,6 +160,9 @@ def run_benchmark(args: argparse.Namespace) -> list[str]:
 
         # 4. Spectral & Structural
         if "spectral" in args.metrics:
+            if base_ds is None:
+                raise SystemExit("no model could be evaluated, so there is no reference sample for the spectra")
+            spectral_ref_idx = collect_indices[0]
             gt_volume = base_ds[spectral_ref_idx]["T_target"].squeeze().to(device)
             gt_res = {"radial": compute_radial_psd(gt_volume), "axes": compute_axis_psd(gt_volume)}
             model_spectral_results = {m: {"radial": compute_radial_psd(v[spectral_ref_idx].to(device)), "axes": compute_axis_psd(v[spectral_ref_idx].to(device))} 
@@ -207,7 +208,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="LPBF surrogate benchmark suite")
     p.add_argument("--models", nargs="+", default=list(_MODEL_REGISTRY.keys()))
     p.add_argument("--metrics", nargs="+", default=["physics", "spectral", "system"])
-    p.add_argument("--dataset", nargs="+", default=["data/offline_dataset_test.h5", "data/offline_dataset_notebook.h5"])
+    p.add_argument("--manifest", default=DEFAULT_MANIFEST, help="Run-level split manifest (UQ pipeline, stage S3).")
+    p.add_argument("--split", default="val", choices=("val", "cal", "test"), help="Held-out runs to evaluate on.")
+    p.add_argument("--allow-test", action="store_true", help="Read the UQ test runs outside the pipeline.")
     p.add_argument("--save-raw", action="store_true")
     p.add_argument("--output-dir", default="docs/assets")
     p.add_argument("--raw-dir", default="docs/assets/raw_metrics")

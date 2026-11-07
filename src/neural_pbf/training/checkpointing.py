@@ -20,8 +20,12 @@ def save_checkpoint(
     val_loss: float,
     args: Any,
     accelerator: Any = None,
+    dataset_cfg: dict[str, Any] | None = None,
+    fm_cfg: dict[str, Any] | None = None,
 ) -> None:
     """Save best-checkpoint dict to ckpt_dir/best.pt.
+
+    ``dataset_cfg`` and ``fm_cfg`` let evaluation rebuild exactly the inputs the model was trained on.
 
     When *accelerator* is provided the call is a no-op on non-main processes and
     state dicts are extracted via accelerator.unwrap_model before saving.
@@ -41,6 +45,8 @@ def save_checkpoint(
             "epoch": epoch,
             "val_loss": val_loss,
             "args": vars(args) if hasattr(args, "__dict__") else args,
+            **({"dataset_cfg": dataset_cfg} if dataset_cfg is not None else {}),
+            **({"fm_cfg": fm_cfg} if fm_cfg is not None else {}),
         },
         ckpt_dir / "best.pt",
     )

@@ -2,11 +2,10 @@
 
 Usage::
 
-    uv run python scripts/train_fm.py \\
-        --h5 data/offline_dataset.h5 \\
+    uv run python experiments/train_fm.py \\
         --epochs 100 \\
         --batch_size 4 \\
-        --output_dir checkpoints/fm \\
+        --output_dir checkpoints/fm_full_field \\
         --device cuda
 
 Tracking is done via MLflow (project convention).  Set MLFLOW_TRACKING_URI or
@@ -34,7 +33,11 @@ import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
+
+from neural_pbf.data.splits import load_manifest, manifest_sample_keys
+from neural_pbf.models.generative.fm.inputs import model_in_channels, net_inputs
+from neural_pbf.training.script_args import add_data_args, resolve_data
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +58,8 @@ class TrainConfig:
     epsilon_sched_warmup: int = 20
     epsilon_sched_max: float = 0.0        # 0 = pure teacher-forcing
     n_steps_train_rollout: int = 8        # steps used for self-rollout samples
-    pde_weight: float = 0.0               # physics residual weight (0 = disabled)
     seed: int = 42
-    output_dir: str = "checkpoints/fm"
+    output_dir: str = "checkpoints/fm_full_field"
     mlflow_experiment: str = "fm_surrogate"
     mlflow_run_name: str | None = None
     num_workers: int = 0
@@ -103,7 +105,7 @@ def _self_rollout(
     dτ = 1.0 / n_steps
     for i in range(n_steps):
         tau_i = torch.full((T_in_norm.shape[0],), i * dτ, device=T_in_norm.device)
-        x_full = torch.cat([x_T, mask, Q_norm], dim=1)
+        x_full = net_inputs(x_T, {"mask": mask, "Q": Q_norm, "T_in": T_in_norm}, model_in_channels(model))
         v = model(x_full, tau_i, cond)
         x_T = x_T + v * dτ
     return x_T.detach()
@@ -171,17 +173,16 @@ def main() -> None:
     )
 
     parser = argparse.ArgumentParser(description="Train FM thermal surrogate")
-    parser.add_argument("--h5", nargs="+", required=True, help="HDF5 dataset path(s)")
+    add_data_args(parser)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--val_fraction", type=float, default=0.1)
+    parser.add_argument("--val_fraction", type=float, default=0.1, help="Only with --allow-random-split.")
     parser.add_argument("--epsilon_sched_max", type=float, default=0.0)
     parser.add_argument("--epsilon_sched_warmup", type=int, default=20)
-    parser.add_argument("--pde_weight", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output_dir", type=str, default="checkpoints/fm")
+    parser.add_argument("--output_dir", type=str, default="checkpoints/fm_full_field")  # checkpoints/fm is the UQ legacy model
     parser.add_argument("--mlflow_experiment", type=str, default="lpbf")
     parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
     parser.add_argument("--mlflow_run_name", type=str, default=None)
@@ -192,9 +193,10 @@ def main() -> None:
     parser.add_argument("--cond_embed_dim", type=int, default=128)
     parser.add_argument("--n_inference_steps", type=int, default=25)
     args = parser.parse_args()
+    h5_paths, manifest_path = resolve_data(args)
 
     cfg = TrainConfig(
-        h5_paths=args.h5,
+        h5_paths=h5_paths,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -202,7 +204,6 @@ def main() -> None:
         val_fraction=args.val_fraction,
         epsilon_sched_max=args.epsilon_sched_max,
         epsilon_sched_warmup=args.epsilon_sched_warmup,
-        pde_weight=args.pde_weight,
         seed=args.seed,
         output_dir=args.output_dir,
         mlflow_experiment=args.mlflow_experiment,
@@ -235,11 +236,16 @@ def main() -> None:
         Q_ref=cfg.q_ref,
     )
     full_ds = FMThermalDataset(ds_cfg)
-    n_total = len(full_ds)
-    n_val = max(1, int(n_total * cfg.val_fraction))
-    n_train = n_total - n_val
-    gen = torch.Generator().manual_seed(cfg.seed)
-    train_ds, val_ds = random_split(full_ds, [n_train, n_val], generator=gen)
+    if manifest_path is not None:  # run-level split: calibration and test runs are never loaded here
+        manifest = load_manifest(manifest_path)
+        index = {key: i for i, key in enumerate(full_ds._keys)}
+        train_ds = Subset(full_ds, [index[k] for k in manifest_sample_keys(manifest, "train")])
+        val_ds = Subset(full_ds, [index[k] for k in manifest_sample_keys(manifest, "val")])
+    else:
+        n_val = max(1, int(len(full_ds) * cfg.val_fraction))
+        gen = torch.Generator().manual_seed(cfg.seed)
+        train_ds, val_ds = random_split(full_ds, [len(full_ds) - n_val, n_val], generator=gen)
+    n_train, n_val = len(train_ds), len(val_ds)
 
     train_loader = DataLoader(
         train_ds, batch_size=cfg.batch_size, shuffle=True,
@@ -262,6 +268,7 @@ def main() -> None:
     from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 
     fm_cfg = FMConfig(
+        in_channels=args.in_channels,
         base_channels=cfg.base_channels,
         depth=cfg.depth,
         cond_dim=len(ds_cfg.conditioning_keys),
@@ -305,7 +312,6 @@ def main() -> None:
             "train.lr": cfg.lr,
             "train.weight_decay": cfg.weight_decay,
             "train.epsilon_sched_max": cfg.epsilon_sched_max,
-            "train.pde_weight": cfg.pde_weight,
             "train.seed": cfg.seed,
             "train.n_train": n_train,
             "train.n_val": n_val,
@@ -357,14 +363,10 @@ def main() -> None:
                 tau = torch.rand(T_tgt_norm.shape[0], device=device)
                 x_tau_T = interpolate(noise, T_tgt_norm, tau)
 
-                x_tau_full = torch.cat([x_tau_T, mask, Q_norm], dim=1)
+                x_tau_full = net_inputs(x_tau_T, {"mask": mask, "Q": Q_norm, "T_in": T_in_norm}, model_in_channels(model))
                 v_pred = model(x_tau_full, tau, cond_emb)
 
                 loss = fm_loss(v_pred, noise, T_tgt_norm)
-
-                if cfg.pde_weight > 0.0:
-                    # physics residuum is currently a zero placeholder
-                    pass  # loss += pde_weight * compute_physics_residuum(...)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -399,7 +401,7 @@ def main() -> None:
                     noise = sample_noise(T_tgt_norm)
                     tau = torch.rand(T_tgt_norm.shape[0], device=device)
                     x_tau_T = interpolate(noise, T_tgt_norm, tau)
-                    x_tau_full = torch.cat([x_tau_T, mask, Q_norm], dim=1)
+                    x_tau_full = net_inputs(x_tau_T, {"mask": mask, "Q": Q_norm, "T_in": T_in_norm}, model_in_channels(model))
                     v_pred = model(x_tau_full, tau, cond_emb)
                     val_losses.append(fm_loss(v_pred, noise, T_tgt_norm).item())
 

@@ -64,7 +64,8 @@ def _load_sample(h5_path: str, sample_key: str):
         T_in = torch.from_numpy(grp["T_in"][:].astype(np.float32))
         T_target = torch.from_numpy(grp["T_target"][:].astype(np.float32))
         Q = torch.from_numpy(grp["Q"][:].astype(np.float32))
-        mask = torch.from_numpy(grp["mask"][:].astype(np.uint8))
+        # mask_in is the material state before the step: the solver's start state and the model's input.
+        mask = torch.from_numpy(grp["mask_in" if "mask_in" in grp else "mask"][:].astype(np.uint8))
         attrs = dict(grp.attrs)
         # Read grid shape from HDF5 root attrs if available
         root_attrs = dict(f.attrs)
@@ -150,43 +151,24 @@ def _run_surrogate(T_in, Q, surrogate_ckpt: str, device):
     return (t + pred_dT).cpu()
 
 
-def _run_fm_stepper(T_in, Q, mask, conditioning_vec, fm_ckpt: str, sim_cfg, device):
-    from neural_pbf.core.state import SimulationState
-    from neural_pbf.integrator.fm_stepper import FMStepper
-    from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
-    from neural_pbf.models.generative.fm.config import FMConfig
-    from neural_pbf.models.generative.fm.velocity_net import VelocityNet
+def _run_fm(fm_ckpt: str, h5_path: str, sample_key: str, device: torch.device) -> torch.Tensor:
+    """One FM prediction for one sample, with the inputs the checkpoint was trained on, in Kelvin."""
+    from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
+    from neural_pbf.eval.benchmark.model_loader import load_model_adaptive
+    from neural_pbf.eval.benchmark.rollout import run_euler_rollout
 
-    ckpt = torch.load(fm_ckpt, map_location=device)
-    fm_cfg = FMConfig(**ckpt["fm_cfg"])
-    model = VelocityNet(fm_cfg).to(device)
-    model.load_state_dict(ckpt["model_state"])
-    cond_encoder = ConditioningEncoder(fm_cfg.cond_dim, fm_cfg.cond_embed_dim).to(device)
-    cond_encoder.load_state_dict(ckpt["cond_encoder_state"])
+    ckpt = torch.load(fm_ckpt, map_location="cpu", weights_only=False)
+    if "dataset_cfg" not in ckpt:
+        raise KeyError(f"{fm_ckpt} has no dataset_cfg; retrain it with the current scripts")
+    ds = FMThermalDataset(FMDatasetConfig.from_checkpoint(ckpt["dataset_cfg"], h5_paths=[h5_path]))
+    sample = ds[ds._keys.index((h5_path, sample_key))]
+    model, cond_enc, _, grid_attrs = load_model_adaptive("fm", fm_ckpt, "net", device)
+    model.eval()
+    batch = {k: v.unsqueeze(0).to(device) for k, v in sample.items()}
+    with torch.no_grad():
+        pred = run_euler_rollout(model, cond_enc, batch, "net", device, grid_attrs=grid_attrs)
+    return (pred * ds.cfg.T_ref + ds.cfg.T_ambient).cpu()  # (1, 1, Nz, Ny, Nx), like T_target
 
-    state = SimulationState(
-        T=T_in.to(device),
-        material_mask=mask.to(device),
-    )
-
-    stepper = FMStepper(model, cond_encoder, sim_cfg, fm_cfg, device)
-    out_state = stepper.step(
-        state,
-        conditioning=conditioning_vec.to(device),
-        n_steps=fm_cfg.n_inference_steps,
-    )
-    return out_state.T.cpu()
-
-
-def _build_conditioning(attrs: dict, dataset_cfg) -> torch.Tensor:
-    """Build a z-score normalised conditioning vector from sample attrs."""
-    values = []
-    for key in dataset_cfg.conditioning_keys:
-        values.append(float(attrs[key]))
-    cond = torch.tensor(values, dtype=torch.float32)
-    means = torch.tensor([dataset_cfg.cond_means[k] for k in dataset_cfg.conditioning_keys])
-    stds = torch.tensor([dataset_cfg.cond_stds[k] for k in dataset_cfg.conditioning_keys])
-    return (cond - means) / stds
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +231,7 @@ def main() -> None:
     if args.fm_ckpt:
         logger.info("Running FM Stepper...")
         try:
-            from neural_pbf.data.fm_dataset import FMDatasetConfig
-
-            ds_cfg = FMDatasetConfig(h5_paths=[args.h5])
-            conditioning = _build_conditioning(attrs, ds_cfg)
-            pred_fm = _run_fm_stepper(T_in, Q, mask, conditioning, args.fm_ckpt, sim_cfg, device)
+            pred_fm = _run_fm(args.fm_ckpt, args.h5, args.sample_key, device)
             rows.append(("FM Surrogate", _metrics(pred_fm, T_target)))
         except Exception as exc:
             logger.warning("FM stepper failed: %s", exc)

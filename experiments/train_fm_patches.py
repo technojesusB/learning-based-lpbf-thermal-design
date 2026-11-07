@@ -15,8 +15,9 @@ from typing import Any
 import mlflow
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader
 
+from neural_pbf.models.generative.fm.inputs import net_inputs
+from neural_pbf.training.script_args import add_data_args, resolve_data
 from neural_pbf.eval.reporting.hardware import epoch0_profiler, log_gpu_telemetry, log_step_timing
 from neural_pbf.eval.viz.logging import log_figure
 from neural_pbf.eval.viz.losses import loss_panel
@@ -49,7 +50,7 @@ _RUN_NAME = "v1_baseline_unet"
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--h5", type=str, required=True)
+    add_data_args(parser)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-4)
@@ -64,18 +65,20 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    h5_paths, manifest_path = resolve_data(args)
     logging.basicConfig(level=logging.INFO)
     torch.manual_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     split = build_patch_data(
-        [args.h5], patch_size=64, batch_size=args.batch_size,
+        h5_paths, manifest_path=manifest_path, allow_random_split=args.allow_random_split,
+        patch_size=64, batch_size=args.batch_size,
         seed=args.seed, use_origins=True,
     )
     ds_cfg = split.ds_cfg
 
     fm_cfg = FMConfig(
-        base_channels=32, depth=3,
+        in_channels=args.in_channels, base_channels=32, depth=3,
         cond_dim=len(ds_cfg.conditioning_keys), cond_embed_dim=128,
     )
     model = VelocityNet(fm_cfg).to(device)
@@ -92,11 +95,12 @@ def main() -> None:
         T_tgt = batch["T_target"].to(device).squeeze(1)
         mask = batch["mask"].to(device).squeeze(1)
         Q = batch["Q"].to(device).squeeze(1)
+        T_in = batch["T_in"].to(device).squeeze(1)
         cond_emb = cond_encoder(batch["conditioning"].to(device))
         noise = sample_noise(T_tgt)
         tau = torch.rand(T_tgt.shape[0], device=device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
         loss = fm_loss(v_pred, noise, T_tgt)
         optimizer.zero_grad()
         loss.backward()
@@ -109,11 +113,12 @@ def main() -> None:
         T_tgt = batch["T_target"].to(device).squeeze(1)
         mask = batch["mask"].to(device).squeeze(1)
         Q = batch["Q"].to(device).squeeze(1)
+        T_in = batch["T_in"].to(device).squeeze(1)
         cond_emb = cond_encoder(batch["conditioning"].to(device))
         noise = sample_noise(T_tgt)
         tau = torch.rand(T_tgt.shape[0], device=device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
         return fm_loss(v_pred, noise, T_tgt).item()
 
     def _train_epoch_fn(epoch: int) -> float:
@@ -147,7 +152,8 @@ def main() -> None:
     ) as run:
 
         def _checkpoint_fn(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args)
+            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(),
+                            fm_cfg=fm_cfg.model_dump())
             mlflow.log_metric("best_val_loss", val_loss, step=epoch)
 
         def _snapshot_fn(epoch: int) -> tuple[Tensor, Tensor] | None:
@@ -160,12 +166,13 @@ def main() -> None:
                     T_tgt = val_batch_fixed["T_target"][:1].to(device).squeeze(1)
                     mask = val_batch_fixed["mask"][:1].to(device).squeeze(1)
                     Q = val_batch_fixed["Q"][:1].to(device).squeeze(1)
+                    T_in = val_batch_fixed["T_in"][:1].to(device).squeeze(1)
                     cond_emb = cond_encoder(val_batch_fixed["conditioning"][:1].to(device))
                     x = sample_noise(T_tgt)
                     dt = 1.0 / 25
                     for i in range(25):
                         tau = torch.full((1,), i * dt, device=device)
-                        x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb) * dt
+                        x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
                 T_gt_cpu = T_tgt.cpu()
                 T_pred_cpu = x.cpu()
                 log_figure(run, val_grid_2x2(T_gt_cpu, T_pred_cpu, epoch=epoch),
@@ -201,12 +208,13 @@ def main() -> None:
                     T_tgt = batch["T_target"].to(device).squeeze(1)
                     mask = batch["mask"].to(device).squeeze(1)
                     Q = batch["Q"].to(device).squeeze(1)
+                    T_in = batch["T_in"].to(device).squeeze(1)
                     cond_emb = cond_encoder(batch["conditioning"].to(device))
                     x = sample_noise(T_tgt)
                     dt = 1.0 / args.test_n_steps
                     for i in range(args.test_n_steps):
                         tau = torch.full((T_tgt.shape[0],), i * dt, device=device)
-                        x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb) * dt
+                        x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
                 return x.cpu(), T_tgt.cpu()
 
             gallery_samples = run_test_phase(

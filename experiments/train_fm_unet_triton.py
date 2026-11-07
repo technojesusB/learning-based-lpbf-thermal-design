@@ -1,12 +1,13 @@
-"""train_fm_dit_triton.py — Hero Experiment: Physics-Informed FM + Custom Triton PDE Loss.
+"""train_fm_unet_triton.py — 3D U-Net flow matching with the Triton PDE-residual loss.
 
 Extends train_fm_dit_accelerate.py with:
   - Custom Triton forward/backward kernels for the heat-PDE residual (PDEResidualLoss).
   - torch.profiler integration: Chrome trace logged to MLflow artifacts after epoch 0.
 
 Run:
-    uv run accelerate launch experiments/train_fm_dit_triton.py --h5 path/to/data.h5
-    uv run python experiments/train_fm_dit_triton.py --test-kernel  # kernel unit-test only
+    uv run accelerate launch experiments/train_fm_unet_triton.py                  # run-level split from artifacts/uq/manifest.json
+    uv run accelerate launch experiments/train_fm_unet_triton.py --in-channels 3   # ablation without T_in
+    uv run python experiments/train_fm_unet_triton.py --test-kernel  # kernel unit-test only
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ import torch
 from accelerate import Accelerator
 from torch.profiler import ProfilerActivity
 from torch import Tensor
-from torch.utils.data import DataLoader
 
+from neural_pbf.models.generative.fm.inputs import net_inputs
+from neural_pbf.training.script_args import add_data_args, resolve_data
 from neural_pbf.data.patch_dataset import read_grid_attrs
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.velocity_net import VelocityNet
@@ -34,7 +36,6 @@ from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_no
 from neural_pbf.physics.fm_physics import denorm_cond_batch
 from neural_pbf.physics.triton_pde_loss import PDEResidualLoss, _pde_residual_pytorch
 from neural_pbf.training import (
-    TrainHistory,
     build_patch_data,
     load_checkpoint,
     log_val_image_rope,
@@ -62,8 +63,7 @@ _MODEL_PATCH_SIZE = 4
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hero Experiment: Triton PDE-FM training")
-    parser.add_argument("--h5", type=str, nargs="+", required=False, default=[],
-                        help="Path(s) to HDF5 dataset(s) (required unless --test-kernel).")
+    add_data_args(parser)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -77,7 +77,8 @@ def _parse_args() -> argparse.Namespace:
                         choices=["no", "fp16", "bf16"])
     parser.add_argument("--dt_s", type=float, default=5e-6,
                         help="Physical time step for the PDE residual [s].")
-    parser.add_argument("--physics_loss_weight", type=float, default=1.0)
+    parser.add_argument("--physics_loss_weight", type=float, default=0.0,
+                        help="Scales the physics term; must stay 0 until the residual matches the solver.")
     parser.add_argument("--relobralo_alpha", type=float, default=0.999)
     parser.add_argument("--relobralo_beta", type=float, default=0.9)
     parser.add_argument("--relobralo_epsilon", type=float, default=1e-8)
@@ -178,28 +179,30 @@ def _make_train_batch_fn(
         mask = batch["mask"].squeeze(1)
         Q = batch["Q"].squeeze(1)
         cond = batch["conditioning"]
-        patch_origins = batch["patch_origin"]
         B, _, D, H, W = T_tgt.shape
 
         cond_emb = cond_encoder(cond)
         noise = sample_noise(T_tgt)
         tau = torch.rand(B, device=accelerator.device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
         loss_fm = fm_loss(v_pred, noise, T_tgt)
-        rho = denorm_cond_batch(cond, ds_cfg, "rho")
-        cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
-        k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
-        phys = PDEResidualLoss.apply(
-            v_pred, x_tau.detach(), tau, T_in, Q,
-            rho, cp_val, k_val,
-            grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
-            ds_cfg.T_ref, ds_cfg.T_ambient, ds_cfg.Q_ref, args.dt_s,
-        )
+        if args.physics_loss_weight > 0:  # the Triton residual kernel needs a GPU; skip it when unused
+            rho = denorm_cond_batch(cond, ds_cfg, "rho")
+            cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
+            k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
+            phys = PDEResidualLoss.apply(
+                v_pred, x_tau.detach(), tau, T_in, Q,
+                rho, cp_val, k_val,
+                grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
+                ds_cfg.T_ref, ds_cfg.T_ambient, ds_cfg.Q_ref, args.dt_s,
+            )
+        else:
+            phys = torch.zeros((), device=accelerator.device)
         loss_fm_reduced = accelerator.gather(loss_fm.detach()).mean()
         phys_reduced = accelerator.gather(phys.detach()).mean()
         lambda_phys = weighter.step(loss_fm_reduced.item(), phys_reduced.item())
-        loss = loss_fm + lambda_phys * phys
+        loss = loss_fm + args.physics_loss_weight * lambda_phys * phys
         optimizer.zero_grad()
         accelerator.backward(loss)
         optimizer.step()
@@ -221,9 +224,13 @@ def main() -> None:
         _run_kernel_test()
         return
 
-    if not args.h5:
-        print("error: --h5 is required unless --test-kernel is specified", file=sys.stderr)
-        sys.exit(1)
+    if args.physics_loss_weight > 0:
+        raise SystemExit(
+            "The PDE residual does not match the solver yet: it uses a fixed dt_s instead of each sample's "
+            "exposure_time and one scalar k instead of k(T) with powder. Train with --physics_loss_weight 0 "
+            "until that is fixed."
+        )
+    h5_paths, manifest_path = resolve_data(args)
 
     logging.basicConfig(level=logging.INFO)
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
@@ -233,19 +240,20 @@ def main() -> None:
         logger.info("Accelerate: %d process(es), mixed_precision=%s",
                     accelerator.num_processes, args.mixed_precision)
 
-    grid_attrs = read_grid_attrs(args.h5[0])
+    grid_attrs = read_grid_attrs(h5_paths[0])
     if accelerator.is_main_process:
         logger.info("Grid: dx=%.3e m  dy=%.3e m  dz=%.3e m",
                     grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"])
 
     split = build_patch_data(
-        args.h5, patch_size=64, batch_size=args.batch_size,
+        h5_paths, manifest_path=manifest_path, allow_random_split=args.allow_random_split,
+        patch_size=64, batch_size=args.batch_size,
         seed=args.seed, use_origins=True,
     )
     ds_cfg = split.ds_cfg
 
     cfg = FMConfig(
-        in_channels=3, out_channels=1, base_channels=_MODEL_BASE_CHANNELS, depth=_MODEL_DEPTH,
+        in_channels=args.in_channels, out_channels=1, base_channels=_MODEL_BASE_CHANNELS, depth=_MODEL_DEPTH,
         cond_dim=len(ds_cfg.conditioning_keys), cond_embed_dim=_DEFAULT_EMBED_DIM, tau_embed_dim=_DEFAULT_EMBED_DIM,
         T_ref=ds_cfg.T_ref, T_ambient=ds_cfg.T_ambient,
     )
@@ -276,15 +284,15 @@ def main() -> None:
         T_tgt = batch["T_target"].squeeze(1)
         mask = batch["mask"].squeeze(1)
         Q = batch["Q"].squeeze(1)
+        T_in = batch["T_in"].squeeze(1)
         cond = batch["conditioning"]
-        patch_origins = batch["patch_origin"]
         B, _, D, H, W = T_tgt.shape
 
         cond_emb = cond_encoder(cond)
         noise = sample_noise(T_tgt)
         tau = torch.rand(B, device=accelerator.device)
         x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(torch.cat([x_tau, mask, Q], dim=1), tau, cond_emb)
+        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
         return fm_loss(v_pred, noise, T_tgt).detach().cpu().item()
 
     # --- per-epoch callbacks with epoch-0 profiler ---
@@ -343,7 +351,6 @@ def main() -> None:
         mask = single["mask"].squeeze(1)
         Q = single["Q"].squeeze(1)
         cond = single["conditioning"]
-        patch_origins = single["patch_origin"]
         B, _, D, H, W = T_in.shape
 
         cond_emb = cond_encoder(cond)
@@ -352,7 +359,7 @@ def main() -> None:
         with torch.no_grad():
             for i in range(25):
                 tau = torch.full((B,), i * dt, device=accelerator.device)
-                x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb) * dt
+                x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
         return x
 
     # Worker processes: run training loop without tracker
@@ -362,7 +369,7 @@ def main() -> None:
         ckpt_dir_worker.mkdir(parents=True, exist_ok=True)
 
         def _noop_checkpoint(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args,
+            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(), fm_cfg=cfg.model_dump(),
                             accelerator=accelerator)
 
         run_train_loop(
@@ -394,7 +401,7 @@ def main() -> None:
         })
 
         def _checkpoint_fn(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args,
+            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(), fm_cfg=cfg.model_dump(),
                             accelerator=accelerator)
             mlflow.log_metric("best_val_loss", val_loss, step=epoch)
 
@@ -430,7 +437,6 @@ def main() -> None:
                 mask = moved["mask"].squeeze(1)
                 Q = moved["Q"].squeeze(1)
                 cond = moved["conditioning"]
-                patch_origins = moved["patch_origin"]
                 B, _, D, H, W = T_tgt.shape
 
                 cond_emb = cond_encoder(cond)
@@ -439,7 +445,7 @@ def main() -> None:
                 with torch.no_grad():
                     for i in range(args.test_n_steps):
                         tau = torch.full((B,), i * dt, device=accelerator.device)
-                        x = x + model(torch.cat([x, mask, Q], dim=1), tau, cond_emb) * dt
+                        x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
                 return x.cpu(), T_tgt.cpu()
 
             run_test_phase(

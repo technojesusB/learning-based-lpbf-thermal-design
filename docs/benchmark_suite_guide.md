@@ -27,7 +27,7 @@ To run a full comparison between the Baseline and the Hero Run (v5):
 uv run experiments/benchmark_suite.py \
     --models Baseline "Hero Run (v5)" \
     --metrics physics spectral system \
-    --dataset data/offline_dataset_test.h5 \
+    --split val \
     --save-raw
 ```
 

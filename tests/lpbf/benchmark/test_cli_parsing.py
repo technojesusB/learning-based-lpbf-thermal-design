@@ -13,49 +13,49 @@ from neural_pbf.eval.benchmark.constants import TRAINING_RUN_IDS
 @pytest.mark.unit
 def test_parser_default_metrics():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5"])
+    args = parser.parse_args(["--split", "val"])
     assert set(args.metrics) == {"physics", "spectral", "system"}
 
 
 @pytest.mark.unit
 def test_parser_subset_metrics():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5", "--metrics", "physics"])
+    args = parser.parse_args(["--split", "val", "--metrics", "physics"])
     assert args.metrics == ["physics"]
 
 
 @pytest.mark.unit
 def test_parser_multiple_metrics():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5", "--metrics", "physics", "spectral"])
+    args = parser.parse_args(["--split", "val", "--metrics", "physics", "spectral"])
     assert "physics" in args.metrics and "spectral" in args.metrics
 
 
 @pytest.mark.unit
 def test_parser_save_raw_default_false():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5"])
+    args = parser.parse_args(["--split", "val"])
     assert args.save_raw is False
 
 
 @pytest.mark.unit
 def test_parser_save_raw_flag():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5", "--save-raw"])
+    args = parser.parse_args(["--split", "val", "--save-raw"])
     assert args.save_raw is True
 
 
 @pytest.mark.unit
 def test_parser_default_output_dir():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5"])
+    args = parser.parse_args(["--split", "val"])
     assert "docs/assets" in str(args.output_dir)
 
 
 @pytest.mark.unit
 def test_parser_custom_device():
     parser = _build_parser()
-    args = parser.parse_args(["--dataset", "data/test.h5", "--device", "cpu"])
+    args = parser.parse_args(["--split", "val", "--device", "cpu"])
     assert args.device == "cpu"
 
 
@@ -106,7 +106,7 @@ def test_parse_run_ids_unknown_key_accepted():
 def test_parser_run_ids_via_cli():
     parser = _build_parser()
     args = parser.parse_args([
-        "--dataset", "data/test.h5",
+        "--split", "val",
         "--run-ids", "Baseline:NEWID,Hero Run (v5):OTHERID",
     ])
     overrides = _parse_run_id_overrides(args.run_ids)
