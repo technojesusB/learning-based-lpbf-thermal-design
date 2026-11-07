@@ -18,12 +18,15 @@ A surrogate input must exist before the step it predicts. Checked against
 | Noise | Sampled at inference, independent of the data | Yes |
 | `mask_in` | `state.material_mask.clone()`, taken before the step runs | Yes |
 | `mask` (legacy only) | `state_next.material_mask`, the state after the step | **No** |
+| `T_in` | `state.T.clone()`, taken before the step runs | Yes |
 | `Q` | `beam.intensity(...)` at the planned laser position, before the step | Yes |
-| Conditioning: power, sigma, material properties | Fixed per run by `prepare_trajectory` | Yes |
+| Conditioning: power, sigma, exposure_time, material properties | Fixed per run by `prepare_trajectory` | Yes |
 | Conditioning: x, y | `plan.path_points`, computed before the time loop | Yes |
 
 `T_target` and the legacy `mask` are the only stored arrays derived from `state_next`.
-`T_in` is stored but is not a model input.
+Since run 2 the model gets `T_in` as a fourth input channel and `exposure_time` as conditioning: run 1
+lacked both, so the model saw neither the heat of earlier tracks nor the deposited energy
+(power x exposure time). Run 1 stays in the report appendix.
 
 The tests check that `mask_in` is a subset of the post-step mask, that `mask_in` is empty at
 a cold start, and that nothing except targets and diagnostics derives from `state_next`.
@@ -71,8 +74,19 @@ planned 12 calibration runs do not support alpha = 0.05, so the report marks it
 | Stopping | Fixed 100 epochs | At most 100, with patience in `TrainConfig` | Requested |
 | Validation noise | Fresh each epoch | Fixed seed | Epochs compare on equal terms |
 | Stored `Q` | Float32 after a repair | Float32 at write time | float16 overflows to inf |
+| Inputs | `[x_tau, mask, Q]`, 12 conditioning values | `[x_tau, mask_in, Q, T_in]`, plus `exposure_time` (run 2) | Run 1 showed both were missing |
 
-Architecture, learning rate, batch size, optimizer, and loss are unchanged. T_in is not added.
+Architecture, learning rate, batch size, optimizer, and loss are otherwise unchanged.
+
+## Exploratory: coverage by thermal regime
+
+Added after the first test evaluation, so it is reported as exploratory. Each sample falls in a regime by
+T_max: `solid` (below its solidus), `melt` (up to the boiling point), or `keyhole` (above it; the solver has no
+evaporation, so these temperatures are unphysical). Every regime gets its own conformal calibration.
+Regimes from the predicted T_max are usable at prediction time; regimes from the true T_max are a diagnostic.
+Boiling points (`ExploratoryConfig.T_boil_K`, model values from LPBF simulation literature): SS316L 3090 K,
+IN718 3188 K, Ti64 3315 K. The usefulness criterion was fixed before run 2: in the melt regime at the primary
+alpha, coverage of at least 0.85, depth width below 25 voxels, and T_max width below 1000 K.
 
 ## Legacy Baseline provenance gap
 
@@ -99,6 +113,7 @@ has a `Q_saturated` dataset that no committed generator version writes.
 ## Running it
 
 ```bash
+uv run python experiments/uq_conformal.py --smoke   # same entry point; the shell script wraps it
 scripts/run_uq_pipeline.sh --smoke      # whole chain on a tiny grid; writes to artifacts/uq_smoke
 scripts/run_uq_pipeline.sh              # full run, or resume; finished stages are skipped
 scripts/run_uq_pipeline.sh --status     # progress, ETA, heartbeat
@@ -159,7 +174,7 @@ paths, the named config sections, and the output hash of its upstream stages.
 | S3 | `src/neural_pbf/data/splits.py`, `src/neural_pbf/uq/guard.py` | split, prereg | S2 |
 | S4 | `src/neural_pbf/models/generative/fm`, `src/neural_pbf/data/fm_dataset.py`, `src/neural_pbf/data/patch_dataset.py`, `src/neural_pbf/uq/train.py`, `src/neural_pbf/training/factories.py` | train | S3 |
 | S5 | `src/neural_pbf/models/generative/fm`, `src/neural_pbf/data/fm_dataset.py`, `src/neural_pbf/data/patch_dataset.py`, `src/neural_pbf/uq/train.py`, `src/neural_pbf/training/factories.py`, `src/neural_pbf/uq/harness.py`, `src/neural_pbf/uq/sampling.py`, `src/neural_pbf/eval/benchmark`, `src/neural_pbf/eval/metrics/geometry.py`, `src/neural_pbf/integrator/fm_stepper.py` | prereg, run: chunk_size, legacy_sample_limit | S3, S4 |
-| S6 | `src/neural_pbf/uq/analysis.py`, `src/neural_pbf/uq/conformal.py`, `src/neural_pbf/uq/report.py` | prereg | S3, S5 |
+| S6 | `src/neural_pbf/uq/analysis.py`, `src/neural_pbf/uq/conformal.py`, `src/neural_pbf/uq/report.py`, `src/neural_pbf/uq/regimes.py` | prereg, exploratory | S3, S5 |
 | S7 | None | None | S6 |
 
 Figure code, `uq/pipeline.py`, `uq/stages.py`, and `uq/config.py` are not hashed; config values are.

@@ -50,7 +50,11 @@ _SAMPLING_CODE = [
     "src/neural_pbf/integrator/fm_stepper.py",
 ]
 # Figure code stays out on purpose: restyling a figure must not make the one test evaluation stale.
-_EVAL_CODE = ["src/neural_pbf/uq/analysis.py", "src/neural_pbf/uq/conformal.py", "src/neural_pbf/uq/report.py"]
+_EVAL_CODE = [
+    "src/neural_pbf/uq/analysis.py", "src/neural_pbf/uq/conformal.py", "src/neural_pbf/uq/report.py",
+    "src/neural_pbf/uq/regimes.py",
+]  # fmt: skip
+RUN1_ARCHIVE = "archive_run1"  # run 1 artifacts, copied there with SHA256SUMS before run 2
 FIGURE_FAILURES_FILE = "figure_failures.json"
 MLFLOW_FAILURES_FILE = "mlflow_failures.json"
 
@@ -483,7 +487,7 @@ def _load_results(ctx: Context, manifest: dict[str, Any]) -> list[dict[str, Any]
     _, own_test = legacy_own_split(list(legacy["dataset_cfg"]["h5_paths"]))
     own_manifest = {"hash": None, "sets": {"test": own_test}}
     new_dir, legacy_dir = ctx.draws_dir / ctx.cfg.train.model_name, ctx.draws_dir / "legacy_baseline"
-    return [
+    results = [
         {"name": "Baseline + T_in + exposure_time", "label": leakage_label(ckpt, manifest, "test"), "role": "primary",
          "cal": load_draws(new_dir / "cal"), "test": load_draws(new_dir / "test"),
          "second": load_draws(new_dir / "test_seed2")},
@@ -494,6 +498,38 @@ def _load_results(ctx: Context, manifest: dict[str, Any]) -> list[dict[str, Any]
          "role": "leakage_demo", "cal": load_draws(legacy_dir / "new_cal"), "test": load_draws(legacy_dir / "new_test"),
          "second": None},
     ]  # fmt: skip
+    run1 = ctx.root / RUN1_ARCHIVE
+    if (
+        run1 / "ckpt" / "best.pt"
+    ).exists():  # run 1 Baseline: no T_in, no exposure_time; kept as the defective reference
+        old = torch.load(run1 / "ckpt" / "best.pt", map_location="cpu", weights_only=True)
+        draws = run1 / "draws" / "baseline_pre"
+        name = "Run 1 Baseline (no T_in, no exposure_time)"
+        results.append({"name": name, "label": leakage_label(old, manifest, "test"),
+                        "role": "appendix", "cal": load_draws(draws / "cal"), "test": load_draws(draws / "test"),
+                        "second": None})  # fmt: skip
+    for result in results:
+        for key in ("cal", "test", "second"):
+            if result[key] is not None:
+                result[key] = with_sample_attr(result[key], "T_s")
+    return results
+
+
+def with_sample_attr(part: dict[str, Any], attr: str) -> dict[str, Any]:
+    """Add one per-sample HDF5 attribute (e.g. the randomised solidus ``T_s``) to a set of draws."""
+    import h5py
+    import numpy as np
+
+    values = []
+    files: dict[str, Any] = {}
+    try:
+        for path, key in zip(part["h5_path"], part["sample_key"], strict=True):
+            f = files.setdefault(str(path), h5py.File(str(path), "r"))
+            values.append(float(f["samples"][str(key)].attrs[attr]))
+    finally:
+        for f in files.values():
+            f.close()
+    return {**part, attr: np.asarray(values)}
 
 
 def _render_command(cfg: UQConfig) -> str:
@@ -553,6 +589,7 @@ def s6_evaluate(ctx: Context) -> dict[str, Any]:
     from neural_pbf.data.splits import load_manifest
     from neural_pbf.uq.analysis import build_tables
     from neural_pbf.uq.guard import TestAccessGuard, verify_prereg
+    from neural_pbf.uq.regimes import regime_table
     from neural_pbf.uq.report import build_report, save_tables
 
     cfg = ctx.cfg
@@ -571,6 +608,7 @@ def s6_evaluate(ctx: Context) -> dict[str, Any]:
         "training": {k: train_result[k] for k in ("best_epoch", "epochs_run", "stopped_early")},
     }
     tables = build_tables(results, cfg.prereg)
+    tables["regimes"] = regime_table(results, cfg.prereg, cfg.exploratory.T_boil_K)
     save_tables(tables, ctx.root)  # Before any figure, so a plotting problem cannot cost the evaluation.
     build_report(results, meta, cfg, cfg.report_path, cfg.figure_dir, tables)
     _record_figure_failures(cfg, _render(cfg))
@@ -653,7 +691,8 @@ STAGE_DEFS: dict[str, dict[str, Any]] = {
         "code": _SAMPLING_CODE, "wipe": lambda c: [Path(c.root) / "draws" / c.train.model_name],
     },
     "S6": {
-        "title": "conformal, evaluation, report", "fn": s6_evaluate, "config": ("prereg",), "upstream": ("S3", "S5"),
+        "title": "conformal, evaluation, report", "fn": s6_evaluate, "config": ("prereg", "exploratory"),
+        "upstream": ("S3", "S5"),
         "code": _EVAL_CODE,
     },
     "S7": {"title": "final summary", "fn": s7_summary, "config": (), "upstream": ("S6",), "code": []},

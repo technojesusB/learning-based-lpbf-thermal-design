@@ -15,6 +15,7 @@ from neural_pbf.uq.analysis import QUANTITIES, point_errors, second_seed_table
 from neural_pbf.uq.config import UQConfig
 from neural_pbf.uq.guard import atomic_write_text
 
+REGIMES_FILE = "regime_rows.csv"
 _NOTICE_START, _NOTICE_END = "<!-- missing-figures -->", "<!-- /missing-figures -->"
 
 
@@ -101,6 +102,53 @@ def _sensitivity_block(
     return block
 
 
+def _regime_block(model: str, tables: dict[str, pd.DataFrame], cfg: UQConfig) -> list[str]:
+    """Exploratory coverage by thermal regime for one model, at the primary alpha and method."""
+    from neural_pbf.uq.regimes import criterion
+
+    regimes: Any = tables.get("regimes")
+    if regimes is None or regimes.empty:
+        return []
+    p = cfg.prereg
+    df = regimes[(regimes.model == model) & (regimes.alpha == p.primary_alpha) & (regimes.method == p.primary_method)]
+    columns = ["quantity", "regime", "n_cal", "n_cal_runs", "n", "coverage", "run_bootstrap_95", "mean_width"]
+
+    def view(variant: str) -> str:
+        part = df[df.variant == variant].copy()
+        part["run_bootstrap_95"] = [
+            "n/a" if np.isnan(a) else f"{a:.3f} to {b:.3f}" for a, b in zip(part.boot_lo, part.boot_hi, strict=True)
+        ]
+        return _table(part[columns])
+
+    lines = [
+        f"\n#### {model}: coverage by thermal regime (exploratory)\n",
+        f"{p.primary_method}, alpha = {p.primary_alpha}. Each regime has its own calibration (Mondrian conformal).\n",
+        "Regimes from the **predicted** T_max (usable at prediction time):\n",
+        view("predicted"),
+        "\nRegimes from the **true** T_max (diagnostic only; unknown at prediction time):\n",
+        view("true"),
+    ]
+    if model == _primary_name(tables):
+        verdict = criterion(df.to_dict("records"), p, cfg.exploratory, model)
+        e = cfg.exploratory
+        checks = "; ".join(
+            f"{q}: " + (f"coverage {c['coverage']:.3f}, mean width {c['mean_width']:.1f} (limit {c['max_width']:g})"
+                        if "coverage" in c else c["reason"])
+            for q, c in verdict["checks"].items()
+        )  # fmt: skip
+        lines.append(
+            f"\n**Usefulness criterion (fixed before run 2): {'met' if verdict['passed'] else 'not met'}.** "
+            f"Melt regime, predicted regimes, coverage at least {e.criterion_min_coverage:g} and width below the "
+            f"limit for every listed quantity. {checks}.\n"
+        )
+    return lines
+
+
+def _primary_name(tables: dict[str, pd.DataFrame]) -> str:
+    coverage: Any = tables["coverage"]
+    return str(coverage[coverage.role == "primary"].model.iloc[0])
+
+
 def _model_section(
     result: dict[str, Any], cfg: UQConfig, fig_dir: Path, report_dir: Path, tables: dict[str, pd.DataFrame]
 ) -> str:
@@ -120,6 +168,7 @@ def _model_section(
         *_overall_block(df),
         *_strata_block(primary, result["test"], label),
         *_figure_block(result["name"], fig_dir, report_dir),
+        *_regime_block(result["name"], tables, cfg),
     ]
     if result["role"] == "primary":
         parts.append(_image(fig_dir / viz.RUN_SPREAD_FILE, "Coverage per run", report_dir))
@@ -154,7 +203,12 @@ def _setup_lines(meta: dict[str, Any], prereg: Any) -> list[str]:
         "- Methods: `absolute` (conformal on residuals of the ensemble mean), `normalized` (residual / (spread + "
         "eps)), `constant_single_draw` (constant-width baseline: conformal on one draw, no ensemble), and "
         "`raw_ensemble` (uncalibrated mean +- z sigma, reference only).",
-        f"- Test-set access: evaluated {n_eval} time{'s' if n_eval != 1 else ''}{forced}\n",
+        f"- Test-set access: evaluated {n_eval} time{'s' if n_eval != 1 else ''}{forced}",
+        "- Deviations from the pre-registration, made after the first test evaluation: the primary model now "
+        "also gets T_in (the temperature before the step) as an input channel and exposure_time as conditioning, "
+        "because run 1 lacked both (see the appendix); the coverage-by-regime analysis and its usefulness "
+        "criterion are exploratory. Methods, alphas, K, seeds, manifest, and calibration and test runs are "
+        "unchanged.\n",
         "Conformal coverage assumes exchangeable samples. Samples within a run are correlated, so the guarantee "
         "holds only loosely here. An alpha marked `not supported at run level` lacks enough calibration runs for a "
         "finite quantile when each run counts once. Its sample-level number is shown but carries no run-level "
@@ -173,7 +227,13 @@ _LIMITATIONS = [
     "- Melt-pool volume is capped by the patch: a pool wider than the 64-voxel patch is truncated, so large "
     "volumes are lower bounds. The patch-limited stratum shows how often this happens.",
     "- Temperatures are stored as float16, which limits T_max resolution at high temperatures.",
-    "- The model does not see T_in, so thermal history reaches it only through mask_in and conditioning.",
+    "- The solver has no evaporation, recoil pressure, or keyhole physics. Above the boiling point its temperatures "
+    "are unphysical (up to about 17 000 K); the keyhole regime marks those samples as outside its validity.",
+    "- Boiling points of alloys are model values from LPBF simulation literature, not sharp measured points.",
+    "- The solver grid is 2 um; grid convergence against 1 um is not checked, so intervals hold against this "
+    "solver, not against the physics.",
+    "- Material data share one absorptivity (0.4) for every alloy; the Ti64 cp table dips between 300 and 373 K.",
+    "- No physics loss: the available PDE residual does not yet match the solver (fixed dt, scalar k).",
 ]
 
 
@@ -182,6 +242,8 @@ def save_tables(tables: dict[str, pd.DataFrame], directory: str | Path) -> None:
     directory = Path(directory)
     names = {"coverage": viz.COVERAGE_FILE, "sensitivity": viz.SENSITIVITY_FILE, "errors": viz.ERRORS_FILE,
              "points": viz.POINTS_FILE}  # fmt: skip
+    if "regimes" in tables:
+        names["regimes"] = REGIMES_FILE
     for key, name in names.items():
         atomic_write_text(directory / name, tables[key].to_csv(index=False))
 
@@ -231,4 +293,11 @@ def build_report(
                   "overlap with its training data from `dataset_cfg`. The held-out n is an illustration, not a "
                   "measurement.\n", _image(fig_dir / viz.LEAKAGE_FILE, "Coverage and error per model", report_dir),
                   *demos]  # fmt: skip
+    appendix = [text for role, text in sections if role == "appendix"]
+    if appendix:
+        parts += ["\n## Appendix: run 1\n",
+                  "The first run trained the same Baseline without T_in and without exposure_time, so the model saw "
+                  "neither the heat left by earlier tracks nor the deposited energy. It is kept as evidence of what "
+                  "those inputs change; it is not a candidate model. Same manifest, same calibration and test runs.\n",
+                  *appendix]  # fmt: skip
     atomic_write_text(out_path, "\n".join([*parts, *_LIMITATIONS]) + "\n")

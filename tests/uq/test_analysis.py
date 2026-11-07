@@ -34,6 +34,7 @@ def _set(n_runs=12, per_run=20, K=16, seed=0, nz=64, offset=0):
         "material": np.repeat(np.resize(["SS316L", "Ti64", "IN718"], n_runs), per_run),
         "pattern": np.repeat(np.resize(["raster", "zigzag"], n_runs), per_run),
         "nz": np.full(n, nz), "sample_index": np.arange(n), "volume_limited": depth >= nz,
+        "T_s": np.full(n, 1650.0),  # per-sample solidus, attached from the HDF5 attrs in S6
     }
 
 
