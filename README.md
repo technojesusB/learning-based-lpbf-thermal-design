@@ -164,6 +164,9 @@ The surrogate architecture evolved through a baseline and five sequential DiT it
 
 ### Quantitative Ablation Results
 
+> [!WARNING]
+> **Superseded evaluation protocol.** The accuracy numbers in Tables 1 and 2 were measured before three defects were found and fixed: the models received the post-step material mask (derived from the step they predict, so part of the answer was in the input), the split was random over samples (neighbouring samples of one run in train and test), and the physics loss used a fixed time step and one conductivity instead of the solver's per-voxel k(T). They overstate accuracy and are kept only until the models are retrained on the run-level split. The leak-free, run-disjoint evaluation with calibrated uncertainty is in [docs/uq_report.md](docs/uq_report.md). Training time, VRAM, and throughput (Tables 3 and 4) are hardware measurements and are not affected.
+
 To benchmark these iterations, all models were evaluated on the unified validation set across key physical, structural, and performance metrics:
 
 #### 1. Physical Fidelity & Isotherm Accuracy
@@ -266,20 +269,21 @@ uv run experiments/generate_offline_dataset.py --runs 20 --samples-per-run 50
 
 **2. Train Surrogate Model:**
 ```bash
-# Train v5 Triton-PINN DiT model (Hero Run on full 650 samples)
-uv run experiments/train_fm_dit_triton.py --h5 data/offline_dataset_test.h5 data/offline_dataset_notebook.h5
+# Every training script reads the run-level split from artifacts/uq/manifest.json (UQ pipeline, stage S3)
+# and gives the model T_in as a fourth input channel; --in-channels 3 is the ablation without it.
+uv run python experiments/train_fm_patches.py                          # 3D U-Net baseline
+uv run accelerate launch experiments/train_fm_dit_triton.py --epochs 250 --batch_size 2
+uv run accelerate launch experiments/train_fm_unet_triton.py --epochs 250 --batch_size 2 --in-channels 3
 
-# Apples-to-Apples Ablation (Proxy Task: 250 Epochs, Batch Size 2 on 150 samples)
-uv run accelerate launch experiments/train_fm_dit_triton.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
-uv run accelerate launch experiments/train_fm_dit_triton_tin.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
-uv run accelerate launch experiments/train_fm_unet_triton.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
-uv run accelerate launch experiments/train_fm_unet_triton_tin.py --epochs 250 --batch_size 2 --h5 data/offline_dataset_notebook.h5
+# Conformal uncertainty quantification, end to end (data, split, training, sampling, report)
+uv run python experiments/uq_conformal.py
 ```
 
 **3. Run Benchmarking Suite:**
 ```bash
-# Evaluate surrogate models against solver
-uv run experiments/benchmark_suite.py
+# Evaluate surrogate models against the solver on held-out runs (manifest set "val" by default)
+uv run python experiments/benchmark_suite.py
+uv run python experiments/eval_fm_best.py --checkpoint <run>/best.pt
 ```
 
 - **Documentation**: See [Usage Guide](docs/usage.md) and [Physics Model](docs/physics.md).
