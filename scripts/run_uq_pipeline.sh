@@ -5,5 +5,5 @@
 #   --stop-after-stage Sx  --stop-at-time [YYYY-MM-DDT]HH:MM
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1
-exec uv run python -m neural_pbf.uq.pipeline "$@"
+# experiments/uq_conformal.py sets HDF5_USE_FILE_LOCKING and PYTHONUNBUFFERED itself.
+exec uv run python experiments/uq_conformal.py "$@"
