@@ -176,7 +176,12 @@ The surrogate architecture evolved through a baseline and five sequential DiT it
 > [!NOTE]
 > In the physical evaluation (Table 1) and inference performance (Table 4) benchmarks, **DiT v1** and **DiT v2** are omitted because these early models failed to achieve numerical convergence and could not generate physically coherent melt pools.
 >
-> **Ablation Update Pending:** An apples-to-apples proxy ablation (250 epochs, 150 samples) comparing 3D U-Net vs. DiT backbones with and without $T_{in}$ conditioning has been completed (see scripts in `experiments/`). Unified benchmarking suite integration and updated dashboard plots for these runs are pending and tracked in GitHub Issues.
+> **Ablation rerun planned:** Every model in this history will be retrained and evaluated again on the current 45-run dataset:
+> - the U-Net Baseline and DiT v1 to v5, plus the missing combination: the U-Net with the physics loss and ReLoBRaLo;
+> - all with T_in, exposure_time, and the causal pre-step mask;
+> - all on the run-level split, through the UQ pipeline, so that each model gets calibrated coverage and interval width next to its point error.
+>
+> Before the rerun, the physics loss will be fixed to match the solver: each sample's exposure time as the time step, per-voxel $k(T)$ with powder conductivity, and $c_p(T)$ with latent heat, in both the Triton forward and backward kernels. The earlier proxy ablation (250 epochs, 150 samples) used the old protocol and is superseded by this rerun.
 
 ### Quantitative Ablation Results
 
@@ -251,7 +256,7 @@ Rollout speed evaluated on a single GPU (representing speedups for inverse desig
 - **Memory Overhead**: Large 3D domains are constrained by VRAM (partially solved by Triton).
 - **No Evaporation or Keyhole Physics**: No evaporation, recoil pressure, or melt-pool flow. Above the boiling point, temperatures climb to unphysical values (up to about 17 000 K).
 - **Shared Absorptivity**: One absorptivity (0.4) for all alloys; grid convergence at 2 um is not checked.
-- **Physics Loss Disabled**: The PDE residual used for physics-informed training does not yet match the solver (fixed time step, one conductivity), so the training scripts refuse a non-zero physics weight.
+- **Physics Loss Disabled (fix in progress)**: The PDE residual used for physics-informed training does not yet match the solver: it uses a fixed 5 µs time step and one conductivity per sample. The training scripts refuse a non-zero physics weight until the fix lands. DiT v4 and v5 were trained with this residual.
 - **Post-Step Mask in Legacy Results**: All legacy surrogate results use a material mask taken after the predicted step, so part of the answer is in the input. See [docs/uq.md](docs/uq.md).
 
 ---
@@ -318,16 +323,16 @@ The project is structured around five core research pillars:
 - Implemented a 3D FDM transient solver with LUT-based material properties and phase transitions.
 - Fused simulator operations into Triton GPU kernels, achieving ~10x speedups.
 
-### Pillar 2: Differentiable Surrogates & Direct Inverse Design [COMPLETED]
+### Pillar 2: Differentiable Surrogates & Direct Inverse Design [IN PROGRESS]
 - Developed a 3D U-Net forward model for direct regression.
-- Integrated the surrogate into a gradient-based optimization loop to perform inverse design on scan paths.
+- Planned: a gradient-based optimization loop over process parameters, using the best surrogate from the ablation rerun. The calibrated T_max bound serves as a constraint, and every solution is verified with the solver.
 
 ### Pillar 3: Generative CFM & 3D Diffusion Transformers [COMPLETED]
 - Implemented Conditional Flow Matching (CFM) for physical trajectory generation.
 - Integrated 3D Diffusion Transformer (DiT) with 3D Rotary Positional Embeddings (3D-RoPE).
 
-### Pillar 4: Fused Physics & Unified Benchmarking [COMPLETED]
-- Built custom Triton forward/backward kernels for de-normalized PDE residual calculations.
+### Pillar 4: Fused Physics & Unified Benchmarking [IN PROGRESS]
+- Built custom Triton forward/backward kernels for de-normalized PDE residual calculations. Being corrected to match the solver: per-sample time step, and per-voxel $k(T)$ and $c_p(T)$.
 - Integrated ReLoBRaLo dynamic loss scaling.
 - Implemented a comprehensive evaluation suite (`experiments/benchmark_suite.py`) testing accuracy, geometry, performance, and spectral artifacts.
 
