@@ -20,6 +20,22 @@ laser scan strategies under simplified thermal assumptions.
 - **Material**: SS316L (Temperature-dependent properties via LUT).
 - **Performance**: ~3.9 s/step (on single GPU) using Triton kernels.
 
+### Current Result: Calibrated Uncertainty on Held-Out Runs
+
+A Flow Matching surrogate (3D U-Net) predicts the temperature field after one laser exposure. Split conformal prediction turns its K = 16 samples into prediction intervals for peak temperature, melt-pool depth, and melt-pool volume. The evaluation uses 45 new simulation runs (3 alloys x 3 scan patterns), split by run into train, validation, calibration, and test (21/3/12/9 runs). K, the alphas, the primary method, and the seeds were frozen and hashed before the test runs were read. Full numbers: [docs/uq_report.md](docs/uq_report.md).
+
+| Test runs, 90 % target, `absolute` method | Run 1: no T_in, no exposure time | Run 2: + T_in, + exposure time |
+| :--- | :---: | :---: |
+| T_max mean absolute error | 1103 K | 510 K |
+| T_max interval width (coverage) | 2894 K (0.851) | 1122 K (0.818) |
+| Depth interval width (coverage) | 44.4 vox (0.847) | 28.3 vox (0.873) |
+| T_max interval in the melt regime (coverage) | 2815 K (1.000) | 896 K (0.969) |
+
+* **The model's own spread is not enough.** Uncalibrated, the K samples cover the true T_max in only 18 % of test cases at a 90 % target. Conformal calibration is what makes the intervals usable.
+* **Usefulness criterion, fixed before run 2: not met.** In the melt regime, T_max meets it (coverage 0.969, width 896 K, limit 1000 K). Depth does not (coverage 0.977, width 35.1 vox, limit 25 vox).
+* **Out of scope for the solver: keyholing.** The solver has no evaporation, so temperatures above the boiling point are unphysical. Above 5000 K, T_max coverage drops to 0.416. Samples are assigned to a regime (solid, melt, keyhole) by their predicted T_max. Each regime is calibrated separately, and keyhole predictions are flagged as outside the solver's validity.
+* **Caveats.** The test set has been evaluated twice: adding T_in and the regime analysis came after the first look, and the report states this. Regimes, coverage, and widths are against this solver at 2 um, not against experiments.
+
 ---
 
 ## Table of Contents
@@ -165,7 +181,7 @@ The surrogate architecture evolved through a baseline and five sequential DiT it
 ### Quantitative Ablation Results
 
 > [!WARNING]
-> **Superseded evaluation protocol.** The accuracy numbers in Tables 1 and 2 were measured before three defects were found and fixed: the models received the post-step material mask (derived from the step they predict, so part of the answer was in the input), the split was random over samples (neighbouring samples of one run in train and test), and the physics loss used a fixed time step and one conductivity instead of the solver's per-voxel k(T). They overstate accuracy and are kept only until the models are retrained on the run-level split. The leak-free, run-disjoint evaluation with calibrated uncertainty is in [docs/uq_report.md](docs/uq_report.md). Training time, VRAM, and throughput (Tables 3 and 4) are hardware measurements and are not affected.
+> **Superseded evaluation protocol.** The accuracy numbers in Tables 1 and 2 were measured before three defects were found and fixed: the models received the post-step material mask (derived from the step they predict, so part of the answer was in the input), the split was random over samples (neighbouring samples of one run in train and test), and the physics loss used a fixed time step and one conductivity instead of the solver's per-voxel k(T). They overstate accuracy and are kept only until the models are retrained on the run-level split. The original page is preserved at the tag [`v0-random-split-eval`](../../tree/v0-random-split-eval). The leak-free, run-disjoint evaluation with calibrated uncertainty is in [docs/uq_report.md](docs/uq_report.md). Training time, VRAM, and throughput (Tables 3 and 4) are hardware measurements and are not affected.
 
 To benchmark these iterations, all models were evaluated on the unified validation set across key physical, structural, and performance metrics:
 
@@ -233,15 +249,18 @@ Rollout speed evaluated on a single GPU (representing speedups for inverse desig
 ### Current Limitations:
 - **Basic Boundary Conditions**: Limited to adiabatic or linear cooling losses; lacks radiation and gas flow convection.
 - **Memory Overhead**: Large 3D domains are constrained by VRAM (partially solved by Triton).
+- **No Evaporation or Keyhole Physics**: No evaporation, recoil pressure, or melt-pool flow. Above the boiling point, temperatures climb to unphysical values (up to about 17 000 K).
+- **Shared Absorptivity**: One absorptivity (0.4) for all alloys; grid convergence at 2 um is not checked.
+- **Physics Loss Disabled**: The PDE residual used for physics-informed training does not yet match the solver (fixed time step, one conductivity), so the training scripts refuse a non-zero physics weight.
 - **Post-Step Mask in Legacy Results**: All legacy surrogate results use a material mask taken after the predicted step, so part of the answer is in the input. See [docs/uq.md](docs/uq.md).
 
 ---
 
 ## Uncertainty Quantification
 
-A run-level evaluation of prediction intervals for melt-pool depth, T_max, and volume, using split conformal prediction on the Baseline. It retrains on new runs with a causal pre-step mask, and includes a leakage audit.
+A run-level evaluation of prediction intervals for melt-pool depth, T_max, and volume, using split conformal prediction on the Baseline. It retrains on new runs with a causal pre-step mask, and includes a leakage audit. The summary is in [Current Result](#current-result-calibrated-uncertainty-on-held-out-runs).
 
-Method and limitations are in [docs/uq.md](docs/uq.md). Measured results are only in the generated [report](docs/uq_report.md), which exists once the full pipeline has run.
+Method and limitations are in [docs/uq.md](docs/uq.md). Measured results are only in the generated [report](docs/uq_report.md). The run 1 report, without T_in and exposure time, is archived in [docs/uq_run1](docs/uq_run1/uq_report.md).
 
 ---
 
