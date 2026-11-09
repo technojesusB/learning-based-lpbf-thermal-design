@@ -13,16 +13,11 @@ from torch.utils.data import DataLoader, Subset
 
 from neural_pbf.data import material_dataset as mdmod
 from neural_pbf.data.fm_dataset import FMDatasetConfig, FMThermalDataset
-from neural_pbf.data.material_dataset import (
-    MATERIAL_DIM,
-    MaterialDataset,
-    exposure_time_of,
-    material_from_vector,
-    resolve_key,
-)
+from neural_pbf.data.material_dataset import MaterialDataset, resolve_key
 from neural_pbf.data.patch_dataset import PatchFMThermalDataset
 from neural_pbf.data.sampling import randomize_material
 from neural_pbf.physics.material import MaterialConfig
+from neural_pbf.physics.material_vector import MATERIAL_DIM, exposure_time_of, material_from_vector
 
 NZ, NY, NX = 4, 16, 16
 SHAPE = (1, 1, NZ, NY, NX)
@@ -126,3 +121,34 @@ def test_batches_stack_the_material(runs) -> None:
     assert batch["material"].shape == (3, MATERIAL_DIM)
     # Subset indices 5, 1, 3 belong to runs 1, 0, 1.
     assert [exposure_time_of(v) for v in batch["material"]] == [70e-6, 40e-6, 70e-6]
+
+
+@pytest.mark.unit
+def test_tables_of_different_length_are_refused(tmp_path: Path) -> None:
+    """A wrong split would put k values into the cp table without any error."""
+    path = tmp_path / "run_bad.h5"
+    _write_run(path, MaterialConfig.ss316l_preset(), 40e-6)
+    with h5py.File(path, "a") as f:
+        for grp in f["samples"].values():
+            del grp["k_lut"]
+            grp.create_dataset("k_lut", data=np.ones(5, dtype=np.float32))
+    full = FMThermalDataset(FMDatasetConfig(h5_paths=[str(path)]))
+    with pytest.raises(ValueError, match="length"):
+        MaterialDataset(Subset(PatchFMThermalDataset(full, patch_size=8), [0]))[0]
+
+
+@pytest.mark.unit
+def test_a_run_without_samples_is_refused_with_its_path(tmp_path: Path) -> None:
+    path = tmp_path / "run_empty.h5"
+    with h5py.File(path, "w") as f:
+        f.create_group("samples")
+    with pytest.raises(ValueError, match="run_empty.h5.*no samples"):
+        mdmod._read_run(str(path))
+
+
+@pytest.mark.unit
+def test_post_step_mask_is_refused(runs) -> None:
+    """The loss reads the batch mask as mask_in; the post-step mask would leak the answer."""
+    full = FMThermalDataset(FMDatasetConfig(h5_paths=runs[0], mask_source="post"))
+    with pytest.raises(ValueError, match="mask_source"):
+        MaterialDataset(Subset(PatchFMThermalDataset(full, patch_size=8), [0]))

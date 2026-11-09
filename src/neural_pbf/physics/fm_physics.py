@@ -8,8 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from neural_pbf.data.material_dataset import exposure_time_of, material_from_vector
 from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff, sigmoid_step
+from neural_pbf.physics.material_vector import exposure_time_of, material_from_vector
 from neural_pbf.physics.ops import div_k_grad
 
 _STORAGE = ("enthalpy", "cp_in")
@@ -136,14 +136,14 @@ def physics_loss_reference(
     """Physics loss in plain PyTorch: Σ R² / Σ (ρ·(H(T_target) − H(T_in))/dt)² over the interiors of the batch.
 
     Both forms use enthalpy storage. ``coupled`` evaluates ∇·(k∇T) at the prediction, ``tin`` at T_in. Each
-    sample uses its own material and exposure_time from ``material`` (see ``data.material_dataset``). The
+    sample uses its own material and exposure_time from ``material``. The
     denominator comes from the ground truth without gradient, pooled over the batch so a patch that barely heats
     cannot blow the ratio up. Only ``T_pred`` receives a gradient.
 
     Args:
         T_pred, T_in, T_target, Q: (B, 1, D, H, W) in SI units [K], [W/m³].
         mask_in:  (B, 1, D, H, W) 0 = powder, 1 = consolidated, before the step.
-        material: (B, MATERIAL_DIM) per-sample material vectors.
+        material: (B, MATERIAL_DIM) per-sample material vectors (``physics.material_vector``).
     """
     if form not in PHYSICS_FORMS:
         raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")

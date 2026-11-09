@@ -125,3 +125,10 @@ def test_substep_check_in_float64_is_exact_to_machine_precision() -> None:
     T, mask, Q = _beam_case(T_hot=2500.0)
     result = substep_check(T, mask, Q, MAT, SIM, exposure_time=40e-6, dtype=torch.float64)
     assert result[("cp_in", "explicit")] < 1e-10
+
+
+@pytest.mark.unit
+def test_relative_residual_is_nan_when_nothing_changes_without_filter() -> None:
+    T = torch.full(SHAPE, 800.0, dtype=torch.float64)
+    R = torch.zeros(T[..., 1:-1, 1:-1, 1:-1].shape, dtype=torch.float64)
+    assert math.isnan(relative_residual(R, T, T.clone(), MAT, 1e-5))

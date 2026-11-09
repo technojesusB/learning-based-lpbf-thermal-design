@@ -31,7 +31,8 @@ def relative_residual(
 ) -> float:
     """‖R‖ / ‖ρ·(H(T_out) − H(T_in))/dt‖ over the interior, optionally only where |T_out − T_in| > min_dT.
 
-    Returns NaN when no voxel qualifies.
+    Returns NaN when no voxel qualifies, and NaN (0/0) when nothing changed in the selection, which only happens
+    without the filter on a step that stores no heat.
     """
     T_in_i, T_out_i = T_in[..., 1:-1, 1:-1, 1:-1], T_out[..., 1:-1, 1:-1, 1:-1]
     stored = mat.rho * (enthalpy(T_out_i, mat) - enthalpy(T_in_i, mat)) / dt_s

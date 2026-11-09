@@ -171,6 +171,8 @@ def render(gate: list[dict], rows: list[dict]) -> str:
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
+    if not rows:
+        raise ValueError(f"{path}: no rows to write")
     flat = [{(_name(k) if isinstance(k, tuple) else k): v for k, v in r.items()} for r in rows]
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(flat[0]))

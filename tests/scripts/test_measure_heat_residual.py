@@ -177,3 +177,9 @@ def test_render_names_the_chosen_variant_and_the_band(tmp_path: Path) -> None:
     assert "Decision variant" in text and "Band" in text
     for regime in ("solid", "melt", "keyhole"):
         assert f"| {regime} |" in text
+
+
+@pytest.mark.unit
+def test_writing_no_rows_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no rows"):
+        mhr._write_csv(tmp_path / "x.csv", [])

@@ -7,10 +7,10 @@ import random
 import pytest
 import torch
 
-from neural_pbf.data.material_dataset import MATERIAL_DIM, SCALARS, material_from_vector
 from neural_pbf.data.sampling import randomize_material
 from neural_pbf.physics.fm_physics import enthalpy, heat_residual_si, physics_loss_reference
 from neural_pbf.physics.material import MaterialConfig, cp_eff
+from neural_pbf.physics.material_vector import MATERIAL_DIM, SCALARS, material_from_vector
 
 SHAPE = (1, 1, 6, 7, 8)
 DX = DY = DZ = 2e-6
