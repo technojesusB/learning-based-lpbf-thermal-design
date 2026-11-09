@@ -100,6 +100,79 @@ temperature. Across the narrow latent-heat bump this is not energy-exact, so the
 latent heat on every substep in which a voxel crosses the melting range. The `enthalpy` residual over one substep
 measures that error.
 
-## Result
+## Result (2026-11-09)
 
-Not measured yet.
+Measured with `experiments/measure_heat_residual.py --device cuda` at commit `9900766`, on 120 samples from the 24
+train and val runs. The raw rows are in `artifacts/physics_residual/` (`gate.csv`, `exposures.csv`, `result.md`).
+Regimes: 15 solid (14 SS316L, 1 IN718), 59 melt (25 IN718, 24 Ti64, 10 SS316L), 46 keyhole (16 SS316L, 16 Ti64,
+14 IN718). No sample had an empty 50 K selection.
+
+**Bug gate: passed.** The solver form in float64 stays at or below 4.5e-12 on every sample. In float32 the same
+substep reaches up to 1.84e-3, and 7 of the 120 samples are above 1e-3: a float32 gate would have stopped the run on
+rounding alone.
+
+#### One-substep check (all samples, float64 unless marked)
+
+| Variant | median | max |
+| --- | --- | --- |
+| enthalpy, explicit | 0.0614 | 0.863 |
+| enthalpy, implicit | 0.291 | 0.883 |
+| enthalpy, trapezoid | 0.18 | 0.873 |
+| cp_in, explicit | 1.86e-12 | 4.52e-12 |
+| cp_in, implicit | 0.156 | 0.691 |
+| cp_in, trapezoid | 0.078 | 0.345 |
+| cp_in, explicit, float32 | 6.5e-05 | 0.00184 |
+
+#### Full exposure, |ΔT| > 50 K
+
+| Regime | Variant | n | empty | median | p90 |
+| --- | --- | --- | --- | --- | --- |
+| keyhole | enthalpy, explicit | 46 | 0 | 2.81 | 4.91 |
+| keyhole | enthalpy, implicit | 46 | 0 | 3.03 | 5.06 |
+| keyhole | enthalpy, trapezoid | 46 | 0 | 2.06 | 3.56 |
+| keyhole | cp_in, explicit | 46 | 0 | 3.03 | 4.89 |
+| keyhole | cp_in, implicit | 46 | 0 | 3.16 | 5.05 |
+| keyhole | cp_in, trapezoid | 46 | 0 | 2.13 | 3.54 |
+| melt | enthalpy, explicit | 59 | 0 | 0.121 | 1.84 |
+| melt | enthalpy, implicit | 59 | 0 | 0.627 | 1.84 |
+| melt | enthalpy, trapezoid | 59 | 0 | 0.308 | 1.28 |
+| melt | cp_in, explicit | 59 | 0 | 0.398 | 2.06 |
+| melt | cp_in, implicit | 59 | 0 | 0.682 | 2.16 |
+| melt | cp_in, trapezoid | 59 | 0 | 0.52 | 1.56 |
+| solid | enthalpy, explicit | 15 | 0 | 0.0015 | 0.00205 |
+| solid | enthalpy, implicit | 15 | 0 | 0.0027 | 0.00343 |
+| solid | enthalpy, trapezoid | 15 | 0 | 0.00149 | 0.00192 |
+| solid | cp_in, explicit | 15 | 0 | 0.0537 | 0.0721 |
+| solid | cp_in, implicit | 15 | 0 | 0.0522 | 0.0706 |
+| solid | cp_in, trapezoid | 15 | 0 | 0.0529 | 0.0713 |
+
+**Decision variant:** enthalpy, explicit, melt median 0.121. **Band:** 0.1 to 0.5.
+
+### Decision (pre-registered rule)
+
+- **Decision variant:** storage `enthalpy`, diffusion `explicit`. Melt median 0.121, p90 1.84.
+- **Band: 0.1 to 0.5.** The physics-loss variants are trained with ReLoBRaLo and the physics weight capped at the
+  data-loss weight. The report states the residual size.
+- **What the picked form constrains.** With diffusion evaluated at `T_in`, the prediction enters the residual only
+  through `H(T_pred)` in each voxel: `R = ρ·(H(T_pred) − H(T_in))/dt − ∇·(k∇T_in) − Q`. The loss constrains the
+  per-voxel energy balance of the prediction and has no spatial coupling, so it cannot smooth the prediction.
+- **Two forms are kept for the ablation (decided 2026-11-09).** The measurement picked a different form than the old
+  loss used: `physics_heat_residual` in `fm_physics.py` and `triton_pde_loss.py` evaluate ∇·(k∇T) at the prediction.
+  Both forms are trained, behind one argument `--physics_form`:
+  - `coupled`: enthalpy storage, diffusion at the prediction. The corrected successor of the old v4/v5 loss.
+  - `tin`: enthalpy storage, diffusion at `T_in`. The form the measurement picked.
+
+### Observations (exploratory, not part of the pre-registered decision)
+
+- **Solid:** the enthalpy forms stay near 0.0015. Without melting, the one-exposure target is nearly consistent with
+  the PDE. `cp_in` sits near 0.05 there, from the sloped cp table over a large ΔT.
+- **Melt:** the median is near the lower band edge, but the tail is heavy (p90 1.84). The residual is small on some
+  melt samples and larger than the stored energy on others.
+- **Keyhole:** the median is 2 to 3 for every variant. The residual exceeds the stored energy, so the one-exposure
+  target is inconsistent with the PDE there. The solver has no evaporation, so these samples are already outside its
+  validity.
+- **The solver's own latent-heat error is large.** Over one substep, `enthalpy` with explicit diffusion differs from
+  the solver's update by a median of 0.06 and up to 0.86 of the enthalpy change. Voxels that heat through the narrow
+  latent-heat bump within one substep do not absorb its latent heat correctly. So part of the melt-regime residual
+  is the solver's own energy error, not the large-step error. Whether the solver gains or loses energy, and how much
+  that changes melt depth and T_max, is not measured here. It belongs to the Phase B solver work (brainstorming 2.9).
