@@ -37,12 +37,21 @@ loss is weighted and what the report says about it.
   `trapezoid`.
 - **Decision variant:** among the variants that pass the sanity check below, the one with the lowest median in the
   melt regime. That variant is ported to Triton in step 3.3.
-- Samples come from the **train** runs of the manifest only. Cal and test runs are not opened.
+- **Samples:** indices 0, 12, 25, 37 and 49 of every **train** and **val** run of the UQ manifest
+  (`artifacts/uq/manifest.json`), so 120 samples from 24 runs. Cal and test runs belong to the UQ pipeline and its
+  logged test access; the script refuses them and never opens them.
+  - train (21 runs; 7 per material, 7 per pattern): run_000, 001, 002, 009, 012, 014, 022, 023, 024, 025, 026, 028,
+    032, 033, 035, 037, 038, 039, 040, 042, 043.
+  - val (3 runs; one per material and pattern): run_003, 007, 011.
+- **Material:** each run's material is the preset with the generator's per-run randomization applied
+  (`data.sampling.randomize_material`, up to ±10 % on k, cp, ρ, L and the LUT values, ±20 K on T_s and T_l). The
+  measurement rebuilds it from the values stored with every sample, not from the preset.
 
 ### Sanity check (an implementation bug, not the large-step error, if it fails)
 
-- For each measured sample, run **one** solver substep live, in float32, with the solver's own substep dt, starting
-  from the stored `T_in`, `mask_in`, and `Q`. The stored data is float16 and too coarse for this.
+- For each measured sample, run **one** solver substep live, in **float64**, with the solver's own substep dt,
+  starting from the stored `T_in`, `mask_in`, and `Q`. The stored data is float16 and too coarse for this. The same
+  substep in float32 is reported alongside (see below why it is not the gate).
 - The mask is promoted above T_solidus before the substep, which is what the Triton kernel does inside it.
 - Every variant is evaluated on that substep. The relative residual uses the same ratio of norms and the same
   denominator as above, over the whole interior, **without** the 50 K filter.
@@ -71,6 +80,15 @@ opened. Relative residual over one substep (`tests/physics/test_residual_check.p
   melt regime that decides the outcome.
 - The variants share everything the gate tests (k, mask, stencil, Q, units). They differ only in the storage form,
   which the `dH/dT = cp_eff` unit test checks, and in where the same operator is evaluated.
+
+### Why the gate runs in float64 (decided 2026-11-09)
+
+The first version said float32. On one real train sample (run_014, sample 25; gate only, no full-exposure number
+computed), the solver form gave 5.55e-4 in float32 and 2.02e-12 in float64, with the same substep dt (8.46e-8 s). The
+reference reproduces the substep to machine precision; the float32 value is rounding of `T_out` summed over about
+8 million voxels that barely change in one substep. That is a factor of 2 below the bound, so a hotter sample could
+fail the gate on rounding alone. Float32 was only meant to avoid the stored float16, and float64 serves that better.
+The 1e-3 bound stays.
 
 ### Known solver limitation
 
