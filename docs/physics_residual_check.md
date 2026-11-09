@@ -46,13 +46,31 @@ loss is weighted and what the report says about it.
 - The mask is promoted above T_solidus before the substep, which is what the Triton kernel does inside it.
 - Every variant is evaluated on that substep. The relative residual uses the same ratio of norms and the same
   denominator as above, over the whole interior, **without** the 50 K filter.
-- **Pass/fail:** `cp_in` with diffusion at `T_in` (the solver's own update rule) must stay below 1e-3 for every
+- **Bug gate:** `cp_in` with diffusion at `T_in` (the solver's own update rule) must stay below 1e-3 for every
   sample. If it does not, it is an implementation bug, and no measurement result is reported until it is fixed.
-- The other variants get the same 1e-3 bound for eligibility. The `enthalpy` value over one substep is reported
-  alongside; it measures the solver's own latent-heat error per substep (see below).
-- **Stop rule:** if a variant fails only for a reason that is not a bug (the solver's per-substep latent-heat error
-  for `enthalpy`, or the O(dt) difference of `implicit` and `trapezoid` over one substep), the measurement stops and
-  the eligibility rule is decided again before any full-exposure number is looked at.
+- **Eligibility (decided 2026-11-09, see below):** once the bug gate passes, all six variants are eligible. The
+  decision rule above is unchanged.
+- The one-substep value of every variant is reported alongside, as the error each form has over one substep.
+
+### Why the 1e-3 bound is not applied to the other variants
+
+The stop rule of the first version of this note triggered on synthetic test fields, before any dataset sample was
+opened. Relative residual over one substep (`tests/physics/test_residual_check.py`, warm spot under a source):
+
+| Peak T | enthalpy, explicit | enthalpy, implicit | enthalpy, trapezoid | cp_in, explicit | cp_in, implicit | cp_in, trapezoid |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1500 K (no melting) | 1.8e-3 | 2.5e-2 | 1.2e-2 | 5.1e-6 | 2.5e-2 | 1.2e-2 |
+| 2500 K | 2.5e-4 | 1.9e-1 | 9.6e-2 | 1.9e-6 | 1.9e-1 | 9.6e-2 |
+
+- `implicit` and `trapezoid` cannot reach 1e-3 for reasons other than a bug. The solver takes each substep close to
+  its stability limit, where the fastest modes of ∇·k∇T change by a large fraction within the substep, so evaluating
+  it at the end instead of the start differs by O(1) for those modes.
+- `enthalpy` with explicit diffusion misses it even without melting: with a sloped cp table, ΔH and cp(T_in)·ΔT
+  differ by ½·cp′·ΔT².
+- The original rule would have left only `cp_in` with explicit diffusion, which leaves out the latent heat in the
+  melt regime that decides the outcome.
+- The variants share everything the gate tests (k, mask, stencil, Q, units). They differ only in the storage form,
+  which the `dH/dT = cp_eff` unit test checks, and in where the same operator is evaluated.
 
 ### Known solver limitation
 
