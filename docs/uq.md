@@ -169,7 +169,7 @@ paths, the named config sections, and the output hash of its upstream stages.
 | Stage | Code paths | Config | Upstream |
 | --- | --- | --- | --- |
 | S0 | `uv.lock` | None | None |
-| S1 | `experiments/generate_offline_dataset.py`, `src/neural_pbf/physics`, `src/neural_pbf/integrator/stepper.py`, `src/neural_pbf/scan`, `src/neural_pbf/pipelines`, `src/neural_pbf/core`, `src/neural_pbf/data/sampling.py` | gen | S0 |
+| S1 | `experiments/generate_offline_dataset.py`, `src/neural_pbf/physics/material.py`, `src/neural_pbf/physics/ops.py`, `src/neural_pbf/physics/triton_ops.py` (solver only; the loss files are not hashed), `src/neural_pbf/integrator/stepper.py`, `src/neural_pbf/scan`, `src/neural_pbf/pipelines`, `src/neural_pbf/core`, `src/neural_pbf/data/sampling.py` | gen | S0 |
 | S2 | `src/neural_pbf/uq/validate.py` | gen | S1 |
 | S3 | `src/neural_pbf/data/splits.py`, `src/neural_pbf/uq/guard.py` | split, prereg | S2 |
 | S4 | `src/neural_pbf/models/generative/fm`, `src/neural_pbf/data/fm_dataset.py`, `src/neural_pbf/data/patch_dataset.py`, `src/neural_pbf/uq/train.py`, `src/neural_pbf/training/factories.py` | train | S3 |

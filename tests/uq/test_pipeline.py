@@ -421,3 +421,26 @@ def test_interrupted_rerun_is_not_skipped_as_done(tmp_path):
     mark_started(tmp_path, "S5", "h")  # the forced rerun began, its output is gone, then it was stopped
     assert read_marker(tmp_path, "S5") is None
     assert decide_stage(tmp_path, "S5", "h", force=False, upstream_reran=False) == StageState.RUN
+
+
+@pytest.mark.unit
+def test_s1_code_hash_excludes_physics_loss_files() -> None:
+    """Editing the training loss must not mark the 17 h dataset stale; the solver files must stay hashed."""
+    from neural_pbf.uq.stages import STAGE_DEFS
+
+    code = STAGE_DEFS["S1"]["code"]
+    assert "src/neural_pbf/physics" not in code
+    for loss_file in ("fm_physics.py", "triton_pde_loss.py"):
+        assert not any(p.endswith(loss_file) for p in code)
+    for solver_file in ("material.py", "ops.py", "triton_ops.py"):
+        assert f"src/neural_pbf/physics/{solver_file}" in code
+    assert "src/neural_pbf/integrator/stepper.py" in code
+
+
+@pytest.mark.unit
+def test_dirty_code_paths_keeps_first_path_intact(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_git() strips its output, which removes the leading space of the first ' M path' line."""
+    from neural_pbf.uq import stages
+
+    monkeypatch.setattr(stages, "_git", lambda *a: " M src/a.py\n M src/b.py\n?? experiments/c.py".strip())
+    assert stages.dirty_code_paths() == ["src/a.py", "src/b.py", "experiments/c.py"]

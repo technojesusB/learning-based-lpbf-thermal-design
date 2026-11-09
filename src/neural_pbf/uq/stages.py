@@ -27,7 +27,10 @@ EXIT_PAUSED = 75  # child to driver only; the driver itself exits 0 on a pause
 _REPO_CODE = ["src/neural_pbf", _GENERATOR, "pyproject.toml", "uv.lock"]
 _PHYSICS_CODE = [
     _GENERATOR,
-    "src/neural_pbf/physics",
+    # Solver files only: the training loss (fm_physics, triton_pde_loss) also lives in physics/.
+    "src/neural_pbf/physics/material.py",
+    "src/neural_pbf/physics/ops.py",
+    "src/neural_pbf/physics/triton_ops.py",
     "src/neural_pbf/integrator/stepper.py",
     "src/neural_pbf/scan",
     "src/neural_pbf/pipelines",
@@ -90,7 +93,7 @@ def code_tree_hash(paths: list[str]) -> dict[str, str]:
 def dirty_code_paths() -> list[str]:
     tracked = ["src", "experiments", "scripts/run_uq_pipeline.sh", "pyproject.toml", "uv.lock"]
     out = _git("status", "--porcelain", "--", *tracked)
-    return [line[3:] for line in out.splitlines()]
+    return [line.split(maxsplit=1)[1] for line in out.splitlines()]  # _git() strips the first line's status space
 
 
 def package_versions() -> dict[str, str]:
