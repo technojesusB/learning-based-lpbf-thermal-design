@@ -176,3 +176,21 @@ rounding alone.
   latent-heat bump within one substep do not absorb its latent heat correctly. So part of the melt-regime residual
   is the solver's own energy error, not the large-step error. Whether the solver gains or loses energy, and how much
   that changes melt depth and T_max, is not measured here. It belongs to the Phase B solver work (brainstorming 2.9).
+
+## Implementation (step 3.3)
+
+- **Entry point:** `physics_loss` in `src/neural_pbf/physics/fm_physics.py` takes the dataset's normalized fields and
+  the per-sample material vector (`physics/material_vector.py`, filled by `data/material_dataset.py`). On CUDA it runs
+  the Triton kernels in `physics/triton_pde_loss.py`; otherwise `physics_loss_reference`.
+- **Checks** (`tests/physics/test_triton_pde_loss.py`, GPU, `-m slow`): the kernels' material functions against
+  `enthalpy`, `cp_eff`, `k_eff` and autograd of `k_eff`; the loss against the reference (float64 to 1e-10, float32
+  to 1e-4); the gradient against plain autograd of the reference (float64, 1e-8), including the face layer for
+  `coupled`; `gradcheck` in float64; a mixed batch from powder to keyhole temperatures. Temperatures stay 2 K away
+  from table nodes and T_solidus, where the derivative jumps.
+- **Benchmark** (`experiments/bench_physics_loss.py`, 2026-11-09, RTX 3080 Laptop GPU, B = 8 patches of 64³,
+  float32, forward and backward, median of 20):
+
+  | Form | Triton | Reference | Speedup | Peak memory (Triton / reference) |
+  | --- | --- | --- | --- | --- |
+  | tin | 1.94 ms | 64.4 ms | 33x | 80 / 166 MiB |
+  | coupled | 2.27 ms | 99.5 ms | 44x | 80 / 444 MiB |

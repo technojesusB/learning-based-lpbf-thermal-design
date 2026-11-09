@@ -31,7 +31,6 @@ from neural_pbf.integrator.fm_stepper import euler_rollout_rope
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE, patch_center_coords_idx
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
-from neural_pbf.physics.fm_physics import denorm_cond_batch, physics_heat_residual
 from neural_pbf.training import (
     TrainHistory,
     build_patch_data,
@@ -134,14 +133,7 @@ def main() -> None:
         x_tau = interpolate(noise, T_tgt, tau)
         v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx)
         loss_fm = fm_loss(v_pred, noise, T_tgt)
-        rho = denorm_cond_batch(cond, ds_cfg, "rho")
-        cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
-        k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
-        phys = physics_heat_residual(
-            v_pred, x_tau.detach(), tau, T_in, Q, rho, cp_val, k_val,
-            grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"], ds_cfg,
-        )
-        loss = loss_fm + args.physics_loss_weight * phys
+        loss = loss_fm  # the physics weight is pinned to 0; the corrected loss comes through --physics_form
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

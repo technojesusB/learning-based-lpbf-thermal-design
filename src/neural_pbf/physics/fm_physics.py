@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -11,6 +11,7 @@ from torch import Tensor
 from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff, sigmoid_step
 from neural_pbf.physics.material_vector import exposure_time_of, material_from_vector
 from neural_pbf.physics.ops import div_k_grad
+from neural_pbf.physics.triton_pde_loss import _TRITON_AVAILABLE, PDEResidualLoss
 
 _STORAGE = ("enthalpy", "cp_in")
 _DIFFUSION = ("explicit", "implicit", "trapezoid")
@@ -164,62 +165,30 @@ def physics_loss_reference(
     return num / den
 
 
-def physics_heat_residual(
-    v_pred: Tensor,
-    x_tau_detached: Tensor,
-    tau: Tensor,
-    T_in: Tensor,
-    Q: Tensor,
-    rho: Tensor,
-    cp: Tensor,
-    k: Tensor,
-    dx_m: float,
-    dy_m: float,
-    dz_m: float,
-    ds_cfg: Any,
-    dt_s: float = 5e-6,
-) -> Tensor:
-    """Heat-equation PDE residual in SI units.
+def physics_loss(
+    v_pred: Tensor, x_tau: Tensor, tau: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor,
+    material: Tensor, form: str, T_ref: float, T_ambient: float, Q_ref: float, dx_m: float, dy_m: float, dz_m: float,
+) -> Tensor:  # fmt: skip
+    """Physics loss for flow-matching training, in the dataset's normalized units; replaces physics_heat_residual.
 
-    Reconstructs T_pred = x_tau + (1-tau)*v_pred (OT-FM identity), de-normalises
-    to SI [K], and evaluates ρ·cp·(T_pred - T_in)/dt_s ≈ ∇·(k·∇T_pred) + Q.
+    T_pred = x_tau + (1 − τ)·v_pred (OT-FM identity), with x_tau detached, so only v_pred gets a gradient. Fields are
+    (B, 1, D, H, W) with T normalized as (T_SI − T_ambient)/T_ref and Q as Q_SI/Q_ref. Returns the batch-level ratio
+    of ``physics_loss_reference``; on CUDA it runs the Triton kernels of ``triton_pde_loss``, which match the
+    reference in value and gradient.
 
-    x_tau_detached must be detached before calling so gradients flow only
-    through v_pred (avoids expensive second-order backprop).
-
-    Args:
-        v_pred:           (B, 1, D, H, W) predicted velocity, with grad.
-        x_tau_detached:   (B, 1, D, H, W) interpolated noisy field, detached.
-        tau:              (B,) flow time ∈ [0, 1].
-        T_in:             (B, 1, D, H, W) normalised initial temperature.
-        Q:                (B, 1, D, H, W) normalised heat source.
-        rho:              (B, 1, 1, 1, 1) density [kg/m³].
-        cp:               (B, 1, 1, 1, 1) specific heat [J/(kg·K)].
-        k:                (B, 1, 1, 1, 1) conductivity [W/(m·K)].
-        dx_m, dy_m, dz_m: Grid spacings [m].
-        ds_cfg:           Dataset config carrying T_ref, T_ambient, Q_ref.
-        dt_s:             Physical time step for finite-difference dT/dt [s].
-
-    Returns:
-        Scalar MSE residual (SI units: [W/m³]², scaled by Q_ref²).
+    The function this replaced (tag ``v0-random-split-eval``) used dt fixed at 5 µs, one scalar k per sample,
+    constant-cp storage and diffusion at the prediction.
     """
-    if dt_s <= 0.0:
-        raise ValueError(f"dt_s must be > 0, got {dt_s}")
-
-    T_pred_norm = x_tau_detached + (1.0 - tau.view(-1, 1, 1, 1, 1)) * v_pred
-
-    T_pred_SI = T_pred_norm * ds_cfg.T_ref + ds_cfg.T_ambient
-    T_in_SI = T_in * ds_cfg.T_ref + ds_cfg.T_ambient
-    Q_SI = Q * ds_cfg.Q_ref
-
-    dT_dt_SI = (T_pred_SI - T_in_SI) / dt_s
-
-    lhs = rho * cp * dT_dt_SI
-    k_field = k.expand_as(T_pred_SI)
-    rhs = div_k_grad(T_pred_SI, k_field, dx_m, dy_m, dz_m) + Q_SI
-
-    # Scale by Q_ref to prevent float overflow when squaring (values ~1e15 W/m³)
-    lhs_scaled = lhs / ds_cfg.Q_ref
-    rhs_scaled = rhs / ds_cfg.Q_ref
-
-    return F.mse_loss(lhs_scaled, rhs_scaled)
+    if form not in PHYSICS_FORMS:
+        raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
+    x_tau = x_tau.detach()
+    if v_pred.is_cuda and _TRITON_AVAILABLE:
+        loss = PDEResidualLoss.apply(
+            v_pred, x_tau, tau, T_in, T_target, Q, mask_in, material, form, T_ref, T_ambient, Q_ref, dx_m, dy_m, dz_m
+        )
+        return cast(Tensor, loss)
+    T_pred = (x_tau + (1.0 - tau.view(-1, 1, 1, 1, 1)) * v_pred) * T_ref + T_ambient
+    return physics_loss_reference(
+        T_pred, T_in * T_ref + T_ambient, T_target * T_ref + T_ambient, Q * Q_ref, mask_in, material, form,
+        dx_m, dy_m, dz_m,
+    )  # fmt: skip

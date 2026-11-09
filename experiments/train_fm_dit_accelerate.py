@@ -31,7 +31,6 @@ from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.dit import VelocityDiTRoPE, patch_center_coords_idx
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
 from neural_pbf.physics.constants import T_LIQUIDUS_NORM  # noqa: F401 (re-exported for triton)
-from neural_pbf.physics.fm_physics import denorm_cond_batch, physics_heat_residual
 from neural_pbf.training import (
     TrainHistory,
     build_patch_data,
@@ -80,6 +79,10 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    raise SystemExit(
+        "This script always trained with the old physics residual (dt fixed at 5 us, scalar k). It is disabled "
+        "until it takes --physics_form with the corrected loss."
+    )
     h5_paths, manifest_path = resolve_data(args)
     logging.basicConfig(level=logging.INFO)
     accelerator = Accelerator(mixed_precision=args.mixed_precision)
@@ -142,23 +145,8 @@ def main() -> None:
         tau = torch.rand(B, device=accelerator.device)
         x_tau = interpolate(noise, T_tgt, tau)
         v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb, coords_idx)
-        loss_fm = fm_loss(v_pred, noise, T_tgt)
-        rho = denorm_cond_batch(cond, ds_cfg, "rho")
-        cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
-        k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
-        phys = physics_heat_residual(
-            v_pred, x_tau.detach(), tau, T_in, Q, rho, cp_val, k_val,
-            grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"], ds_cfg,
-        )
-        loss_fm_val = loss_fm.detach().cpu().item()
-        phys_val = phys.detach().cpu().item()
-        lambda_phys = weighter.step(loss_fm_val, phys_val)
-        loss = loss_fm + lambda_phys * phys
-        optimizer.zero_grad()
-        accelerator.backward(loss)
-        optimizer.step()
-        scheduler.step()
-        return loss.detach().cpu().item()
+        fm_loss(v_pred, noise, T_tgt)
+        raise NotImplementedError("the corrected physics loss is wired in through --physics_form")
 
     def _val_step(batch: dict[str, Any]) -> float:
         T_tgt = batch["T_target"].squeeze(1)

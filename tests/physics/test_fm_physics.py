@@ -1,104 +1,97 @@
-"""Unit tests for fm_physics module (physics_heat_residual, denorm_cond_batch)."""
+"""Unit tests for fm_physics: the physics_loss entry point and denorm_cond_batch."""
 
 from __future__ import annotations
 
+import random
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
 
-from neural_pbf.physics.fm_physics import denorm_cond_batch, physics_heat_residual
-from neural_pbf.physics.ops import div_k_grad
+from neural_pbf.data.sampling import randomize_material
+from neural_pbf.physics import triton_pde_loss
+from neural_pbf.physics.fm_physics import denorm_cond_batch, physics_loss, physics_loss_reference
+from neural_pbf.physics.material import MaterialConfig
+from neural_pbf.physics.material_vector import encode
+
+T_REF, T_AMB, Q_REF = 2000.0, 300.0, 1e12
+GRID = (2e-6, 2.5e-6, 3e-6)
 
 
-def _scalar_field(val: float, B: int) -> torch.Tensor:
-    return torch.full((B, 1, 1, 1, 1), val)
+def _inputs(device: str = "cpu") -> dict[str, Any]:
+    random.seed(0)
+    g = torch.Generator().manual_seed(0)
+    mat = randomize_material(MaterialConfig.ss316l_preset())
+    vec = encode(
+        {"rho": mat.rho, "L": mat.latent_heat_L, "T_s": mat.T_solidus, "T_l": mat.T_liquidus, "k_p": mat.k_powder,
+         "k_s": mat.k_solid, "k_l": mat.k_liquid, "cp": mat.cp_base, "exposure_time": 50e-6},
+        {"T_lut": mat.T_lut, "k_lut": mat.k_lut, "cp_lut": mat.cp_lut},
+    )  # fmt: skip
+    shape = (2, 1, 5, 6, 7)
+    T_in = 0.2 + 0.5 * torch.rand(shape, generator=g, dtype=torch.float64)
+    return {
+        "v_pred": torch.randn(shape, generator=g, dtype=torch.float64),
+        "x_tau": torch.randn(shape, generator=g, dtype=torch.float64),
+        "tau": torch.rand(2, generator=g, dtype=torch.float64),
+        "T_in": T_in,
+        "T_target": T_in + 0.3 * torch.rand(shape, generator=g, dtype=torch.float64),
+        "Q": 1e3 * torch.rand(shape, generator=g, dtype=torch.float64),
+        "mask_in": (torch.rand(shape, generator=g) > 0.5).double(),
+        "material": torch.stack([vec, vec]),
+    }
 
 
-def _identity_cfg() -> SimpleNamespace:
-    return SimpleNamespace(T_ref=1.0, T_ambient=0.0, Q_ref=1.0)
+def _call(i: dict[str, Any], form: str) -> torch.Tensor:
+    return physics_loss(
+        i["v_pred"], i["x_tau"], i["tau"], i["T_in"], i["T_target"], i["Q"], i["mask_in"], i["material"], form,
+        T_REF, T_AMB, Q_REF, *GRID,
+    )  # fmt: skip
 
 
 # ---------------------------------------------------------------------------
-# physics_heat_residual
+# physics_loss
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_physics_residual_returns_scalar() -> None:
-    B, D, H, W = 2, 8, 8, 8
-    shape = (B, 1, D, H, W)
-    v_pred = torch.randn(*shape, requires_grad=True)
-    res = physics_heat_residual(
-        v_pred, torch.randn(*shape), torch.zeros(B), torch.randn(*shape), torch.randn(*shape),
-        rho=_scalar_field(7900.0, B), cp=_scalar_field(500.0, B), k=_scalar_field(20.0, B),
-        dx_m=1e-5, dy_m=1e-5, dz_m=1e-5, ds_cfg=_identity_cfg(),
-    )
-    assert res.shape == ()
+@pytest.mark.parametrize("form", ["coupled", "tin"])
+def test_physics_loss_on_cpu_is_the_reference_on_si_fields(form: str) -> None:
+    i = _inputs()
+    T_pred = (i["x_tau"] + (1 - i["tau"].view(-1, 1, 1, 1, 1)) * i["v_pred"]) * T_REF + T_AMB
+    expected = physics_loss_reference(
+        T_pred, i["T_in"] * T_REF + T_AMB, i["T_target"] * T_REF + T_AMB, i["Q"] * Q_REF, i["mask_in"],
+        i["material"], form, *GRID,
+    )  # fmt: skip
+    torch.testing.assert_close(_call(i, form), expected)
 
 
 @pytest.mark.unit
-def test_physics_residual_gradient_flows_through_v_pred() -> None:
-    B, D, H, W = 1, 4, 4, 4
-    v_pred = torch.randn(B, 1, D, H, W, requires_grad=True)
-    res = physics_heat_residual(
-        v_pred, torch.randn(B, 1, D, H, W), torch.zeros(B),
-        torch.randn(B, 1, D, H, W), torch.zeros(B, 1, D, H, W),
-        rho=_scalar_field(1.0, B), cp=_scalar_field(1.0, B), k=_scalar_field(1.0, B),
-        dx_m=1e-4, dy_m=1e-4, dz_m=1e-4, ds_cfg=_identity_cfg(),
-    )
-    res.backward()
-    assert v_pred.grad is not None
-    assert v_pred.grad.shape == v_pred.shape
+def test_physics_loss_gradient_reaches_v_pred_but_not_x_tau() -> None:
+    i = _inputs()
+    i["v_pred"].requires_grad_(True)
+    i["x_tau"].requires_grad_(True)
+    _call(i, "coupled").backward()
+    assert i["v_pred"].grad is not None and i["v_pred"].grad.abs().sum() > 0
+    assert i["x_tau"].grad is None
 
 
 @pytest.mark.unit
-def test_physics_residual_no_gradient_through_detached_x_tau() -> None:
-    B, D, H, W = 1, 4, 4, 4
-    v_pred = torch.randn(B, 1, D, H, W, requires_grad=True)
-    x_tau = torch.randn(B, 1, D, H, W, requires_grad=True)
-    res = physics_heat_residual(
-        v_pred, x_tau.detach(), torch.zeros(B),
-        torch.randn(B, 1, D, H, W), torch.zeros(B, 1, D, H, W),
-        rho=_scalar_field(1.0, B), cp=_scalar_field(1.0, B), k=_scalar_field(1.0, B),
-        dx_m=1e-4, dy_m=1e-4, dz_m=1e-4, ds_cfg=_identity_cfg(),
-    )
-    res.backward()
-    assert x_tau.grad is None
+def test_physics_loss_refuses_an_unknown_form() -> None:
+    with pytest.raises(ValueError, match="form"):
+        _call(_inputs(), "none")
 
 
-@pytest.mark.unit
-def test_physics_residual_near_zero_on_exact_solution() -> None:
-    """Residual ≈ 0 when lhs and rhs balance exactly."""
-    B, D, H, W = 1, 8, 8, 8
-    dx_m = dy_m = dz_m = 1.0
-    x_tau = torch.rand(B, 1, D, H, W)
-    k_field = torch.ones_like(x_tau)
-    divkgrad = div_k_grad(x_tau, k_field, dx_m, dy_m, dz_m)
-    Q = -divkgrad
-    res = physics_heat_residual(
-        v_pred=torch.zeros_like(x_tau), x_tau_detached=x_tau,
-        tau=torch.zeros(B), T_in=x_tau, Q=Q,
-        rho=_scalar_field(1.0, B), cp=_scalar_field(1.0, B), k=_scalar_field(1.0, B),
-        dx_m=dx_m, dy_m=dy_m, dz_m=dz_m, ds_cfg=_identity_cfg(), dt_s=1.0,
-    )
-    assert res.item() < 1e-8, f"Residual should be ~0, got {res.item()}"
-
-
-@pytest.mark.unit
-def test_physics_residual_nonzero_for_wrong_v() -> None:
-    B, D, H, W = 1, 4, 4, 4
-    res = physics_heat_residual(
-        v_pred=torch.ones(B, 1, D, H, W) * 1e6,
-        x_tau_detached=torch.zeros(B, 1, D, H, W),
-        tau=torch.zeros(B),
-        T_in=torch.zeros(B, 1, D, H, W),
-        Q=torch.zeros(B, 1, D, H, W),
-        rho=_scalar_field(1.0, B), cp=_scalar_field(1.0, B), k=_scalar_field(1.0, B),
-        dx_m=1.0, dy_m=1.0, dz_m=1.0, ds_cfg=_identity_cfg(),
-    )
-    assert res.item() > 0.0
+@pytest.mark.slow
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_physics_loss_on_cuda_uses_the_triton_kernels(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    real = triton_pde_loss.PDEResidualLoss.apply
+    monkeypatch.setattr(triton_pde_loss.PDEResidualLoss, "apply", lambda *a: (calls.append(1), real(*a))[1])
+    cpu = _inputs()
+    gpu = {k: v.cuda() for k, v in cpu.items()}
+    torch.testing.assert_close(_call(gpu, "coupled").cpu(), _call(cpu, "coupled"), rtol=1e-9, atol=0.0)
+    assert calls == [1]
 
 
 # ---------------------------------------------------------------------------

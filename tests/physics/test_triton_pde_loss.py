@@ -1,387 +1,195 @@
-"""TDD tests for triton_pde_loss.PDEResidualLoss.
+"""Triton kernels for the physics loss, checked against the PyTorch reference and plain autograd.
 
-RED before implementation — all tests must fail.
-GREEN after implementation.
+GPU only (marked ``slow``): ``uv run pytest tests/physics/test_triton_pde_loss.py -m slow``.
+Temperatures are drawn away from table nodes and T_solidus, where the derivative jumps.
 """
 
 from __future__ import annotations
 
+import random
+
 import pytest
 import torch
-import torch.nn.functional as F
+
+from neural_pbf.data.sampling import randomize_material
+from neural_pbf.physics.fm_physics import enthalpy
+from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff
+from neural_pbf.physics.material_vector import encode, material_from_vector
+
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="Triton kernels need a CUDA device"),
+]
+CUDA = torch.device("cuda")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _vector(mat: MaterialConfig, exposure: float) -> torch.Tensor:
+    scalars = {"rho": mat.rho, "L": mat.latent_heat_L, "T_s": mat.T_solidus, "T_l": mat.T_liquidus,
+               "k_p": mat.k_powder, "k_s": mat.k_solid, "k_l": mat.k_liquid, "cp": mat.cp_base,
+               "exposure_time": exposure}  # fmt: skip
+    return encode(scalars, {"T_lut": mat.T_lut, "k_lut": mat.k_lut, "cp_lut": mat.cp_lut})
 
 
-def _make_batch(B: int, D: int, H: int, W: int, *, requires_grad: bool = False):
-    """Canonical small batch for unit tests."""
-    device = torch.device("cpu")
-    torch.manual_seed(0)
-    v_pred = torch.randn(B, 1, D, H, W, device=device, requires_grad=requires_grad)
-    x_tau = torch.randn(B, 1, D, H, W, device=device)
-    tau = torch.rand(B, device=device)
-    T_in = torch.rand(B, 1, D, H, W, device=device) * 0.5
-    Q = torch.rand(B, 1, D, H, W, device=device) * 0.1
-    rho = torch.full((B, 1, 1, 1, 1), 7900.0, device=device)
-    cp = torch.full((B, 1, 1, 1, 1), 500.0, device=device)
-    k = torch.full((B, 1, 1, 1, 1), 20.0, device=device)
-    return v_pred, x_tau, tau, T_in, Q, rho, cp, k
+def _materials(seed: int = 0) -> torch.Tensor:
+    """SS316L (6-point tables) and Ti64 (7-point tables), randomized as the generator does."""
+    random.seed(seed)
+    mats = [randomize_material(MaterialConfig.ss316l_preset()), randomize_material(MaterialConfig.ti64_preset())]
+    return torch.stack([_vector(mats[0], 40e-6), _vector(mats[1], 70e-6)])
 
 
-_PHYS = dict(dx=1e-5, dy=1e-5, dz=1e-5, T_ref=2000.0, T_ambient=300.0, Q_ref=1.35e15, dt_s=5e-6)
+def _away_from_kinks(T: torch.Tensor, material: torch.Tensor, margin: float = 2.0) -> torch.Tensor:
+    """Shift temperatures that sit within `margin` K of a table node or T_solidus."""
+    out = T.clone()
+    for b, vec in enumerate(material):
+        mat = material_from_vector(vec)
+        for kink in [*(mat.T_lut or []), mat.T_solidus]:
+            near = (out[b] - kink).abs() < margin
+            out[b][near] += 2 * margin
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Import guard — the module does not exist yet (RED)
-# ---------------------------------------------------------------------------
+def _temperatures(material: torch.Tensor, shape: tuple[int, ...], dtype: torch.dtype, seed: int = 0) -> torch.Tensor:
+    g = torch.Generator().manual_seed(seed)
+    T = 250.0 + 3750.0 * torch.rand((material.shape[0], *shape), generator=g, dtype=torch.float64)
+    return _away_from_kinks(T, material).to(dtype)
 
 
-@pytest.fixture(scope="module")
-def pde_module():
-    return pytest.importorskip("neural_pbf.physics.triton_pde_loss")
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_probe_matches_the_material_functions(dtype: torch.dtype) -> None:
+    from neural_pbf.physics.triton_pde_loss import probe_material
+
+    material = _materials()
+    T = _temperatures(material, (4096,), dtype)
+    g = torch.Generator().manual_seed(1)
+    mask = (torch.rand(T.shape, generator=g) > 0.5).to(dtype)
+    H, cp, k, dk = probe_material(T.to(CUDA), mask.to(CUDA), material.to(CUDA, dtype))
+
+    tol = {"rtol": 1e-10, "atol": 1e-8} if dtype == torch.float64 else {"rtol": 2e-5, "atol": 1e-2}
+    for b, vec in enumerate(material):
+        mat = material_from_vector(vec)
+        Tb = T[b].double().requires_grad_(True)
+        solid = (mask[b].double().bool() | (mat.T_solidus <= Tb.detach())).double()
+        k_ref = k_eff(Tb, mat, solid)
+        (dk_ref,) = torch.autograd.grad(k_ref.sum(), Tb)
+        torch.testing.assert_close(H[b].cpu().double(), enthalpy(Tb.detach(), mat), **tol)
+        torch.testing.assert_close(cp[b].cpu().double(), cp_eff(Tb.detach(), mat), **tol)
+        torch.testing.assert_close(k[b].cpu().double(), k_ref.detach(), **tol)
+        torch.testing.assert_close(dk[b].cpu().double(), dk_ref, **tol)
 
 
-# ---------------------------------------------------------------------------
-# A. PyTorch reference (_pde_residual_pytorch)
-# ---------------------------------------------------------------------------
+def test_probe_covers_powder_promotion_and_both_table_ends() -> None:
+    """Powder below T_s uses k_p (dk 0); powder above T_s is solid; above the table k is flat (dk 0)."""
+    from neural_pbf.physics.triton_pde_loss import probe_material
+
+    material = _materials()[:1].double()
+    mat = material_from_vector(material[0])
+    T = torch.tensor([[mat.T_solidus - 300.0, mat.T_solidus + 50.0, mat.T_lut[-1] + 900.0, 100.0]], dtype=torch.float64)
+    powder = torch.zeros_like(T)
+    _, _, k, dk = probe_material(T.to(CUDA), powder.to(CUDA), material.to(CUDA))
+    assert k[0, 0].item() == pytest.approx(mat.k_powder) and dk[0, 0].item() == 0.0
+    assert k[0, 1].item() == pytest.approx(float(k_eff(T[0, 1:2], mat, torch.ones(1, dtype=torch.float64))))
+    assert dk[0, 2].item() == 0.0 and k[0, 2].item() == pytest.approx(mat.k_lut[-1])
 
 
-@pytest.mark.unit
-def test_pytorch_reference_returns_scalar(pde_module) -> None:
-    """_pde_residual_pytorch must return a 0-d tensor."""
-    B, D, H, W = 2, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W)
-    loss = pde_module._pde_residual_pytorch(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k, **_PHYS
-    )
-    assert loss.shape == (), f"Expected scalar, got {loss.shape}"
+# --- the loss ---------------------------------------------------------------------------------------------
+
+T_REF, T_AMB, Q_REF = 2000.0, 300.0, 1e12
+DX, DY, DZ = 2e-6, 2.5e-6, 3e-6  # unequal, so a mixed-up axis shows
 
 
-@pytest.mark.unit
-def test_pytorch_reference_matches_rope_physics_residual(pde_module) -> None:
-    """_pde_residual_pytorch must agree with the existing physics_heat_residual."""
-    from neural_pbf.data.fm_dataset import FMDatasetConfig
-    from neural_pbf.physics.fm_physics import physics_heat_residual
+def _case(shape: tuple[int, int, int], dtype: torch.dtype, seed: int = 0, wide: bool = False) -> dict:
+    """Normalized model inputs whose SI temperatures avoid table nodes and T_s.
 
-    B, D, H, W = 1, 8, 8, 8
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W)
-
-    ds_cfg = FMDatasetConfig(h5_paths=[], Q_ref=_PHYS["Q_ref"])
-
-    ref = physics_heat_residual(
-        v_pred, x_tau.detach(), tau, T_in, Q,
-        rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        ds_cfg, dt_s=_PHYS["dt_s"],
-    )
-    ours = pde_module._pde_residual_pytorch(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k, **_PHYS
-    )
-    assert torch.allclose(ref.float(), ours.float(), rtol=1e-4), (
-        f"PyTorch reference diverges from rope implementation: {ref.item():.6e} vs {ours.item():.6e}"
-    )
-
-
-@pytest.mark.unit
-def test_pytorch_reference_zero_for_exact_solution(pde_module) -> None:
-    """When v_pred satisfies the PDE exactly, residual must be near zero."""
-    from neural_pbf.physics.ops import div_k_grad
-
-    B, D, H, W = 1, 8, 8, 8
-    dx = dy = dz = 1.0
-    T_ref, T_ambient, Q_ref, dt_s = 1.0, 0.0, 1.0, 1.0
-    rho_v, cp_v, k_v = 1.0, 1.0, 1.0
-
-    tau = torch.zeros(B)
-    x_tau = torch.zeros(B, 1, D, H, W)
-    T_in = torch.zeros(B, 1, D, H, W)
-    Q = torch.zeros(B, 1, D, H, W)
-    rho = torch.full((B, 1, 1, 1, 1), rho_v)
-    cp = torch.full((B, 1, 1, 1, 1), cp_v)
-    k = torch.full((B, 1, 1, 1, 1), k_v)
-
-    # exact solution: rho*cp*(T_pred_SI - T_in_SI)/dt_s == k*Laplacian(T_pred_SI) + Q_SI
-    # With tau=0, T_pred_SI = (x_tau + v_pred)*T_ref + T_ambient = v_pred (since T_ref=1, T_ambient=0, x_tau=0)
-    # So: rho*cp*v_pred/dt_s == k*Laplacian(v_pred) + Q => v_pred = k*Laplacian(v_pred)*dt_s
-    # Use v_pred = 0, Q = 0 → residual = 0.
-    v_pred = torch.zeros(B, 1, D, H, W, requires_grad=False)
-
-    loss = pde_module._pde_residual_pytorch(
-        v_pred, x_tau, tau, T_in, Q, rho, cp, k,
-        dx=dx, dy=dy, dz=dz,
-        T_ref=T_ref, T_ambient=T_ambient, Q_ref=Q_ref, dt_s=dt_s,
-    )
-    assert loss.item() < 1e-12, f"Expected ~0 for zero fields, got {loss.item():.3e}"
-
-
-@pytest.mark.unit
-def test_pytorch_reference_nonzero_for_bad_v(pde_module) -> None:
-    B, D, H, W = 1, 4, 4, 4
-    v_pred = torch.ones(B, 1, D, H, W) * 1e3
-    x_tau = torch.zeros(B, 1, D, H, W)
-    tau = torch.zeros(B)
-    T_in = torch.zeros(B, 1, D, H, W)
-    Q = torch.zeros(B, 1, D, H, W)
-    rho = torch.full((B, 1, 1, 1, 1), 1.0)
-    cp = torch.full((B, 1, 1, 1, 1), 1.0)
-    k = torch.full((B, 1, 1, 1, 1), 1.0)
-    loss = pde_module._pde_residual_pytorch(
-        v_pred, x_tau, tau, T_in, Q, rho, cp, k,
-        dx=1.0, dy=1.0, dz=1.0,
-        T_ref=1.0, T_ambient=0.0, Q_ref=1.0, dt_s=1.0,
-    )
-    assert loss.item() > 0.0
-
-
-# ---------------------------------------------------------------------------
-# B. PDEResidualLoss autograd Function — forward
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_pde_loss_apply_returns_scalar(pde_module) -> None:
-    B, D, H, W = 2, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W, requires_grad=True)
-    loss = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    )
-    assert loss.shape == (), f"Expected scalar, got {loss.shape}"
-
-
-@pytest.mark.unit
-def test_pde_loss_apply_matches_pytorch_reference(pde_module) -> None:
-    """PDEResidualLoss.apply must agree with _pde_residual_pytorch within 1%."""
-    B, D, H, W = 2, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W)
-    kwargs = _PHYS
-
-    ref = pde_module._pde_residual_pytorch(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k, **kwargs
-    ).item()
-    got = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        kwargs["dx"], kwargs["dy"], kwargs["dz"],
-        kwargs["T_ref"], kwargs["T_ambient"], kwargs["Q_ref"], kwargs["dt_s"],
-    ).item()
-
-    if ref == 0.0:
-        assert abs(got) < 1e-10
-    else:
-        rel_err = abs(got - ref) / (abs(ref) + 1e-30)
-        assert rel_err < 0.01, f"Forward relative error {rel_err:.4f} exceeds 1%: ref={ref:.6e} got={got:.6e}"
-
-
-@pytest.mark.unit
-def test_pde_loss_apply_finite_for_typical_inputs(pde_module) -> None:
-    """Typical LPBF magnitudes (Q_ref=1.35e15) must not produce inf/nan."""
-    B, D, H, W = 2, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W, requires_grad=True)
-    loss = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    )
-    assert torch.isfinite(loss), f"Loss is not finite: {loss.item()}"
-
-
-# ---------------------------------------------------------------------------
-# C. PDEResidualLoss — backward
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_pde_loss_backward_gradient_flows(pde_module) -> None:
-    """backward() must produce a gradient w.r.t. v_pred."""
-    B, D, H, W = 1, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W, requires_grad=True)
-    loss = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    )
-    loss.backward()
-    assert v_pred.grad is not None, "No gradient for v_pred after backward()"
-    assert v_pred.grad.shape == v_pred.shape
-    assert torch.isfinite(v_pred.grad).all(), "Gradient contains inf/nan"
-
-
-@pytest.mark.unit
-def test_pde_loss_backward_no_gradient_through_x_tau(pde_module) -> None:
-    """x_tau is always passed detached — confirm it never receives a gradient."""
-    B, D, H, W = 1, 4, 4, 4
-    v_pred, x_tau, tau, T_in, Q, rho, cp, k = _make_batch(B, D, H, W, requires_grad=True)
-    x_tau_leaf = x_tau.detach().requires_grad_(True)
-    loss = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau_leaf, tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    )
-    loss.backward()
-    assert x_tau_leaf.grad is None or torch.all(x_tau_leaf.grad == 0), (
-        "x_tau should not receive non-zero gradients"
-    )
-
-
-@pytest.mark.unit
-def test_pde_loss_backward_matches_finite_difference(pde_module) -> None:
-    """Analytical backward gradient must match finite-difference approximation within 2%.
-
-    Uses float64 throughout for numerical accuracy.
+    The default spans powder, solid and the melt range; ``wide`` reaches keyhole temperatures above every table end.
     """
-    B, D, H, W = 1, 4, 4, 4
-    eps = 1e-4
+    material = _materials(seed)
+    B = material.shape[0]
+    g = torch.Generator().manual_seed(seed)
 
-    torch.manual_seed(42)
-    v_pred = torch.randn(B, 1, D, H, W, dtype=torch.float64) * 0.1
-    x_tau = torch.randn(B, 1, D, H, W, dtype=torch.float64) * 0.1
-    tau = torch.rand(B, dtype=torch.float64) * 0.5
-    T_in = torch.rand(B, 1, D, H, W, dtype=torch.float64) * 0.5
-    Q = torch.zeros(B, 1, D, H, W, dtype=torch.float64)
-    rho = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64)
-    cp = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64)
-    k = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64)
-    phys64 = dict(dx=1e-3, dy=1e-3, dz=1e-3, T_ref=1.0, T_ambient=0.0, Q_ref=1.0, dt_s=1.0)
+    def rand(*s: int) -> torch.Tensor:
+        return torch.rand((B, 1, *s), generator=g, dtype=torch.float64)
 
-    # Analytical gradient
-    v_pred_ad = v_pred.clone().requires_grad_(True)
-    loss_ad = pde_module._pde_residual_pytorch(
-        v_pred_ad, x_tau, tau, T_in, Q, rho, cp, k, **phys64
-    )
-    loss_ad.backward()
-    grad_analytical = v_pred_ad.grad.clone()
-
-    # Finite-difference gradient (random probe direction)
-    torch.manual_seed(7)
-    direction = torch.randn_like(v_pred)
-    direction = direction / direction.norm()
-
-    loss_plus = pde_module._pde_residual_pytorch(
-        v_pred + eps * direction, x_tau, tau, T_in, Q, rho, cp, k, **phys64
-    )
-    loss_minus = pde_module._pde_residual_pytorch(
-        v_pred - eps * direction, x_tau, tau, T_in, Q, rho, cp, k, **phys64
-    )
-    grad_fd_proj = ((loss_plus - loss_minus) / (2 * eps)).item()
-    grad_ad_proj = (grad_analytical * direction).sum().item()
-
-    if abs(grad_fd_proj) < 1e-12:
-        assert abs(grad_ad_proj) < 1e-10
-    else:
-        rel_err = abs(grad_ad_proj - grad_fd_proj) / (abs(grad_fd_proj) + 1e-30)
-        assert rel_err < 0.02, (
-            f"Gradient FD mismatch: analytical={grad_ad_proj:.6e} fd={grad_fd_proj:.6e} "
-            f"rel_err={rel_err:.4f}"
-        )
+    T_in = _away_from_kinks(300.0 + (3000.0 if wide else 1700.0) * rand(*shape), material)
+    T_target = _away_from_kinks(T_in + (1500.0 if wide else 900.0) * rand(*shape), material)
+    T_pred = _away_from_kinks(T_target + 60.0 * (rand(*shape) - 0.5), material)
+    tau = torch.rand(B, generator=g, dtype=torch.float64) * 0.9
+    x_tau = torch.randn((B, 1, *shape), generator=g, dtype=torch.float64)
+    v = ((T_pred - T_AMB) / T_REF - x_tau) / (1.0 - tau.view(-1, 1, 1, 1, 1))
+    case = {
+        "v": v, "x_tau": x_tau, "tau": tau, "T_in": (T_in - T_AMB) / T_REF, "T_target": (T_target - T_AMB) / T_REF,
+        "Q": 1e15 * rand(*shape) / Q_REF, "mask_in": (rand(*shape) > 0.5).double(), "material": material,
+    }  # fmt: skip
+    return {k: t.to(CUDA, dtype) if k != "material" else t.to(CUDA) for k, t in case.items()}
 
 
-# ---------------------------------------------------------------------------
-# D. PDEResidualLoss — Triton path (GPU-gated)
-# ---------------------------------------------------------------------------
+def _triton_loss(c: dict, form: str, v: torch.Tensor | None = None) -> torch.Tensor:
+    from neural_pbf.physics.triton_pde_loss import PDEResidualLoss
+
+    return PDEResidualLoss.apply(
+        c["v"] if v is None else v, c["x_tau"], c["tau"], c["T_in"], c["T_target"], c["Q"], c["mask_in"],
+        c["material"], form, T_REF, T_AMB, Q_REF, DX, DY, DZ,
+    )  # fmt: skip
 
 
-@pytest.mark.unit
-def test_triton_forward_matches_pytorch_reference_on_gpu(pde_module) -> None:
-    """On GPU, Triton forward must agree with PyTorch reference within 1%."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    pytest.importorskip("triton")
+def _reference_loss(c: dict, form: str, v: torch.Tensor) -> torch.Tensor:
+    from neural_pbf.physics.fm_physics import physics_loss_reference
 
-    device = torch.device("cuda")
-    B, D, H, W = 2, 4, 4, 4
-    torch.manual_seed(0)
-    v_pred = torch.randn(B, 1, D, H, W, device=device)
-    x_tau = torch.randn(B, 1, D, H, W, device=device)
-    tau = torch.rand(B, device=device)
-    T_in = torch.rand(B, 1, D, H, W, device=device) * 0.5
-    Q = torch.rand(B, 1, D, H, W, device=device) * 0.1
-    rho = torch.full((B, 1, 1, 1, 1), 7900.0, device=device)
-    cp = torch.full((B, 1, 1, 1, 1), 500.0, device=device)
-    k = torch.full((B, 1, 1, 1, 1), 20.0, device=device)
+    def si(t: torch.Tensor) -> torch.Tensor:
+        return t.double() * T_REF + T_AMB
 
-    ref = pde_module._pde_residual_pytorch(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k, **_PHYS
-    ).item()
-    got = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    ).item()
-
-    if ref == 0.0:
-        assert abs(got) < 1e-10
-    else:
-        rel_err = abs(got - ref) / (abs(ref) + 1e-30)
-        assert rel_err < 0.01, f"GPU Triton forward rel_err={rel_err:.4f}: ref={ref:.6e} got={got:.6e}"
+    T_pred = si(c["x_tau"] + (1.0 - c["tau"].view(-1, 1, 1, 1, 1)) * v)
+    return physics_loss_reference(
+        T_pred, si(c["T_in"]), si(c["T_target"]), c["Q"].double() * Q_REF, c["mask_in"], c["material"].double(),
+        form, DX, DY, DZ,
+    )  # fmt: skip
 
 
-@pytest.mark.unit
-def test_triton_gradient_matches_pytorch_on_gpu(pde_module) -> None:
-    """GPU backward gradient must agree with PyTorch autograd within 2%."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    pytest.importorskip("triton")
-
-    device = torch.device("cuda")
-    B, D, H, W = 1, 4, 4, 4
-    torch.manual_seed(42)
-    v_pred_ref = torch.randn(B, 1, D, H, W, device=device, dtype=torch.float32) * 0.1
-    x_tau = torch.randn(B, 1, D, H, W, device=device)
-    tau = torch.rand(B, device=device) * 0.5
-    T_in = torch.rand(B, 1, D, H, W, device=device) * 0.5
-    Q = torch.zeros(B, 1, D, H, W, device=device)
-    rho = torch.full((B, 1, 1, 1, 1), 1.0, device=device)
-    cp = torch.full((B, 1, 1, 1, 1), 1.0, device=device)
-    k = torch.full((B, 1, 1, 1, 1), 1.0, device=device)
-    phys = dict(dx=1e-3, dy=1e-3, dz=1e-3, T_ref=1.0, T_ambient=0.0, Q_ref=1.0, dt_s=1.0)
-
-    # PyTorch reference gradient
-    v_ref = v_pred_ref.clone().requires_grad_(True)
-    pde_module._pde_residual_pytorch(v_ref, x_tau.detach(), tau, T_in, Q, rho, cp, k, **phys).backward()
-    grad_ref = v_ref.grad.clone()
-
-    # Triton gradient
-    v_tri = v_pred_ref.clone().requires_grad_(True)
-    pde_module.PDEResidualLoss.apply(
-        v_tri, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        phys["dx"], phys["dy"], phys["dz"],
-        phys["T_ref"], phys["T_ambient"], phys["Q_ref"], phys["dt_s"],
-    ).backward()
-    grad_tri = v_tri.grad.clone()
-
-    rel_err = (grad_tri - grad_ref).norm() / (grad_ref.norm() + 1e-12)
-    assert rel_err.item() < 0.02, f"GPU gradient rel_err={rel_err.item():.4f}"
+@pytest.mark.parametrize("form", ["tin", "coupled"])
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_loss_matches_the_reference(form: str, dtype: torch.dtype) -> None:
+    c = _case((8, 9, 10), dtype)
+    expected = _reference_loss(c, form, c["v"].double())
+    rtol = 1e-10 if dtype == torch.float64 else 1e-4
+    torch.testing.assert_close(_triton_loss(c, form).double(), expected, rtol=rtol, atol=0.0)
 
 
-@pytest.mark.unit
-def test_triton_accepts_bf16_input(pde_module) -> None:
-    """PDEResidualLoss.apply must not raise on BF16 inputs (GPU-gated)."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    pytest.importorskip("triton")
+@pytest.mark.parametrize("form", ["tin", "coupled"])
+def test_gradient_matches_autograd_of_the_reference(form: str) -> None:
+    c = _case((8, 9, 10), torch.float64)
+    v_ref = c["v"].clone().requires_grad_(True)
+    (g_ref,) = torch.autograd.grad(_reference_loss(c, form, v_ref), v_ref)
+    v = c["v"].clone().requires_grad_(True)
+    (g,) = torch.autograd.grad(_triton_loss(c, form, v), v)
+    torch.testing.assert_close(g, g_ref, rtol=1e-8, atol=1e-14)
+    face = g[..., 0, :, :].abs().sum()
+    assert (face > 0) if form == "coupled" else (face == 0)  # only coupled reaches the face layer
 
-    device = torch.device("cuda")
-    B, D, H, W = 1, 4, 4, 4
-    torch.manual_seed(0)
-    v_pred = torch.randn(B, 1, D, H, W, device=device, dtype=torch.bfloat16) * 0.1
-    x_tau = torch.randn(B, 1, D, H, W, device=device, dtype=torch.bfloat16) * 0.1
-    tau = torch.rand(B, device=device, dtype=torch.float32)
-    T_in = torch.rand(B, 1, D, H, W, device=device, dtype=torch.bfloat16) * 0.5
-    Q = torch.zeros(B, 1, D, H, W, device=device, dtype=torch.bfloat16)
-    rho = torch.full((B, 1, 1, 1, 1), 7900.0, device=device, dtype=torch.float32)
-    cp = torch.full((B, 1, 1, 1, 1), 500.0, device=device, dtype=torch.float32)
-    k = torch.full((B, 1, 1, 1, 1), 20.0, device=device, dtype=torch.float32)
-    v_pred.requires_grad_(True)
 
-    loss = pde_module.PDEResidualLoss.apply(
-        v_pred, x_tau.detach(), tau, T_in, Q, rho, cp, k,
-        _PHYS["dx"], _PHYS["dy"], _PHYS["dz"],
-        _PHYS["T_ref"], _PHYS["T_ambient"], _PHYS["Q_ref"], _PHYS["dt_s"],
-    )
-    assert torch.isfinite(loss), f"BF16 loss not finite: {loss.item()}"
-    loss.backward()
-    assert v_pred.grad is not None
+@pytest.mark.parametrize("form", ["tin", "coupled"])
+def test_gradcheck_float64(form: str) -> None:
+    c = _case((5, 6, 7), torch.float64, seed=3)
+    v = c["v"].clone().requires_grad_(True)
+    # The loss is about 1e4, so a central difference with eps 1e-6 carries about 2e-6 of rounding noise, at the
+    # tolerance. eps 1e-5 moves T by at most 0.02 K, still 100x inside the 2 K margin around the kinks.
+    assert torch.autograd.gradcheck(lambda x: _triton_loss(c, form, x), (v,), eps=1e-5, atol=1e-6, rtol=1e-4)
+
+
+def test_unknown_form_is_refused() -> None:
+    with pytest.raises(ValueError, match="form"):
+        _triton_loss(_case((5, 6, 7), torch.float64), "implicit")
+
+
+@pytest.mark.parametrize("form", ["tin", "coupled"])
+def test_mixed_batch_up_to_keyhole_temperatures(form: str) -> None:
+    """Two materials and dts, every regime from powder to above the table ends, value and gradient."""
+    c = _case((8, 9, 10), torch.float64, seed=5, wide=True)
+    T_target = c["T_target"] * T_REF + T_AMB
+    assert float(T_target.max()) > 4000.0 and float(T_target.min()) < 800.0
+    v_ref = c["v"].clone().requires_grad_(True)
+    expected = _reference_loss(c, form, v_ref)
+    (g_ref,) = torch.autograd.grad(expected, v_ref)
+    v = c["v"].clone().requires_grad_(True)
+    loss = _triton_loss(c, form, v)
+    (g,) = torch.autograd.grad(loss, v)
+    torch.testing.assert_close(loss, expected.detach(), rtol=1e-10, atol=0.0)
+    torch.testing.assert_close(g, g_ref, rtol=1e-8, atol=1e-14)

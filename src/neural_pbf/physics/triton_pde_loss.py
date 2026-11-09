@@ -1,577 +1,369 @@
-"""Custom Triton kernels for the heat-PDE residual loss in physics-informed FM.
+"""Triton kernels for the physics loss, in the two forms ``coupled`` and ``tin``.
 
-Mathematical derivation
------------------------
-The loss is MSE(lhs_scaled, rhs_scaled) over all N = B*Nz*Ny*Nx voxels.
+The loss is ``Σ R² / Σ S²`` over the interiors of all patches in the batch, with
 
-    T_pred_SI  = (x_tau.detach + (1-τ)·v_pred)·T_ref + T_ambient
-    lhs_scaled = ρ·cp·(T_pred_SI − T_in_SI) / (dt_s · Q_ref)
-    rhs_scaled = k · ∇²(T_pred_SI) / Q_ref + Q_SI / Q_ref
-    residual   = lhs_scaled − rhs_scaled
-    L          = (1/N) Σ residual²
+    R = ρ·(H(T_pred) − H(T_in))/dt − ∇·(k∇T) − Q          (T = T_pred for coupled, T_in for tin)
+    S = ρ·(H(T_target) − H(T_in))/dt                        (ground truth, no gradient)
 
-Since x_tau is always detached, ∂T_pred_SI/∂v_pred = (1−τ)·T_ref.
-The Laplacian is self-adjoint, so the explicit backward gradient is:
+using each sample's own material and dt (``physics.material_vector``), enthalpy storage with latent heat, and the
+solver's conductivity: the k table blended with k_powder by the mask, powder promoted above T_solidus, harmonic
+means at the faces. ``fm_physics.physics_loss_reference`` is the plain PyTorch definition; these kernels must give
+the same value and the same gradient as autograd of it.
 
-    ∂L/∂v_pred_j = (2/N) · (1−τ) · T_ref/Q_ref · [ρ·cp/dt_s · res_j − k · ∇²(res)_j]
-
-On CUDA + Triton: fused kernels handle forward and backward.
-On CPU or without Triton: falls back to div_k_grad-based PyTorch.
+The original version of this file (tag ``v0-random-split-eval``) used dt fixed at 5 µs, one scalar k per sample,
+constant-cp storage, and diffusion at the prediction.
 """
 
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
-from neural_pbf.physics.ops import div_k_grad
+from neural_pbf.physics.material import MaterialConfig
+from neural_pbf.physics.material_vector import LUTS, MAX_LUT, SCALARS
 
 try:
     import triton
     import triton.language as tl
 
     _TRITON_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - CPU-only installs
     _TRITON_AVAILABLE = False
 
+SHARPNESS = float(MaterialConfig.model_fields["transition_sharpness"].default)  # randomize_material keeps it
+_BLOCK = 256
 
-# ---------------------------------------------------------------------------
-# Triton kernels (compiled only when triton is installed)
-# ---------------------------------------------------------------------------
+# Per-sample table, one row of _ROW values per sample.
+_RHO, _L, _TS, _TL, _KP, _INV_DT, _N = range(7)
+_T0, _K0, _C0, _H0 = 8, 8 + MAX_LUT, 8 + 2 * MAX_LUT, 8 + 3 * MAX_LUT
+_ROW = 8 + 4 * MAX_LUT
+
+
+def material_table(material: Tensor, dtype: torch.dtype) -> Tensor:
+    """(B, _ROW) table for the kernels from (B, MATERIAL_DIM) material vectors, on the same device."""
+    m = material.to(torch.float64)
+    col = {k: m[:, i] for i, k in enumerate(SCALARS)}
+    n_col = len(SCALARS)
+    n = m[:, n_col].round().long()
+    luts = {name: m[:, n_col + 1 + i * MAX_LUT : n_col + 1 + (i + 1) * MAX_LUT] for i, name in enumerate(LUTS)}
+    t, cp = luts["T_lut"], luts["cp_lut"]
+    seg = torch.arange(MAX_LUT - 1, device=m.device)
+    valid = seg.unsqueeze(0) + 1 < n.unsqueeze(1)
+    area = torch.where(valid, 0.5 * (cp[:, 1:] + cp[:, :-1]) * t.diff(dim=1), torch.zeros_like(t[:, 1:]))
+    H_nodes = torch.nn.functional.pad(area.cumsum(dim=1), (1, 0))
+    tab = torch.zeros(m.shape[0], _ROW, dtype=torch.float64, device=m.device)
+    tab[:, _RHO], tab[:, _L], tab[:, _TS], tab[:, _TL] = col["rho"], col["L"], col["T_s"], col["T_l"]
+    tab[:, _KP], tab[:, _INV_DT], tab[:, _N] = col["k_p"], 1.0 / col["exposure_time"], n.to(torch.float64)
+    tab[:, _T0 : _T0 + MAX_LUT], tab[:, _K0 : _K0 + MAX_LUT] = t, luts["k_lut"]
+    tab[:, _C0 : _C0 + MAX_LUT], tab[:, _H0 : _H0 + MAX_LUT] = cp, H_nodes
+    return tab.to(dtype).contiguous()
+
+
+def _params(
+    dtype: torch.dtype, device: torch.device, T_ref: float = 1.0, T_amb: float = 0.0, Q_ref: float = 1.0,
+    dx: float = 1.0, dy: float = 1.0, dz: float = 1.0,
+) -> Tensor:  # fmt: skip
+    """Constants as a tensor in the field dtype: Triton passes Python floats as fp32, too coarse for float64 checks."""
+    vals = [T_ref, T_amb, Q_ref, 1.0 / dx**2, 1.0 / dy**2, 1.0 / dz**2, 0.0, SHARPNESS]
+    return torch.tensor(vals, dtype=dtype, device=device)
+
 
 if _TRITON_AVAILABLE:
 
     @triton.jit
-    def _pde_fwd_kernel(
-        v_ptr,
-        x_tau_ptr,
-        T_in_ptr,
-        Q_ptr,
-        res_ptr,
-        Nx,
-        Ny,
-        Nz,
-        NyNx,
-        tau_f,
-        one_minus_tau_f,
-        T_ref_f,
-        T_ambient_f,
-        Q_ref_f,
-        inv_Q_ref_f,
-        rho_f,
-        cp_f,
-        k_f,
-        inv_dx2,
-        inv_dy2,
-        inv_dz2,
-        inv_dt_s_Q_ref_f,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        """Per-voxel: residual = lhs_scaled − rhs_scaled.
-
-        All input pointers address flat (Nz*Ny*Nx,) float32 arrays for a
-        single batch element.  Neumann BCs are enforced by clamping neighbor
-        indices to [0, Nmax-1].
-        """
-        pid = tl.program_id(0)
-        flat = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        N_spatial = Nx * Ny * Nz
-        mask = flat < N_spatial
-
-        ix = flat % Nx
-        iy = (flat // Nx) % Ny
-        iz = flat // NyNx
-
-        idx_c = iz * NyNx + iy * Nx + ix
-        v_c = tl.load(v_ptr + idx_c, mask=mask, other=0.0).to(tl.float32)
-        x_c = tl.load(x_tau_ptr + idx_c, mask=mask, other=0.0).to(tl.float32)
-        T_in_c = tl.load(T_in_ptr + idx_c, mask=mask, other=0.0).to(tl.float32)
-        Q_c = tl.load(Q_ptr + idx_c, mask=mask, other=0.0).to(tl.float32)
-
-        T_pred_c = (x_c + one_minus_tau_f * v_c) * T_ref_f + T_ambient_f
-        T_in_SI_c = T_in_c * T_ref_f + T_ambient_f
-        lhs = rho_f * cp_f * (T_pred_c - T_in_SI_c) * inv_dt_s_Q_ref_f
-
-        ix_xp = tl.minimum(ix + 1, Nx - 1)
-        ix_xm = tl.maximum(ix - 1, 0)
-        iy_yp = tl.minimum(iy + 1, Ny - 1)
-        iy_ym = tl.maximum(iy - 1, 0)
-        iz_zp = tl.minimum(iz + 1, Nz - 1)
-        iz_zm = tl.maximum(iz - 1, 0)
-
-        # Load neighbors and compute T_pred_SI at each neighbor
-        idx_xp = iz * NyNx + iy * Nx + ix_xp
-        T_xp = (
-            tl.load(x_tau_ptr + idx_xp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_xp, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        idx_xm = iz * NyNx + iy * Nx + ix_xm
-        T_xm = (
-            tl.load(x_tau_ptr + idx_xm, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_xm, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        idx_yp = iz * NyNx + iy_yp * Nx + ix
-        T_yp = (
-            tl.load(x_tau_ptr + idx_yp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_yp, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        idx_ym = iz * NyNx + iy_ym * Nx + ix
-        T_ym = (
-            tl.load(x_tau_ptr + idx_ym, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_ym, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        idx_zp = iz_zp * NyNx + iy * Nx + ix
-        T_zp = (
-            tl.load(x_tau_ptr + idx_zp, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_zp, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        idx_zm = iz_zm * NyNx + iy * Nx + ix
-        T_zm = (
-            tl.load(x_tau_ptr + idx_zm, mask=mask, other=0.0).to(tl.float32)
-            + one_minus_tau_f * tl.load(v_ptr + idx_zm, mask=mask, other=0.0).to(tl.float32)
-        ) * T_ref_f + T_ambient_f
-
-        lap = (
-            (T_xp - 2.0 * T_pred_c + T_xm) * inv_dx2
-            + (T_yp - 2.0 * T_pred_c + T_ym) * inv_dy2
-            + (T_zp - 2.0 * T_pred_c + T_zm) * inv_dz2
-        )
-        rhs = (k_f * lap + Q_c * Q_ref_f) * inv_Q_ref_f
-        tl.store(res_ptr + idx_c, (lhs - rhs).to(tl.float32), mask=mask)
+    def _material_at(T, solid_in, tab, SHARP, MAXL: tl.constexpr):  # SHARP: a value loaded in the field dtype
+        """H, cp_eff, k and dk/dT at T, as enthalpy, cp_eff, k_eff and autograd of k_eff in PyTorch."""
+        n = tl.load(tab + 6).to(tl.int32)
+        L = tl.load(tab + 1)
+        T_s = tl.load(tab + 2)
+        T_l = tl.load(tab + 3)
+        k_p = tl.load(tab + 4)
+        t_first = tl.load(tab + 8)
+        t_last = tl.load(tab + 8 + n - 1)
+        k_val = tl.zeros_like(T) + tl.load(tab + 8 + MAXL)
+        cp_val = tl.zeros_like(T) + tl.load(tab + 8 + 2 * MAXL)
+        k_slope = tl.zeros_like(T)
+        H_s = tl.zeros_like(T)
+        Tc = tl.minimum(tl.maximum(T, t_first), t_last)
+        for i in tl.static_range(MAXL - 1):
+            valid = (i + 1) < n
+            t0 = tl.load(tab + 8 + i)
+            t1 = tl.load(tab + 8 + i + 1)
+            k0 = tl.load(tab + 8 + MAXL + i)
+            k1 = tl.load(tab + 8 + MAXL + i + 1)
+            c0 = tl.load(tab + 8 + 2 * MAXL + i)
+            c1 = tl.load(tab + 8 + 2 * MAXL + i + 1)
+            h0 = tl.load(tab + 8 + 3 * MAXL + i)
+            span = tl.where(valid, t1 - t0, 1.0)
+            # interpolate_1d: segment (t0, t1], linear inside.
+            inside = valid & (t0 < T) & (t1 >= T)
+            w = (T - t0) / span
+            k_val = tl.where(inside, k0 + w * (k1 - k0), k_val)
+            k_slope = tl.where(inside, (k1 - k0) / span, k_slope)
+            cp_val = tl.where(inside, c0 + w * (c1 - c0), cp_val)
+            # Exact integral of the piecewise-linear cp table, on T clamped to the table.
+            in_h = valid & (t0 < Tc) & (t1 >= Tc)
+            s = Tc - t0
+            H_s = tl.where(in_h, h0 + c0 * s + 0.5 * (c1 - c0) / span * s * s, H_s)
+        above = t_last <= T
+        k_val = tl.where(above, tl.load(tab + 8 + MAXL + n - 1), k_val)
+        k_slope = tl.where(above, 0.0, k_slope)
+        cp_last = tl.load(tab + 8 + 2 * MAXL + n - 1)
+        cp_val = tl.where(above, cp_last, cp_val)
+        cp_first = tl.load(tab + 8 + 2 * MAXL)
+        H_s = H_s + cp_first * tl.minimum(T - t_first, 0.0) + cp_last * tl.maximum(T - t_last, 0.0)
+        # Latent heat: L·φ(T) with the sigmoid of melt_fraction / cp_eff.
+        width = T_l - T_s
+        width = tl.where(width < 1e-6, 1.0, width)
+        half = 0.5 * width
+        lat = tl.where(L > 1e-9, L, 0.0)
+        phi = 1.0 / (1.0 + tl.exp(-SHARP * (T - (T_s + half)) / half))
+        H = H_s + lat * phi
+        cp = cp_val + lat * SHARP * phi * (1.0 - phi) / half
+        solid = (solid_in > 0.5) | (T_s <= T)
+        k = tl.where(solid, k_val, k_p)
+        dk = tl.where(solid, k_slope, 0.0)
+        return H, cp, k, dk
 
     @triton.jit
-    def _pde_bwd_kernel(
-        res_ptr,
-        grad_v_ptr,
-        Nx,
-        Ny,
-        Nz,
-        NyNx,
-        coeff_lhs_f,
-        coeff_rhs_f,
-        inv_dx2,
-        inv_dy2,
-        inv_dz2,
-        BLOCK_SIZE: tl.constexpr,
-    ):
-        """Per-voxel: grad_v = coeff_lhs·res − coeff_rhs·∇²(res).
+    def _probe_kernel(T_ptr, m_ptr, tab_ptr, H_ptr, cp_ptr, k_ptr, dk_ptr, N, prm_ptr,
+                      ROW: tl.constexpr, MAXL: tl.constexpr, BLOCK: tl.constexpr):  # fmt: skip
+        b = tl.program_id(0)
+        SHARP = tl.load(prm_ptr + 7)
+        offs = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+        ok = offs < N
+        base = b * N + offs
+        T = tl.load(T_ptr + base, mask=ok, other=300.0)
+        m = tl.load(m_ptr + base, mask=ok, other=0.0)
+        H, cp, k, dk = _material_at(T, m, tab_ptr + b * ROW, SHARP, MAXL)
+        tl.store(H_ptr + base, H, mask=ok)
+        tl.store(cp_ptr + base, cp, mask=ok)
+        tl.store(k_ptr + base, k, mask=ok)
+        tl.store(dk_ptr + base, dk, mask=ok)
 
-        coeff_lhs = 2*grad_out/N · (1−τ)·T_ref/Q_ref · ρ·cp/dt_s
-        coeff_rhs = 2*grad_out/N · (1−τ)·T_ref/Q_ref · k
+
+def probe_material(T: Tensor, mask: Tensor, material: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """H, cp_eff, k and dk/dT for (B, N) temperatures and masks: the kernels' material functions, for testing."""
+    T, mask = T.contiguous(), mask.to(T.dtype).contiguous()
+    tab = material_table(material, T.dtype)
+    out = [torch.empty_like(T) for _ in range(4)]
+    B, N = T.shape
+    _probe_kernel[(B, triton.cdiv(N, _BLOCK))](
+        T, mask, tab, *out, N, _params(T.dtype, T.device), ROW=_ROW, MAXL=MAX_LUT, BLOCK=_BLOCK
+    )
+    return out[0], out[1], out[2], out[3]
+
+
+FORMS = ("coupled", "tin")
+_EPS_HARMONIC = 1e-12  # ops.harmonic_mean
+
+if _TRITON_AVAILABLE:
+
+    @triton.jit
+    def _field_T(idx, ok, v_ptr, x_ptr, tin_ptr, omt, T_ref, T_amb, COUPLED: tl.constexpr):
+        """SI temperature of the field the diffusion term uses: the prediction (coupled) or T_in (tin)."""
+        if COUPLED:
+            x = tl.load(x_ptr + idx, mask=ok, other=0.0)
+            v = tl.load(v_ptr + idx, mask=ok, other=0.0)
+            return (x + omt * v) * T_ref + T_amb
+        else:
+            return tl.load(tin_ptr + idx, mask=ok, other=0.0) * T_ref + T_amb
+
+    @triton.jit
+    def _harmonic(a, b):
+        return 2.0 * a * b / (a + b + 1e-12)
+
+    @triton.jit
+    def _fwd_kernel(v_ptr, x_ptr, tin_ptr, tgt_ptr, q_ptr, m_ptr, omt_ptr, tab_ptr, R_ptr, S_ptr,
+                    Nx, Ny, Nz, prm_ptr,
+                    COUPLED: tl.constexpr, ROW: tl.constexpr, MAXL: tl.constexpr, BLOCK: tl.constexpr):  # fmt: skip
+        b = tl.program_id(0)
+        T_ref, T_amb, Q_ref = tl.load(prm_ptr + 0), tl.load(prm_ptr + 1), tl.load(prm_ptr + 2)
+        inv_dx2, inv_dy2, inv_dz2 = tl.load(prm_ptr + 3), tl.load(prm_ptr + 4), tl.load(prm_ptr + 5)
+        SHARP = tl.load(prm_ptr + 7)
+        N = Nx * Ny * Nz
+        offs = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+        ok = offs < N
+        ix = offs % Nx
+        iy = (offs // Nx) % Ny
+        iz = offs // (Nx * Ny)
+        inner = ok & (ix > 0) & (ix < Nx - 1) & (iy > 0) & (iy < Ny - 1) & (iz > 0) & (iz < Nz - 1)
+        base = b * N
+        c = base + offs
+        tab = tab_ptr + b * ROW
+        rho = tl.load(tab + 0)
+        inv_dt = tl.load(tab + 5)
+        omt = tl.load(omt_ptr + b)
+
+        T_in = tl.load(tin_ptr + c, mask=inner, other=0.0) * T_ref + T_amb
+        T_tg = tl.load(tgt_ptr + c, mask=inner, other=0.0) * T_ref + T_amb
+        T_pr = _field_T(c, inner, v_ptr, x_ptr, tin_ptr, omt, T_ref, T_amb, True)
+        m_c = tl.load(m_ptr + c, mask=inner, other=0.0)
+        H_in, _, _, _ = _material_at(T_in, m_c, tab, SHARP, MAXL)
+        H_tg, _, _, _ = _material_at(T_tg, m_c, tab, SHARP, MAXL)
+        H_pr, _, _, _ = _material_at(T_pr, m_c, tab, SHARP, MAXL)
+
+        T_c = _field_T(c, inner, v_ptr, x_ptr, tin_ptr, omt, T_ref, T_amb, COUPLED)
+        _, _, k_c, _ = _material_at(T_c, m_c, tab, SHARP, MAXL)
+        div = tl.zeros_like(T_c)
+        for axis in tl.static_range(3):
+            if axis == 0:
+                step = 1
+                inv_h2 = inv_dx2
+            elif axis == 1:
+                step = Nx
+                inv_h2 = inv_dy2
+            else:
+                step = Nx * Ny
+                inv_h2 = inv_dz2
+            n_lo = c - step
+            n_hi = c + step
+            T_lo = _field_T(n_lo, inner, v_ptr, x_ptr, tin_ptr, omt, T_ref, T_amb, COUPLED)
+            T_hi = _field_T(n_hi, inner, v_ptr, x_ptr, tin_ptr, omt, T_ref, T_amb, COUPLED)
+            _, _, k_lo, _ = _material_at(T_lo, tl.load(m_ptr + n_lo, mask=inner, other=0.0), tab, SHARP, MAXL)
+            _, _, k_hi, _ = _material_at(T_hi, tl.load(m_ptr + n_hi, mask=inner, other=0.0), tab, SHARP, MAXL)
+            div += (_harmonic(k_c, k_hi) * (T_hi - T_c) - _harmonic(k_c, k_lo) * (T_c - T_lo)) * inv_h2
+
+        Q = tl.load(q_ptr + c, mask=inner, other=0.0) * Q_ref
+        R = rho * (H_pr - H_in) * inv_dt - div - Q
+        S = rho * (H_tg - H_in) * inv_dt
+        tl.store(R_ptr + c, tl.where(inner, R, 0.0), mask=ok)
+        tl.store(S_ptr + c, tl.where(inner, S, 0.0), mask=ok)
+
+    @triton.jit
+    def _bwd_kernel(v_ptr, x_ptr, m_ptr, omt_ptr, tab_ptr, R_ptr, coeff_ptr, G_ptr,
+                    Nx, Ny, Nz, prm_ptr,
+                    COUPLED: tl.constexpr, ROW: tl.constexpr, MAXL: tl.constexpr, BLOCK: tl.constexpr):  # fmt: skip
+        """dL/dv for every voxel. g = coeff·R is zero on the face layer, where R is not defined.
+
+        Storage: g_j·ρ·cp_eff(T_j)/dt. Coupled diffusion, summed over the faces (j, n) of voxel j:
+        −(g_n − g_j)·[K_jn − (T_n − T_j)·k'_j·∂K/∂k_j]/h², with K the harmonic mean.
         """
-        pid = tl.program_id(0)
-        flat = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        N_spatial = Nx * Ny * Nz
-        mask = flat < N_spatial
+        b = tl.program_id(0)
+        T_ref, T_amb = tl.load(prm_ptr + 0), tl.load(prm_ptr + 1)
+        inv_dx2, inv_dy2, inv_dz2 = tl.load(prm_ptr + 3), tl.load(prm_ptr + 4), tl.load(prm_ptr + 5)
+        SHARP = tl.load(prm_ptr + 7)
+        N = Nx * Ny * Nz
+        offs = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+        ok = offs < N
+        base = b * N
+        j = base + offs
+        tab = tab_ptr + b * ROW
+        rho = tl.load(tab + 0)
+        inv_dt = tl.load(tab + 5)
+        omt = tl.load(omt_ptr + b)
+        coeff = tl.load(coeff_ptr)
 
-        ix = flat % Nx
-        iy = (flat // Nx) % Ny
-        iz = flat // NyNx
-
-        idx_c = iz * NyNx + iy * Nx + ix
-        res_c = tl.load(res_ptr + idx_c, mask=mask, other=0.0).to(tl.float32)
-
-        ix_xp = tl.minimum(ix + 1, Nx - 1)
-        ix_xm = tl.maximum(ix - 1, 0)
-        iy_yp = tl.minimum(iy + 1, Ny - 1)
-        iy_ym = tl.maximum(iy - 1, 0)
-        iz_zp = tl.minimum(iz + 1, Nz - 1)
-        iz_zm = tl.maximum(iz - 1, 0)
-
-        res_xp = tl.load(res_ptr + (iz * NyNx + iy * Nx + ix_xp), mask=mask, other=0.0).to(tl.float32)
-        res_xm = tl.load(res_ptr + (iz * NyNx + iy * Nx + ix_xm), mask=mask, other=0.0).to(tl.float32)
-        res_yp = tl.load(res_ptr + (iz * NyNx + iy_yp * Nx + ix), mask=mask, other=0.0).to(tl.float32)
-        res_ym = tl.load(res_ptr + (iz * NyNx + iy_ym * Nx + ix), mask=mask, other=0.0).to(tl.float32)
-        res_zp = tl.load(res_ptr + (iz_zp * NyNx + iy * Nx + ix), mask=mask, other=0.0).to(tl.float32)
-        res_zm = tl.load(res_ptr + (iz_zm * NyNx + iy * Nx + ix), mask=mask, other=0.0).to(tl.float32)
-
-        lap_res = (
-            (res_xp - 2.0 * res_c + res_xm) * inv_dx2
-            + (res_yp - 2.0 * res_c + res_ym) * inv_dy2
-            + (res_zp - 2.0 * res_c + res_zm) * inv_dz2
-        )
-        grad_v = coeff_lhs_f * res_c - coeff_rhs_f * lap_res
-        tl.store(grad_v_ptr + idx_c, grad_v.to(tl.float32), mask=mask)
-
-
-# ---------------------------------------------------------------------------
-# Triton launcher helpers
-# ---------------------------------------------------------------------------
-
-_BLOCK_SIZE = 256
-
-
-def _triton_forward_single(
-    v: Tensor,
-    x_tau: Tensor,
-    T_in: Tensor,
-    Q: Tensor,
-    Nz: int,
-    Ny: int,
-    Nx: int,
-    tau_b: float,
-    T_ref: float,
-    T_ambient: float,
-    Q_ref: float,
-    dt_s: float,
-    rho_b: float,
-    cp_b: float,
-    k_b: float,
-    dx: float,
-    dy: float,
-    dz: float,
-) -> Tensor:
-    """Launch forward kernel for one batch element. Returns (Nz, Ny, Nx) residual."""
-    N_spatial = Nz * Ny * Nx
-    res = torch.empty(N_spatial, device=v.device, dtype=torch.float32)
-    grid = ((N_spatial + _BLOCK_SIZE - 1) // _BLOCK_SIZE,)
-    _pde_fwd_kernel[grid](
-        v.view(-1).float(),
-        x_tau.view(-1).float(),
-        T_in.view(-1).float(),
-        Q.view(-1).float(),
-        res,
-        Nx,
-        Ny,
-        Nz,
-        Ny * Nx,
-        tau_b,
-        1.0 - tau_b,
-        T_ref,
-        T_ambient,
-        Q_ref,
-        1.0 / Q_ref,
-        rho_b,
-        cp_b,
-        k_b,
-        1.0 / (dx * dx),
-        1.0 / (dy * dy),
-        1.0 / (dz * dz),
-        1.0 / (dt_s * Q_ref),
-        BLOCK_SIZE=_BLOCK_SIZE,
-    )
-    return res.view(Nz, Ny, Nx)
-
-
-def _triton_backward_single(
-    res: Tensor,
-    Nz: int,
-    Ny: int,
-    Nx: int,
-    coeff_lhs: float,
-    coeff_rhs: float,
-    dx: float,
-    dy: float,
-    dz: float,
-) -> Tensor:
-    """Launch backward kernel for one batch element. Returns (Nz, Ny, Nx) grad_v."""
-    N_spatial = Nz * Ny * Nx
-    grad_v = torch.empty(N_spatial, device=res.device, dtype=torch.float32)
-    grid = ((N_spatial + _BLOCK_SIZE - 1) // _BLOCK_SIZE,)
-    _pde_bwd_kernel[grid](
-        res.view(-1).float(),
-        grad_v,
-        Nx,
-        Ny,
-        Nz,
-        Ny * Nx,
-        coeff_lhs,
-        coeff_rhs,
-        1.0 / (dx * dx),
-        1.0 / (dy * dy),
-        1.0 / (dz * dz),
-        BLOCK_SIZE=_BLOCK_SIZE,
-    )
-    return grad_v.view(Nz, Ny, Nx)
-
-
-# ---------------------------------------------------------------------------
-# PyTorch reference (CPU-compatible, used for testing and CPU fallback)
-# ---------------------------------------------------------------------------
-
-
-def _compute_residual_field(
-    v_pred: Tensor,
-    x_tau: Tensor,
-    tau: Tensor,
-    T_in: Tensor,
-    Q: Tensor,
-    rho: Tensor,
-    cp: Tensor,
-    k: Tensor,
-    dx: float,
-    dy: float,
-    dz: float,
-    T_ref: float,
-    T_ambient: float,
-    Q_ref: float,
-    dt_s: float,
-) -> Tensor:
-    """Return (B, 1, Nz, Ny, Nx) residual field (lhs_scaled − rhs_scaled)."""
-    tau_v = tau.view(-1, 1, 1, 1, 1).to(v_pred.dtype)
-    T_pred_norm = x_tau + (1.0 - tau_v) * v_pred
-    T_pred_SI = T_pred_norm * T_ref + T_ambient
-    T_in_SI = T_in * T_ref + T_ambient
-    Q_SI = Q * Q_ref
-
-    lhs = rho * cp * (T_pred_SI - T_in_SI) / dt_s
-    k_field = k.expand_as(T_pred_SI)
-    rhs = div_k_grad(T_pred_SI.float(), k_field.float(), dx, dy, dz) + Q_SI
-
-    return (lhs - rhs) / Q_ref
-
-
-def _pde_residual_pytorch(
-    v_pred: Tensor,
-    x_tau: Tensor,
-    tau: Tensor,
-    T_in: Tensor,
-    Q: Tensor,
-    rho: Tensor,
-    cp: Tensor,
-    k: Tensor,
-    dx: float,
-    dy: float,
-    dz: float,
-    T_ref: float,
-    T_ambient: float,
-    Q_ref: float,
-    dt_s: float,
-) -> Tensor:
-    """PyTorch PDE residual loss — matches train_fm_dit_rope.py."""
-    res = _compute_residual_field(
-        v_pred,
-        x_tau,
-        tau,
-        T_in,
-        Q,
-        rho,
-        cp,
-        k,
-        dx,
-        dy,
-        dz,
-        T_ref,
-        T_ambient,
-        Q_ref,
-        dt_s,
-    )
-    return F.mse_loss(res, torch.zeros_like(res))
-
-
-# ---------------------------------------------------------------------------
-# Analytical backward (PyTorch ops — used on CPU and as reference)
-# ---------------------------------------------------------------------------
-
-
-def _gradient_pytorch(
-    res_field: Tensor,
-    tau: Tensor,
-    T_ref: float,
-    Q_ref: float,
-    rho: Tensor,
-    cp: Tensor,
-    k: Tensor,
-    dx: float,
-    dy: float,
-    dz: float,
-    dt_s: float,
-    N: int,
-    grad_out: float,
-) -> Tensor:
-    """Compute ∂L/∂v_pred analytically from the saved residual field.
-
-    Returns (B, 1, Nz, Ny, Nx) gradient.
-    """
-    B = res_field.shape[0]
-    res = res_field.unsqueeze(1)  # (B, 1, Nz, Ny, Nx)
-    k_field = k.expand_as(res).float()
-    # div_k_grad with uniform k = k * Laplacian(res)
-    lap_k_res = div_k_grad(res.float(), k_field, dx, dy, dz)
-
-    tau_v = tau.view(B, 1, 1, 1, 1).to(res.dtype)
-    coeff = (2.0 * grad_out / N) * (1.0 - tau_v) * (T_ref / Q_ref)
-    return coeff * (rho * cp / dt_s * res - lap_k_res)
-
-
-# ---------------------------------------------------------------------------
-# PDEResidualLoss — custom autograd Function
-# ---------------------------------------------------------------------------
+        T_j = _field_T(j, ok, v_ptr, x_ptr, x_ptr, omt, T_ref, T_amb, True)
+        m_j = tl.load(m_ptr + j, mask=ok, other=0.0)
+        _, cp_j, k_j, dk_j = _material_at(T_j, m_j, tab, SHARP, MAXL)
+        g_j = coeff * tl.load(R_ptr + j, mask=ok, other=0.0)
+        grad = g_j * rho * cp_j * inv_dt
+        if COUPLED:
+            ix = offs % Nx
+            iy = (offs // Nx) % Ny
+            iz = offs // (Nx * Ny)
+            for face in tl.static_range(6):
+                if face == 0:
+                    has = ix > 0
+                    step = -1
+                    inv_h2 = inv_dx2
+                elif face == 1:
+                    has = ix < Nx - 1
+                    step = 1
+                    inv_h2 = inv_dx2
+                elif face == 2:
+                    has = iy > 0
+                    step = -Nx
+                    inv_h2 = inv_dy2
+                elif face == 3:
+                    has = iy < Ny - 1
+                    step = Nx
+                    inv_h2 = inv_dy2
+                elif face == 4:
+                    has = iz > 0
+                    step = -Nx * Ny
+                    inv_h2 = inv_dz2
+                else:
+                    has = iz < Nz - 1
+                    step = Nx * Ny
+                    inv_h2 = inv_dz2
+                nb = ok & has
+                n = j + step
+                T_n = _field_T(n, nb, v_ptr, x_ptr, x_ptr, omt, T_ref, T_amb, True)
+                _, _, k_n, _ = _material_at(T_n, tl.load(m_ptr + n, mask=nb, other=0.0), tab, SHARP, MAXL)
+                g_n = coeff * tl.load(R_ptr + n, mask=nb, other=0.0)
+                den = k_j + k_n + 1e-12
+                K = 2.0 * k_j * k_n / den
+                dK = 2.0 * k_n * (k_n + 1e-12) / (den * den)
+                term = (g_n - g_j) * (K - (T_n - T_j) * dk_j * dK) * inv_h2
+                grad -= tl.where(nb, term, 0.0)
+        tl.store(G_ptr + j, grad * omt * T_ref, mask=ok)
 
 
 class PDEResidualLoss(torch.autograd.Function):
-    """Heat-PDE residual loss with Triton-accelerated forward and backward.
+    """Physics loss Σ R² / Σ S² with Triton forward and backward; gradient only for ``v_pred``.
+
+    Fields are (B, 1, D, H, W) in the dataset's normalized units: T as (T_SI − T_ambient)/T_ref, Q as Q_SI/Q_ref.
+    ``x_tau`` must be detached by the caller. ``material`` is (B, MATERIAL_DIM).
 
     Usage::
 
-        loss = PDEResidualLoss.apply(
-            v_pred, x_tau.detach(), tau, T_in, Q,
-            rho, cp, k, dx, dy, dz, T_ref, T_ambient, Q_ref, dt_s,
-        )
-        loss.backward()
+        loss = PDEResidualLoss.apply(v_pred, x_tau.detach(), tau, T_in, T_target, Q, mask_in, material, form,
+                                     T_ref, T_ambient, Q_ref, dx, dy, dz)
     """
 
     @staticmethod
-    def forward(
+    def forward(  # type: ignore[override]
         ctx: torch.autograd.function.FunctionCtx,
-        v_pred: Tensor,  # (B,1,Nz,Ny,Nx) — differentiable
-        x_tau: Tensor,  # (B,1,Nz,Ny,Nx) — always detached by caller
-        tau: Tensor,  # (B,)
-        T_in: Tensor,  # (B,1,Nz,Ny,Nx)
-        Q: Tensor,  # (B,1,Nz,Ny,Nx)
-        rho: Tensor,  # (B,1,1,1,1)
-        cp: Tensor,  # (B,1,1,1,1)
-        k: Tensor,  # (B,1,1,1,1)
-        dx: float,
-        dy: float,
-        dz: float,
-        T_ref: float,
-        T_ambient: float,
-        Q_ref: float,
-        dt_s: float,
-    ) -> Tensor:
+        v_pred: Tensor, x_tau: Tensor, tau: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor,
+        material: Tensor, form: str, T_ref: float, T_ambient: float, Q_ref: float, dx: float, dy: float, dz: float,
+    ) -> Tensor:  # fmt: skip
+        if form not in FORMS:
+            raise ValueError(f"physics form must be one of {FORMS}, got {form!r}")
+        if not (v_pred.ndim == 5 and v_pred.shape[1] == 1 and v_pred.is_cuda):
+            raise ValueError(f"v_pred must be a CUDA tensor of shape (B, 1, D, H, W), got {tuple(v_pred.shape)}")
+        dtype = torch.float64 if v_pred.dtype == torch.float64 else torch.float32
         B, _, Nz, Ny, Nx = v_pred.shape
-        device = v_pred.device
-        use_triton = _TRITON_AVAILABLE and device.type == "cuda"
-
-        rho_f = rho.float()
-        cp_f = cp.float()
-        k_f = k.float()
-        tau_f = tau.float()
-
-        if use_triton:
-            res_list = []
-            for b in range(B):
-                res_b = _triton_forward_single(
-                    v_pred[b, 0].contiguous(),
-                    x_tau[b, 0].contiguous(),
-                    T_in[b, 0].contiguous(),
-                    Q[b, 0].contiguous(),
-                    Nz,
-                    Ny,
-                    Nx,
-                    tau_f[b].item(),
-                    T_ref,
-                    T_ambient,
-                    Q_ref,
-                    dt_s,
-                    rho_f[b, 0, 0, 0, 0].item(),
-                    cp_f[b, 0, 0, 0, 0].item(),
-                    k_f[b, 0, 0, 0, 0].item(),
-                    dx,
-                    dy,
-                    dz,
-                )
-                res_list.append(res_b)
-            res_stack = torch.stack(res_list)  # (B, Nz, Ny, Nx)
-        else:
-            res_stack = (
-                _compute_residual_field(
-                    v_pred.float(),
-                    x_tau.float(),
-                    tau_f,
-                    T_in.float(),
-                    Q.float(),
-                    rho_f,
-                    cp_f,
-                    k_f,
-                    dx,
-                    dy,
-                    dz,
-                    T_ref,
-                    T_ambient,
-                    Q_ref,
-                    dt_s,
-                )
-                .squeeze(1)
-                .detach()
-            )  # (B, Nz, Ny, Nx) — detach: no double-backprop
-
-        # Tensors go through save_for_backward so the autograd engine tracks mutations.
-        # Scalar ints/floats and bools are stored directly on ctx.
-        ctx.save_for_backward(res_stack, tau_f, rho_f, cp_f, k_f)
-        ctx.dx, ctx.dy, ctx.dz = dx, dy, dz
-        ctx.dt_s, ctx.T_ref, ctx.Q_ref = dt_s, T_ref, Q_ref
-        ctx.use_triton = use_triton
-        ctx.B, ctx.Nz, ctx.Ny, ctx.Nx = B, Nz, Ny, Nx
-
-        return res_stack.pow(2).mean()
+        f = [t.detach().to(dtype).contiguous() for t in (v_pred, x_tau, T_in, T_target, Q, mask_in)]
+        v, x, tin, tgt, q, m = f
+        omt = (1.0 - tau.detach().to(dtype)).contiguous()
+        tab = material_table(material.to(v.device), dtype)
+        R = torch.empty_like(v)
+        S = torch.empty_like(v)
+        prm = _params(dtype, v.device, T_ref, T_ambient, Q_ref, dx, dy, dz)
+        grid = (B, triton.cdiv(Nx * Ny * Nz, _BLOCK))
+        _fwd_kernel[grid](
+            v, x, tin, tgt, q, m, omt, tab, R, S, Nx, Ny, Nz, prm,
+            COUPLED=form == "coupled", ROW=_ROW, MAXL=MAX_LUT, BLOCK=_BLOCK,
+        )  # fmt: skip
+        den = S.pow(2).sum()
+        if not float(den) > 0.0:
+            raise ValueError("no stored heat in the batch: every patch interior has T_target == T_in")
+        ctx.save_for_backward(v, x, m, omt, tab, R, den, prm)
+        ctx.dims, ctx.coupled, ctx.grid = (Nx, Ny, Nz), form == "coupled", grid
+        ctx.out_dtype = v_pred.dtype
+        return (R.pow(2).sum() / den).to(v_pred.dtype)
 
     @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        grad_output: Tensor,
-    ):
-        res_stack, tau, rho, cp, k = ctx.saved_tensors
-        B, Nz, Ny, Nx = ctx.B, ctx.Nz, ctx.Ny, ctx.Nx
-        T_ref, Q_ref = ctx.T_ref, ctx.Q_ref
-        dx, dy, dz, dt_s = ctx.dx, ctx.dy, ctx.dz, ctx.dt_s
-        use_triton = ctx.use_triton
-        N = B * Nz * Ny * Nx
-        grad_out = grad_output.item()
-
-        if use_triton:
-            grad_list = []
-            for b in range(B):
-                tau_b = tau[b].item()
-                rho_b = rho[b, 0, 0, 0, 0].item()
-                cp_b = cp[b, 0, 0, 0, 0].item()
-                k_b = k[b, 0, 0, 0, 0].item()
-                shared = 2.0 * grad_out / N * (1.0 - tau_b) * T_ref / Q_ref
-                coeff_lhs = shared * rho_b * cp_b / dt_s
-                coeff_rhs = shared * k_b
-                grad_b = _triton_backward_single(
-                    res_stack[b].contiguous(),
-                    Nz,
-                    Ny,
-                    Nx,
-                    coeff_lhs,
-                    coeff_rhs,
-                    dx,
-                    dy,
-                    dz,
-                )
-                grad_list.append(grad_b)
-            grad_v = torch.stack(grad_list).unsqueeze(1)
-        else:
-            grad_v = _gradient_pytorch(
-                res_stack,
-                tau,
-                T_ref,
-                Q_ref,
-                rho,
-                cp,
-                k,
-                dx,
-                dy,
-                dz,
-                dt_s,
-                N,
-                grad_out,
-            )
-
-        # (v_pred, x_tau, tau, T_in, Q, rho, cp, k, dx, dy, dz, T_ref,
-        #  T_ambient, Q_ref, dt_s)
-        return (
-            grad_v,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+    def backward(ctx: torch.autograd.function.FunctionCtx, grad_out: Tensor):  # type: ignore[override]
+        v, x, m, omt, tab, R, den, prm = ctx.saved_tensors  # type: ignore[attr-defined]
+        coeff = (2.0 * grad_out.to(v.dtype) / den).reshape(1).contiguous()
+        G = torch.empty_like(v)
+        _bwd_kernel[ctx.grid](  # type: ignore[attr-defined]
+            v,
+            x,
+            m,
+            omt,
+            tab,
+            R,
+            coeff,
+            G,
+            *ctx.dims,
+            prm,  # type: ignore[attr-defined]
+            COUPLED=ctx.coupled,
+            ROW=_ROW,
+            MAXL=MAX_LUT,
+            BLOCK=_BLOCK,  # type: ignore[attr-defined]
         )
+        return (G.to(ctx.out_dtype),) + (None,) * 14  # type: ignore[attr-defined]

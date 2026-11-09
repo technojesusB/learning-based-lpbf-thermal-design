@@ -1,13 +1,12 @@
 """train_fm_unet_triton.py — 3D U-Net flow matching with the Triton PDE-residual loss.
 
 Extends train_fm_dit_accelerate.py with:
-  - Custom Triton forward/backward kernels for the heat-PDE residual (PDEResidualLoss).
+  - Triton forward/backward kernels for the physics loss (neural_pbf.physics.triton_pde_loss).
   - torch.profiler integration: Chrome trace logged to MLflow artifacts after epoch 0.
 
 Run:
     uv run accelerate launch experiments/train_fm_unet_triton.py                  # run-level split from artifacts/uq/manifest.json
     uv run accelerate launch experiments/train_fm_unet_triton.py --in-channels 3   # ablation without T_in
-    uv run python experiments/train_fm_unet_triton.py --test-kernel  # kernel unit-test only
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ import argparse
 import datetime
 import logging
 import os
-import sys
 import tempfile
 from typing import Any
 
@@ -33,8 +31,6 @@ from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
 from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 from neural_pbf.models.generative.fm.config import FMConfig
 from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
-from neural_pbf.physics.fm_physics import denorm_cond_batch
-from neural_pbf.physics.triton_pde_loss import PDEResidualLoss, _pde_residual_pytorch
 from neural_pbf.training import (
     build_patch_data,
     load_checkpoint,
@@ -82,82 +78,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--relobralo_alpha", type=float, default=0.999)
     parser.add_argument("--relobralo_beta", type=float, default=0.9)
     parser.add_argument("--relobralo_epsilon", type=float, default=1e-8)
-    parser.add_argument("--test-kernel", action="store_true",
-                        help="Run Triton kernel unit test and exit.")
     return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Kernel verification (--test-kernel)
-# ---------------------------------------------------------------------------
-
-
-def _run_kernel_test() -> None:
-    """Unit-test: Triton PDEResidualLoss vs PyTorch float64 reference.
-    
-    Note: This test is intentionally kept in the experiment script rather than 
-    in tests/physics/ because Triton kernels require JIT-compilation on the 
-    target GPU architecture. Placing it here allows it to act as a "pre-flight 
-    sanity check" on the actual cluster node before launching a long training run, 
-    bypassing CPU-only CI environments where Triton compilation would fail.
-    """
-    print("=== Triton kernel unit test ===")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == "cpu":
-        print("WARNING: CUDA not available — testing CPU/PyTorch path only.")
-
-    B, D, H, W = 1, 4, 4, 4
-    torch.manual_seed(42)
-    phys = dict(dx=1e-3, dy=1e-3, dz=1e-3, T_ref=1.0, T_ambient=0.0, Q_ref=1.0, dt_s=1.0)
-
-    v64 = (torch.randn(B, 1, D, H, W, dtype=torch.float64) * 0.1).to(device)
-    x64 = (torch.randn(B, 1, D, H, W, dtype=torch.float64) * 0.1).to(device)
-    tau64 = (torch.rand(B, dtype=torch.float64) * 0.5).to(device)
-    T_in64 = (torch.rand(B, 1, D, H, W, dtype=torch.float64) * 0.5).to(device)
-    Q64 = torch.zeros(B, 1, D, H, W, dtype=torch.float64, device=device)
-    rho64 = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64, device=device)
-    cp64 = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64, device=device)
-    k64 = torch.full((B, 1, 1, 1, 1), 1.0, dtype=torch.float64, device=device)
-
-    ref_val = _pde_residual_pytorch(v64, x64.detach(), tau64, T_in64, Q64, rho64, cp64, k64, **phys).item()
-    got_val = PDEResidualLoss.apply(
-        v64.float(), x64.float().detach(), tau64.float(), T_in64.float(), Q64.float(),
-        rho64.float(), cp64.float(), k64.float(),
-        phys["dx"], phys["dy"], phys["dz"],
-        phys["T_ref"], phys["T_ambient"], phys["Q_ref"], phys["dt_s"],
-    ).item()
-    fwd_rel = abs(got_val - ref_val) / (abs(ref_val) + 1e-30)
-    fwd_ok = fwd_rel < 0.01 or abs(ref_val) < 1e-12
-    print(f"Forward  — ref={ref_val:.6e}  got={got_val:.6e}  rel_err={fwd_rel:.4f}  {'PASS' if fwd_ok else 'FAIL'}")
-
-    eps = 1e-4
-    v32 = v64.float()
-    v_apply = v32.clone().requires_grad_(True)
-    PDEResidualLoss.apply(
-        v_apply, x64.float().detach(), tau64.float(), T_in64.float(), Q64.float(),
-        rho64.float(), cp64.float(), k64.float(),
-        phys["dx"], phys["dy"], phys["dz"],
-        phys["T_ref"], phys["T_ambient"], phys["Q_ref"], phys["dt_s"],
-    ).backward()
-    grad_apply = v_apply.grad.clone()
-
-    torch.manual_seed(7)
-    direction = torch.randn_like(v64)
-    direction = direction / direction.norm()
-    L_plus = _pde_residual_pytorch(v64 + eps * direction, x64.detach(), tau64, T_in64, Q64, rho64, cp64, k64, **phys).item()
-    L_minus = _pde_residual_pytorch(v64 - eps * direction, x64.detach(), tau64, T_in64, Q64, rho64, cp64, k64, **phys).item()
-    fd_proj = (L_plus - L_minus) / (2 * eps)
-    ad_proj = (grad_apply.double() * direction).sum().item()
-    bwd_rel = abs(ad_proj - fd_proj) / (abs(fd_proj) + 1e-30)
-    bwd_ok = bwd_rel < 0.02 or abs(fd_proj) < 1e-12
-    print(f"Backward — fd={fd_proj:.6e}  apply_bwd={ad_proj:.6e}  rel_err={bwd_rel:.4f}  {'PASS' if bwd_ok else 'FAIL'}")
-
-    if fwd_ok and bwd_ok:
-        print("=== ALL PASS ===")
-        sys.exit(0)
-    else:
-        print("=== FAIL ===")
-        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +109,7 @@ def _make_train_batch_fn(
         v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
         loss_fm = fm_loss(v_pred, noise, T_tgt)
         if args.physics_loss_weight > 0:  # the Triton residual kernel needs a GPU; skip it when unused
-            rho = denorm_cond_batch(cond, ds_cfg, "rho")
-            cp_val = denorm_cond_batch(cond, ds_cfg, "cp")
-            k_val = denorm_cond_batch(cond, ds_cfg, "k_s")
-            phys = PDEResidualLoss.apply(
-                v_pred, x_tau.detach(), tau, T_in, Q,
-                rho, cp_val, k_val,
-                grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"],
-                ds_cfg.T_ref, ds_cfg.T_ambient, ds_cfg.Q_ref, args.dt_s,
-            )
+            raise NotImplementedError("the corrected physics loss is wired in through --physics_form")
         else:
             phys = torch.zeros((), device=accelerator.device)
         loss_fm_reduced = accelerator.gather(loss_fm.detach()).mean()
@@ -219,10 +132,6 @@ def _make_train_batch_fn(
 
 def main() -> None:
     args = _parse_args()
-
-    if args.test_kernel:
-        _run_kernel_test()
-        return
 
     if args.physics_loss_weight > 0:
         raise SystemExit(
