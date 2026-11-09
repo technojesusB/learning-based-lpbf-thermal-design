@@ -78,7 +78,7 @@ def _manifest(tmp_path: Path) -> Path:
 @pytest.mark.unit
 def test_sample_keys_reads_train_and_val_only(tmp_path: Path) -> None:
     manifest = json.loads(_manifest(tmp_path).read_text())
-    keys = mhr.sample_keys(manifest, per_run=(0,))
+    keys = mhr.sample_keys(manifest, positions=(0.0,))
     assert [k[1] for k in keys] == ["sample_000000", "sample_000001"]  # one train run, one val run
     assert all("missing" not in k[0] for k in keys)
 
@@ -88,14 +88,20 @@ def test_sample_keys_reads_train_and_val_only(tmp_path: Path) -> None:
 def test_sample_keys_refuses_cal_and_test(tmp_path: Path, name: str) -> None:
     manifest = json.loads(_manifest(tmp_path).read_text())
     with pytest.raises(ValueError, match="UQ pipeline"):
-        mhr.sample_keys(manifest, per_run=(0,), sets=("train", name))
+        mhr.sample_keys(manifest, positions=(0.0,), sets=("train", name))
 
 
 @pytest.mark.unit
-def test_sample_keys_refuses_missing_index(tmp_path: Path) -> None:
-    manifest = json.loads(_manifest(tmp_path).read_text())
-    with pytest.raises(IndexError):
-        mhr.sample_keys(manifest, per_run=(0, 7), sets=("train",))
+@pytest.mark.parametrize(("n", "expected"), [(50, [0, 12, 25, 37, 49]), (44, [0, 11, 22, 32, 43]), (1, [0] * 5)])
+def test_positions_map_to_indices_within_each_run(n: int, expected: list[int]) -> None:
+    """Runs have 44 to 50 samples; positions keep the pre-registered indices for full runs and stay in range."""
+    assert mhr.position_indices(n, mhr.POSITIONS) == expected
+
+
+@pytest.mark.unit
+def test_positions_outside_the_run_are_refused() -> None:
+    with pytest.raises(ValueError, match="position"):
+        mhr.position_indices(50, (0.0, 1.5))
 
 
 @pytest.mark.unit
@@ -134,7 +140,7 @@ def test_load_sample_rebuilds_grid_and_fields(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_measure_runs_gate_then_exposures_with_regimes(tmp_path: Path) -> None:
     manifest = json.loads(_manifest(tmp_path).read_text())
-    keys = mhr.sample_keys(manifest, per_run=(0, 1, 2), sets=("train",))
+    keys = mhr.sample_keys(manifest, positions=(0.0, 0.5, 1.0), sets=("train",))
     gate, rows = mhr.measure(keys, T_BOIL, torch.device("cpu"))
     assert len(gate) == len(rows) == 3
     assert all(g[residual_check.SOLVER_FORM] < residual_check.SUBSTEP_TOL for g in gate)
@@ -147,7 +153,7 @@ def test_measure_runs_gate_then_exposures_with_regimes(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_measure_stops_before_any_exposure_when_the_gate_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = json.loads(_manifest(tmp_path).read_text())
-    keys = mhr.sample_keys(manifest, per_run=(0, 1), sets=("train",))
+    keys = mhr.sample_keys(manifest, positions=(0.0, 0.5), sets=("train",))
     monkeypatch.setattr(mhr.residual_check, "substep_check", lambda *a, **k: {residual_check.SOLVER_FORM: 1.0})
     called = []
     monkeypatch.setattr(mhr.residual_check, "exposure_residuals", lambda *a, **k: called.append(1))
@@ -165,7 +171,8 @@ def test_decision_band(value: float, band: str) -> None:
 @pytest.mark.unit
 def test_render_names_the_chosen_variant_and_the_band(tmp_path: Path) -> None:
     manifest = json.loads(_manifest(tmp_path).read_text())
-    gate, rows = mhr.measure(mhr.sample_keys(manifest, per_run=(0, 1, 2), sets=("train",)), T_BOIL, torch.device("cpu"))
+    keys = mhr.sample_keys(manifest, positions=(0.0, 0.5, 1.0), sets=("train",))
+    gate, rows = mhr.measure(keys, T_BOIL, torch.device("cpu"))
     text = mhr.render(gate, rows)
     assert "Decision variant" in text and "Band" in text
     for regime in ("solid", "melt", "keyhole"):

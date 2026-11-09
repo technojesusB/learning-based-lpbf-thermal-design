@@ -32,7 +32,8 @@ PRESETS = {
     "IN718": MaterialConfig.in718_preset,
     "Ti64": MaterialConfig.ti64_preset,
 }
-PER_RUN = (0, 12, 25, 37, 49)
+# Relative positions in each run; for a 50-sample run these are indices 0, 12, 25, 37, 49.
+POSITIONS = (0.0, 0.25, 0.5, 0.75, 1.0)
 MEASURED_SETS = ("train", "val")
 FLOAT32_KEY = "float32 solver form"
 
@@ -41,19 +42,24 @@ class GateFailed(RuntimeError):
     """The solver form does not reproduce one substep: an implementation bug, not the large-step error."""
 
 
+def position_indices(n: int, positions: tuple[float, ...]) -> list[int]:
+    """Sample index at each relative position of a run with n samples: round half up of p·(n − 1)."""
+    if any(not 0.0 <= p <= 1.0 for p in positions):
+        raise ValueError(f"every position must lie in [0, 1], got {positions}")
+    return [int(p * (n - 1) + 0.5) for p in positions]
+
+
 def sample_keys(
-    manifest: dict[str, Any], per_run: tuple[int, ...], sets: tuple[str, ...] = MEASURED_SETS
+    manifest: dict[str, Any], positions: tuple[float, ...] = POSITIONS, sets: tuple[str, ...] = MEASURED_SETS
 ) -> list[tuple[str, str]]:
-    """(h5_path, sample_key) for the chosen sample indices of every run in `sets`. Other sets are never read."""
+    """(h5_path, sample_key) at the given relative positions of every run in `sets`. Other sets are never read."""
     forbidden = sorted(set(sets) - set(MEASURED_SETS))
     if forbidden:
         raise ValueError(f"{forbidden}: cal and test belong to the UQ pipeline and its logged test access")
     keys = []
     for name in sets:
         for run in manifest["sets"][name]:
-            for i in per_run:
-                if i >= len(run["sample_keys"]):
-                    raise IndexError(f"{run['h5_path']} has {len(run['sample_keys'])} samples, index {i} asked")
+            for i in position_indices(len(run["sample_keys"]), positions):
                 path, key = run["sample_keys"][i]
                 keys.append((path, key))
     return keys
@@ -175,14 +181,15 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--manifest", default="artifacts/uq/manifest.json")
-    p.add_argument("--per-run", default=",".join(map(str, PER_RUN)), help="sample indices per train run")
+    p.add_argument("--positions", default=",".join(map(str, POSITIONS)), help="relative sample positions per run")
     p.add_argument("--device", default="cpu")
     p.add_argument("--out", default="artifacts/physics_residual")
     args = p.parse_args(argv)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    keys = sample_keys(json.loads(Path(args.manifest).read_text()), tuple(int(i) for i in args.per_run.split(",")))
+    positions = tuple(float(x) for x in args.positions.split(","))
+    keys = sample_keys(json.loads(Path(args.manifest).read_text()), positions)
     print(f"{len(keys)} samples from {MEASURED_SETS}", flush=True)
     try:
         gate, rows = measure(keys, UQConfig().exploratory.T_boil_K, torch.device(args.device))
