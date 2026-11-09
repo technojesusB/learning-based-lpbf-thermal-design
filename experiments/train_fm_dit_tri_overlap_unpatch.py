@@ -243,9 +243,6 @@ def main() -> None:
         if is_main:
             mlflow.log_metric("train_loss", avg, step=epoch)
             mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
-            if weighter._ema_fm is not None:
-                mlflow.log_metric("fm_loss_ema", weighter._ema_fm, step=epoch)
-                mlflow.log_metric("pde_loss_ema", weighter._ema_phys, step=epoch)
         return avg
 
     def _val_epoch_fn(epoch: int) -> float:
