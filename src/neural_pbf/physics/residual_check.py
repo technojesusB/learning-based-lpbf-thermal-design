@@ -56,20 +56,22 @@ def _residuals(
 
 
 def substep_check(
-    T_in: Tensor, mask_in: Tensor, Q: Tensor, mat: MaterialConfig, sim: SimulationConfig, exposure_time: float
-) -> dict[Variant, float]:
-    """Run one solver substep live in float32 and return every variant's relative residual on it (no filter).
+    T_in: Tensor, mask_in: Tensor, Q: Tensor, mat: MaterialConfig, sim: SimulationConfig, exposure_time: float,
+    dtype: torch.dtype = torch.float32,
+) -> dict[Variant, float]:  # fmt: skip
+    """Run one solver substep live in `dtype` and return every variant's relative residual on it (no filter).
 
-    The mask is promoted above T_solidus first, which the Triton kernel does inside each substep.
+    The mask is promoted above T_solidus first, which the Triton kernel does inside each substep. In float32 the
+    solver form sits near 1e-4 on a full domain from rounding alone; in float64 it is exact to machine precision.
     """
-    T = T_in.float().clone()
+    T = T_in.to(dtype).clone()
     mask = (mask_in.bool() | (mat.T_solidus <= T)).to(torch.uint8)
-    state = SimulationState.zeros(sim, device=T.device)
+    state = SimulationState.zeros(sim, device=T.device, dtype=dtype)
     state.T, state.material_mask = T.clone(), mask
     stepper = TimeStepper(sim, mat)
     dt_crit = stepper.estimate_stability_dt(state) * SAFETY_FACTOR
     dt_sub = exposure_time / math.ceil(exposure_time / dt_crit)
-    T_out = stepper.step_explicit_euler(state, dt_sub, Q.float()).T
+    T_out = stepper.step_explicit_euler(state, dt_sub, Q.to(dtype)).T
     return _residuals(T, T_out, Q, mask, mask, mat, sim, dt_sub, None)
 
 

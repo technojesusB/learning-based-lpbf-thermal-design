@@ -118,3 +118,10 @@ def test_select_variant_takes_lowest_eligible_melt_median() -> None:
     table = {("melt", a): {"median": 0.3}, ("melt", b): {"median": 0.1}, ("melt", c): {"median": 0.2}}
     assert select_variant(table, eligible={a, c}) == c
     assert select_variant(table, eligible=set()) is None
+
+
+@pytest.mark.unit
+def test_substep_check_in_float64_is_exact_to_machine_precision() -> None:
+    T, mask, Q = _beam_case(T_hot=2500.0)
+    result = substep_check(T, mask, Q, MAT, SIM, exposure_time=40e-6, dtype=torch.float64)
+    assert result[("cp_in", "explicit")] < 1e-10
