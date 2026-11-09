@@ -4,10 +4,103 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff, sigmoid_step
 from neural_pbf.physics.ops import div_k_grad
+
+_STORAGE = ("enthalpy", "cp_in")
+_DIFFUSION = ("explicit", "implicit", "trapezoid")
+
+
+def _sensible_enthalpy(T: Tensor, mat: MaterialConfig) -> Tensor:
+    """Integral of the sensible cp(T) used by cp_eff, up to a constant [J/kg]."""
+    if not mat.use_T_dep:
+        return mat.cp_base * T
+    if not (mat.use_lut and mat.T_lut is not None and mat.cp_lut is not None):
+        dT = T - mat.T_ref
+        return mat.cp_base * (dT + 0.5 * mat.cp_T_coeff * dT**2)
+    t = torch.tensor(mat.T_lut, dtype=T.dtype, device=T.device)
+    v = torch.tensor(mat.cp_lut, dtype=T.dtype, device=T.device)
+    # Exact integral of the piecewise-linear LUT; cp is held constant outside it, as cp_eff does.
+    H_nodes = F.pad(torch.cumsum(0.5 * (v[1:] + v[:-1]) * t.diff(), 0), (1, 0))
+    i = (torch.searchsorted(t, T.clamp(t[0], t[-1]).contiguous(), right=True) - 1).clamp(0, len(t) - 2)
+    s = T.clamp(t[0], t[-1]) - t[i]
+    slope = (v[i + 1] - v[i]) / (t[i + 1] - t[i])
+    inside = H_nodes[i] + v[i] * s + 0.5 * slope * s**2
+    return inside + v[0] * (T - t[0]).clamp(max=0.0) + v[-1] * (T - t[-1]).clamp(min=0.0)
+
+
+def enthalpy(T: Tensor, mat: MaterialConfig) -> Tensor:
+    """Specific enthalpy H(T) with dH/dT == cp_eff(T), up to a constant [J/kg]."""
+    H = _sensible_enthalpy(T, mat)
+    if mat.latent_heat_L <= 1e-9:
+        return H
+    width = mat.T_liquidus - mat.T_solidus  # same mid and width as cp_eff, so dH/dT matches it exactly
+    width = width if width >= 1e-6 else 1.0
+    s = (T - 0.5 * (mat.T_solidus + mat.T_liquidus)) / (0.5 * width)
+    return H + mat.latent_heat_L * sigmoid_step(s, mat.transition_sharpness)
+
+
+def _div_flux(T: Tensor, mask: Tensor, mat: MaterialConfig, dx: float, dy: float, dz: float) -> Tensor:
+    solid = (mask.to(torch.bool) | (mat.T_solidus <= T)).to(T.dtype)  # the Triton kernel promotes per substep
+    return div_k_grad(T, k_eff(T, mat, solid), dx, dy, dz)
+
+
+def heat_residual_si(
+    T_in: Tensor,
+    T_out: Tensor,
+    Q: Tensor,
+    mask_in: Tensor,
+    mat: MaterialConfig,
+    dt_s: float,
+    dx_m: float,
+    dy_m: float,
+    dz_m: float,
+    storage: str = "enthalpy",
+    diffusion: str = "trapezoid",
+    mask_out: Tensor | None = None,
+) -> Tensor:
+    """Residual of ρ·dH/dt = ∇·(k(T)∇T) + Q over one step of length dt_s, in W/m³.
+
+    Uses the solver's discretisation (harmonic face k, k_eff with powder, cp_eff with latent heat).
+    One voxel is dropped at every face, because a cropped patch has artificial zero-flux faces.
+    The solver's linear cooling term (SimulationConfig.loss_h) is left out; the dataset generator keeps it at 0.
+
+    Args:
+        T_in, T_out: (B, 1, D, H, W) temperatures [K] before and after the step.
+        Q:           (B, 1, D, H, W) volumetric source [W/m³], constant over the step.
+        mask_in:     (B, 1, D, H, W) 0 = powder, 1 = consolidated, before the step.
+        storage:     "enthalpy" (ρ·ΔH/dt, exact across melting) or "cp_in" (ρ·cp_eff(T_in)·ΔT/dt,
+                     the solver's own explicit form).
+        diffusion:   where ∇·k∇T is evaluated: "explicit" (T_in), "implicit" (T_out), or "trapezoid".
+        mask_out:    mask for the T_out term; defaults to mask_in (promotion above T_solidus applies anyway).
+
+    Returns:
+        (B, 1, D-2, H-2, W-2) residual field [W/m³].
+    """
+    if dt_s <= 0.0:
+        raise ValueError(f"dt_s must be > 0, got {dt_s}")
+    if storage not in _STORAGE:
+        raise ValueError(f"storage must be one of {_STORAGE}, got {storage!r}")
+    if diffusion not in _DIFFUSION:
+        raise ValueError(f"diffusion must be one of {_DIFFUSION}, got {diffusion!r}")
+    if not (T_in.shape == T_out.shape == Q.shape == mask_in.shape) or T_in.ndim != 5:
+        raise ValueError(f"field shapes differ or are not 5-D: {T_in.shape}, {T_out.shape}, {Q.shape}, {mask_in.shape}")
+
+    if storage == "enthalpy":
+        lhs = mat.rho * (enthalpy(T_out, mat) - enthalpy(T_in, mat)) / dt_s
+    else:
+        lhs = mat.rho * cp_eff(T_in, mat) * (T_out - T_in) / dt_s
+
+    explicit = _div_flux(T_in, mask_in, mat, dx_m, dy_m, dz_m) if diffusion != "implicit" else 0.0
+    m_out = mask_in if mask_out is None else mask_out
+    implicit = _div_flux(T_out, m_out, mat, dx_m, dy_m, dz_m) if diffusion != "explicit" else 0.0
+    weight = 0.5 if diffusion == "trapezoid" else 1.0
+    R = lhs - weight * (explicit + implicit) - Q
+    return R[..., 1:-1, 1:-1, 1:-1]
 
 
 def denorm_cond_batch(
