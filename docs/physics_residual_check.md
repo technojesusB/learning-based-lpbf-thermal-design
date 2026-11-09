@@ -37,8 +37,11 @@ loss is weighted and what the report says about it.
   `trapezoid`.
 - **Decision variant:** among the variants that pass the sanity check below, the one with the lowest median in the
   melt regime. That variant is ported to Triton in step 3.3.
-- **Samples:** indices 0, 12, 25, 37 and 49 of every **train** and **val** run of the UQ manifest
-  (`artifacts/uq/manifest.json`), so 120 samples from 24 runs. Cal and test runs belong to the UQ pipeline and its
+- **Samples:** the relative positions 0, ¼, ½, ¾ and 1 of every **train** and **val** run of the UQ manifest
+  (`artifacts/uq/manifest.json`), index ⌊p·(n − 1) + ½⌋, so 120 samples from 24 runs. For a 50-sample run these are
+  indices 0, 12, 25, 37 and 49. Four train runs are shorter (run_001: 49, run_002: 44, run_009: 48, run_024: 49);
+  the first version named fixed indices, and the first launch stopped on run_002 before computing anything, so the
+  selection was switched to positions (2026-11-09). Cal and test runs belong to the UQ pipeline and its
   logged test access; the script refuses them and never opens them.
   - train (21 runs; 7 per material, 7 per pattern): run_000, 001, 002, 009, 012, 014, 022, 023, 024, 025, 026, 028,
     032, 033, 035, 037, 038, 039, 040, 042, 043.
