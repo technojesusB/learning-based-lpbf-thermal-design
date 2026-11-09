@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from neural_pbf.data.material_dataset import exposure_time_of, material_from_vector
 from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff, sigmoid_step
 from neural_pbf.physics.ops import div_k_grad
 
@@ -123,6 +124,44 @@ def denorm_cond_batch(
     std: float = ds_cfg.cond_stds[key]
     vals = cond_normalized[:, idx] * std + mean  # (B,)
     return vals.view(-1, 1, 1, 1, 1)
+
+
+PHYSICS_FORMS = ("coupled", "tin")
+
+
+def physics_loss_reference(
+    T_pred: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor, material: Tensor, form: str,
+    dx_m: float, dy_m: float, dz_m: float,
+) -> Tensor:  # fmt: skip
+    """Physics loss in plain PyTorch: Σ R² / Σ (ρ·(H(T_target) − H(T_in))/dt)² over the interiors of the batch.
+
+    Both forms use enthalpy storage. ``coupled`` evaluates ∇·(k∇T) at the prediction, ``tin`` at T_in. Each
+    sample uses its own material and exposure_time from ``material`` (see ``data.material_dataset``). The
+    denominator comes from the ground truth without gradient, pooled over the batch so a patch that barely heats
+    cannot blow the ratio up. Only ``T_pred`` receives a gradient.
+
+    Args:
+        T_pred, T_in, T_target, Q: (B, 1, D, H, W) in SI units [K], [W/m³].
+        mask_in:  (B, 1, D, H, W) 0 = powder, 1 = consolidated, before the step.
+        material: (B, MATERIAL_DIM) per-sample material vectors.
+    """
+    if form not in PHYSICS_FORMS:
+        raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
+    diffusion = "implicit" if form == "coupled" else "explicit"
+    T_in, T_target, Q = T_in.detach(), T_target.detach(), Q.detach()
+    num = T_pred.new_zeros(())
+    den = T_pred.new_zeros(())
+    for i in range(T_pred.shape[0]):
+        mat, dt = material_from_vector(material[i]), exposure_time_of(material[i])
+        sl = slice(i, i + 1)
+        R = heat_residual_si(T_in[sl], T_pred[sl], Q[sl], mask_in[sl], mat, dt, dx_m, dy_m, dz_m, "enthalpy", diffusion)
+        num = num + R.pow(2).sum()
+        with torch.no_grad():
+            stored = mat.rho * (enthalpy(T_target[sl], mat) - enthalpy(T_in[sl], mat)) / dt
+            den = den + stored[..., 1:-1, 1:-1, 1:-1].pow(2).sum()
+    if not float(den) > 0.0:
+        raise ValueError("no stored heat in the batch: every patch interior has T_target == T_in")
+    return num / den
 
 
 def physics_heat_residual(
