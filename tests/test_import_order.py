@@ -18,6 +18,14 @@ MODULES = [
     "neural_pbf.data",
     "neural_pbf.data.material_dataset",
     "neural_pbf.integrator.stepper",
+    "neural_pbf.training.ablation",
+    "neural_pbf.training.script_args",
+    "neural_pbf.training.physics_term",
+    "neural_pbf.uq.config",
+    "neural_pbf.training.tracking",
+    "neural_pbf.training.train_loop",
+    "neural_pbf.training.train_run",
+    "neural_pbf.training.rope_model",
 ]
 
 
