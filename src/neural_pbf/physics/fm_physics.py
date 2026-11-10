@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -12,6 +12,7 @@ from neural_pbf.physics.material import MaterialConfig, cp_eff, k_eff, sigmoid_s
 from neural_pbf.physics.material_vector import exposure_time_of, material_from_vector
 from neural_pbf.physics.ops import div_k_grad
 from neural_pbf.physics.triton_pde_loss import _TRITON_AVAILABLE, PDEResidualLoss
+from neural_pbf.physics.triton_pde_loss import residual_sums as triton_residual_sums
 
 _STORAGE = ("enthalpy", "cp_in")
 _DIFFUSION = ("explicit", "implicit", "trapezoid")
@@ -105,29 +106,8 @@ def heat_residual_si(
     return R[..., 1:-1, 1:-1, 1:-1]
 
 
-def denorm_cond_batch(
-    cond_normalized: Tensor,
-    ds_cfg: Any,
-    key: str,
-) -> Tensor:
-    """De-normalise one conditioning key from z-score to physical units.
-
-    Args:
-        cond_normalized: (B, D_cond) z-score normalised conditioning tensor.
-        ds_cfg:          Dataset config with conditioning_keys, cond_means, cond_stds.
-        key:             Conditioning key (e.g. "rho", "cp", "k_s").
-
-    Returns:
-        (B, 1, 1, 1, 1) float32 in physical units, broadcast-ready for 5-D fields.
-    """
-    idx = list(ds_cfg.conditioning_keys).index(key)
-    mean: float = ds_cfg.cond_means[key]
-    std: float = ds_cfg.cond_stds[key]
-    vals = cond_normalized[:, idx] * std + mean  # (B,)
-    return vals.view(-1, 1, 1, 1, 1)
-
-
 PHYSICS_FORMS = ("coupled", "tin")
+PHYSICS_BACKENDS = ("reference", "triton")
 
 
 def physics_loss_reference(
@@ -146,43 +126,65 @@ def physics_loss_reference(
         mask_in:  (B, 1, D, H, W) 0 = powder, 1 = consolidated, before the step.
         material: (B, MATERIAL_DIM) per-sample material vectors (``physics.material_vector``).
     """
-    if form not in PHYSICS_FORMS:
-        raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
-    diffusion = "implicit" if form == "coupled" else "explicit"
-    T_in, T_target, Q = T_in.detach(), T_target.detach(), Q.detach()
-    num = T_pred.new_zeros(())
-    den = T_pred.new_zeros(())
-    for i in range(T_pred.shape[0]):
-        mat, dt = material_from_vector(material[i]), exposure_time_of(material[i])
-        sl = slice(i, i + 1)
-        R = heat_residual_si(T_in[sl], T_pred[sl], Q[sl], mask_in[sl], mat, dt, dx_m, dy_m, dz_m, "enthalpy", diffusion)
-        num = num + R.pow(2).sum()
-        with torch.no_grad():
-            stored = mat.rho * (enthalpy(T_target[sl], mat) - enthalpy(T_in[sl], mat)) / dt
-            den = den + stored[..., 1:-1, 1:-1, 1:-1].pow(2).sum()
+    num, den = _reference_sums(T_pred, T_in, T_target, Q, mask_in, material, form, dx_m, dy_m, dz_m)
+    return _ratio(num.sum(), den.sum())
+
+
+def _ratio(num: Tensor, den: Tensor) -> Tensor:
     if not float(den) > 0.0:
         raise ValueError("no stored heat in the batch: every patch interior has T_target == T_in")
     return num / den
 
 
+def _reference_sums(
+    T_pred: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor, material: Tensor, form: str,
+    dx_m: float, dy_m: float, dz_m: float,
+) -> tuple[Tensor, Tensor]:  # fmt: skip
+    """Per-sample Σ R² (with gradient to T_pred) and Σ S² (without), SI inputs."""
+    if form not in PHYSICS_FORMS:
+        raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
+    diffusion = "implicit" if form == "coupled" else "explicit"
+    T_in, T_target, Q = T_in.detach(), T_target.detach(), Q.detach()
+    nums, dens = [], []
+    for i in range(T_pred.shape[0]):
+        mat, dt = material_from_vector(material[i]), exposure_time_of(material[i])
+        sl = slice(i, i + 1)
+        R = heat_residual_si(T_in[sl], T_pred[sl], Q[sl], mask_in[sl], mat, dt, dx_m, dy_m, dz_m, "enthalpy", diffusion)
+        nums.append(R.pow(2).sum())
+        with torch.no_grad():
+            stored = mat.rho * (enthalpy(T_target[sl], mat) - enthalpy(T_in[sl], mat)) / dt
+            dens.append(stored[..., 1:-1, 1:-1, 1:-1].pow(2).sum())
+    return torch.stack(nums), torch.stack(dens)
+
+
+def _check_backend(backend: str, field: Tensor) -> None:
+    if backend not in PHYSICS_BACKENDS:
+        raise ValueError(f"physics backend must be one of {PHYSICS_BACKENDS}, got {backend!r}")
+    if backend == "triton" and not (field.is_cuda and _TRITON_AVAILABLE):
+        raise ValueError("the triton backend needs CUDA tensors and an installed Triton")
+
+
 def physics_loss(
     v_pred: Tensor, x_tau: Tensor, tau: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor,
     material: Tensor, form: str, T_ref: float, T_ambient: float, Q_ref: float, dx_m: float, dy_m: float, dz_m: float,
+    *, backend: str,
 ) -> Tensor:  # fmt: skip
     """Physics loss for flow-matching training, in the dataset's normalized units; replaces physics_heat_residual.
 
     T_pred = x_tau + (1 − τ)·v_pred (OT-FM identity), with x_tau detached, so only v_pred gets a gradient. Fields are
     (B, 1, D, H, W) with T normalized as (T_SI − T_ambient)/T_ref and Q as Q_SI/Q_ref. Returns the batch-level ratio
-    of ``physics_loss_reference``; on CUDA it runs the Triton kernels of ``triton_pde_loss``, which match the
-    reference in value and gradient.
+    of ``physics_loss_reference``. ``backend`` is ``"reference"`` (plain PyTorch, any device) or ``"triton"`` (the
+    kernels of ``triton_pde_loss``, CUDA only), which match the reference in value and gradient. There is no
+    automatic choice: the script's --physics_backend fixes it.
 
     The function this replaced (tag ``v0-random-split-eval``) used dt fixed at 5 µs, one scalar k per sample,
     constant-cp storage and diffusion at the prediction.
     """
     if form not in PHYSICS_FORMS:
         raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
+    _check_backend(backend, v_pred)
     x_tau = x_tau.detach()
-    if v_pred.is_cuda and _TRITON_AVAILABLE:
+    if backend == "triton":
         loss = PDEResidualLoss.apply(
             v_pred, x_tau, tau, T_in, T_target, Q, mask_in, material, form, T_ref, T_ambient, Q_ref, dx_m, dy_m, dz_m
         )
@@ -192,3 +194,27 @@ def physics_loss(
         T_pred, T_in * T_ref + T_ambient, T_target * T_ref + T_ambient, Q * Q_ref, mask_in, material, form,
         dx_m, dy_m, dz_m,
     )  # fmt: skip
+
+
+@torch.no_grad()
+def physics_residual_sums(
+    T_pred: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor, material: Tensor, form: str,
+    T_ref: float, T_ambient: float, Q_ref: float, dx_m: float, dy_m: float, dz_m: float, *, backend: str,
+) -> tuple[Tensor, Tensor]:  # fmt: skip
+    """Per-sample (Σ R², Σ S²) of the physics loss for a predicted temperature (normalized units), no gradient.
+
+    Pooled sums give the loss's normalization over any set of samples: Σ num / Σ den over the val set, or over the
+    melt-regime samples only.
+    """
+    if form not in PHYSICS_FORMS:
+        raise ValueError(f"physics form must be one of {PHYSICS_FORMS}, got {form!r}")
+    _check_backend(backend, T_pred)
+    if backend == "triton":
+        return triton_residual_sums(
+            T_pred, T_in, T_target, Q, mask_in, material, form, T_ref, T_ambient, Q_ref, dx_m, dy_m, dz_m
+        )
+
+    def si(t: Tensor) -> Tensor:
+        return t * T_ref + T_ambient
+
+    return _reference_sums(si(T_pred), si(T_in), si(T_target), Q * Q_ref, mask_in, material, form, dx_m, dy_m, dz_m)

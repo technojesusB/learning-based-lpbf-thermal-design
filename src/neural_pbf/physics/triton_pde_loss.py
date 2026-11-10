@@ -301,6 +301,39 @@ if _TRITON_AVAILABLE:
         tl.store(G_ptr + j, grad * omt * T_ref, mask=ok)
 
 
+def _forward(
+    v: Tensor, x: Tensor, omt: Tensor, tin: Tensor, tgt: Tensor, q: Tensor, m: Tensor, material: Tensor, form: str,
+    T_ref: float, T_ambient: float, Q_ref: float, dx: float, dy: float, dz: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, tuple[int, int]]:  # fmt: skip
+    """Launch the forward kernel on contiguous (B, 1, D, H, W) fields of one dtype: R and S, zero on the faces."""
+    B, _, Nz, Ny, Nx = v.shape
+    tab = material_table(material.to(v.device), v.dtype)
+    prm = _params(v.dtype, v.device, T_ref, T_ambient, Q_ref, dx, dy, dz)
+    R, S = torch.empty_like(v), torch.empty_like(v)
+    grid = (B, triton.cdiv(Nx * Ny * Nz, _BLOCK))
+    _fwd_kernel[grid](
+        v, x, tin, tgt, q, m, omt, tab, R, S, Nx, Ny, Nz, prm,
+        COUPLED=form == "coupled", ROW=_ROW, MAXL=MAX_LUT, BLOCK=_BLOCK,
+    )  # fmt: skip
+    return R, S, tab, prm, grid
+
+
+@torch.no_grad()
+def residual_sums(
+    T_pred: Tensor, T_in: Tensor, T_target: Tensor, Q: Tensor, mask_in: Tensor, material: Tensor, form: str,
+    T_ref: float, T_ambient: float, Q_ref: float, dx: float, dy: float, dz: float,
+) -> tuple[Tensor, Tensor]:  # fmt: skip
+    """Per-sample (Σ R², Σ S²) for a predicted temperature, in normalized units; no gradient. For val metrics."""
+    if form not in FORMS:
+        raise ValueError(f"physics form must be one of {FORMS}, got {form!r}")
+    dtype = torch.float64 if T_pred.dtype == torch.float64 else torch.float32
+    v, tin, tgt, q, m = (t.to(dtype).contiguous() for t in (T_pred, T_in, T_target, Q, mask_in))
+    x = torch.zeros_like(v)
+    omt = torch.ones(v.shape[0], dtype=dtype, device=v.device)
+    R, S, *_ = _forward(v, x, omt, tin, tgt, q, m, material, form, T_ref, T_ambient, Q_ref, dx, dy, dz)
+    return R.pow(2).flatten(1).sum(1), S.pow(2).flatten(1).sum(1)
+
+
 class PDEResidualLoss(torch.autograd.Function):
     """Physics loss Σ R² / Σ S² with Triton forward and backward; gradient only for ``v_pred``.
 
@@ -324,19 +357,10 @@ class PDEResidualLoss(torch.autograd.Function):
         if not (v_pred.ndim == 5 and v_pred.shape[1] == 1 and v_pred.is_cuda):
             raise ValueError(f"v_pred must be a CUDA tensor of shape (B, 1, D, H, W), got {tuple(v_pred.shape)}")
         dtype = torch.float64 if v_pred.dtype == torch.float64 else torch.float32
-        B, _, Nz, Ny, Nx = v_pred.shape
-        f = [t.detach().to(dtype).contiguous() for t in (v_pred, x_tau, T_in, T_target, Q, mask_in)]
-        v, x, tin, tgt, q, m = f
+        v, x, tin, tgt, q, m = (t.detach().to(dtype).contiguous() for t in (v_pred, x_tau, T_in, T_target, Q, mask_in))
         omt = (1.0 - tau.detach().to(dtype)).contiguous()
-        tab = material_table(material.to(v.device), dtype)
-        R = torch.empty_like(v)
-        S = torch.empty_like(v)
-        prm = _params(dtype, v.device, T_ref, T_ambient, Q_ref, dx, dy, dz)
-        grid = (B, triton.cdiv(Nx * Ny * Nz, _BLOCK))
-        _fwd_kernel[grid](
-            v, x, tin, tgt, q, m, omt, tab, R, S, Nx, Ny, Nz, prm,
-            COUPLED=form == "coupled", ROW=_ROW, MAXL=MAX_LUT, BLOCK=_BLOCK,
-        )  # fmt: skip
+        R, S, tab, prm, grid = _forward(v, x, omt, tin, tgt, q, m, material, form, T_ref, T_ambient, Q_ref, dx, dy, dz)
+        Nz, Ny, Nx = v.shape[2:]
         den = S.pow(2).sum()
         if not float(den) > 0.0:
             raise ValueError("no stored heat in the batch: every patch interior has T_target == T_in")

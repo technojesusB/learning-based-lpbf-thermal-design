@@ -1,9 +1,8 @@
-"""Unit tests for fm_physics: the physics_loss entry point and denorm_cond_batch."""
+"""Unit tests for fm_physics: the physics_loss entry point."""
 
 from __future__ import annotations
 
 import random
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,7 +10,11 @@ import torch
 
 from neural_pbf.data.sampling import randomize_material
 from neural_pbf.physics import triton_pde_loss
-from neural_pbf.physics.fm_physics import denorm_cond_batch, physics_loss, physics_loss_reference
+from neural_pbf.physics.fm_physics import (
+    physics_loss,
+    physics_loss_reference,
+    physics_residual_sums,
+)
 from neural_pbf.physics.material import MaterialConfig
 from neural_pbf.physics.material_vector import encode
 
@@ -42,10 +45,18 @@ def _inputs(device: str = "cpu") -> dict[str, Any]:
     }
 
 
-def _call(i: dict[str, Any], form: str) -> torch.Tensor:
+def _call(i: dict[str, Any], form: str, backend: str = "reference") -> torch.Tensor:
     return physics_loss(
         i["v_pred"], i["x_tau"], i["tau"], i["T_in"], i["T_target"], i["Q"], i["mask_in"], i["material"], form,
-        T_REF, T_AMB, Q_REF, *GRID,
+        T_REF, T_AMB, Q_REF, *GRID, backend=backend,
+    )  # fmt: skip
+
+
+def _sums(i: dict[str, Any], form: str, backend: str = "reference") -> tuple[torch.Tensor, torch.Tensor]:
+    T_pred = i["x_tau"] + (1 - i["tau"].view(-1, 1, 1, 1, 1)) * i["v_pred"]
+    return physics_residual_sums(
+        T_pred, i["T_in"], i["T_target"], i["Q"], i["mask_in"], i["material"], form, T_REF, T_AMB, Q_REF, *GRID,
+        backend=backend,
     )  # fmt: skip
 
 
@@ -82,6 +93,29 @@ def test_physics_loss_refuses_an_unknown_form() -> None:
         _call(_inputs(), "none")
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("backend", ["auto", None, "pytorch"])
+def test_physics_loss_refuses_an_unknown_backend(backend: Any) -> None:
+    with pytest.raises(ValueError, match="backend"):
+        _call(_inputs(), "tin", backend)
+
+
+@pytest.mark.unit
+def test_triton_backend_on_cpu_tensors_is_refused() -> None:
+    with pytest.raises(ValueError, match="CUDA"):
+        _call(_inputs(), "tin", "triton")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("form", ["coupled", "tin"])
+def test_residual_sums_pool_to_the_loss(form: str) -> None:
+    """Per-sample sums for the val metric: pooled over the batch they give the loss value."""
+    i = _inputs()
+    num, den = _sums(i, form)
+    assert num.shape == den.shape == (2,) and not num.requires_grad
+    torch.testing.assert_close(num.sum() / den.sum(), _call(i, form))
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_physics_loss_on_cuda_uses_the_triton_kernels(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -90,63 +124,24 @@ def test_physics_loss_on_cuda_uses_the_triton_kernels(monkeypatch: pytest.Monkey
     monkeypatch.setattr(triton_pde_loss.PDEResidualLoss, "apply", lambda *a: (calls.append(1), real(*a))[1])
     cpu = _inputs()
     gpu = {k: v.cuda() for k, v in cpu.items()}
-    torch.testing.assert_close(_call(gpu, "coupled").cpu(), _call(cpu, "coupled"), rtol=1e-9, atol=0.0)
+    torch.testing.assert_close(_call(gpu, "coupled", "triton").cpu(), _call(cpu, "coupled"), rtol=1e-9, atol=0.0)
     assert calls == [1]
 
 
-# ---------------------------------------------------------------------------
-# denorm_cond_batch
-# ---------------------------------------------------------------------------
+@pytest.mark.slow
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_reference_backend_stays_on_pytorch_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v4 trains the reference on the GPU: the backend, not the device, chooses the implementation."""
+    monkeypatch.setattr(triton_pde_loss.PDEResidualLoss, "apply", lambda *a: pytest.fail("Triton was called"))
+    gpu = {k: v.cuda() for k, v in _inputs().items()}
+    assert torch.isfinite(_call(gpu, "coupled", "reference"))
 
 
-def _fake_ds_cfg() -> Any:
-    """SimpleNamespace mimicking FMDatasetConfig normalisation attributes."""
-    return SimpleNamespace(
-        conditioning_keys=("rho", "cp", "k_s"),
-        cond_means={"rho": 7900.0, "cp": 500.0, "k_s": 20.0},
-        cond_stds={"rho": 500.0, "cp": 60.0, "k_s": 6.0},
-    )
-
-
-@pytest.mark.unit
-def test_denorm_cond_batch_output_shape() -> None:
-    B = 4
-    cfg = _fake_ds_cfg()
-    cond = torch.randn(B, 3)
-    out = denorm_cond_batch(cond, cfg, "rho")
-    assert out.shape == (B, 1, 1, 1, 1)
-
-
-@pytest.mark.unit
-def test_denorm_cond_batch_roundtrip() -> None:
-    """De-normalising a z-score of 0 should return the mean."""
-    B = 3
-    cfg = _fake_ds_cfg()
-    cond = torch.zeros(B, 3)  # all z-scores = 0
-    out = denorm_cond_batch(cond, cfg, "rho")
-    expected = 7900.0
-    assert abs(out.mean().item() - expected) < 1e-3
-
-
-@pytest.mark.unit
-def test_denorm_cond_batch_correct_index_selected() -> None:
-    B = 2
-    cfg = _fake_ds_cfg()
-    # Set only cp channel (idx=1) to z-score 1.0
-    cond = torch.zeros(B, 3)
-    cond[:, 1] = 1.0
-    cp_out = denorm_cond_batch(cond, cfg, "cp")
-    # z=1 → cp = 500 + 60*1 = 560
-    assert abs(cp_out.mean().item() - 560.0) < 1e-2
-
-
-@pytest.mark.unit
-def test_denorm_cond_batch_broadcast_shape() -> None:
-    B = 5
-    cfg = _fake_ds_cfg()
-    cond = torch.randn(B, 3)
-    out = denorm_cond_batch(cond, cfg, "k_s")
-    # Shape must be broadcast-compatible with (B, 1, D, H, W) tensors
-    dummy_field = torch.randn(B, 1, 8, 8, 8)
-    result = dummy_field * out
-    assert result.shape == (B, 1, 8, 8, 8)
+@pytest.mark.slow
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize("form", ["coupled", "tin"])
+def test_triton_residual_sums_match_the_reference(form: str) -> None:
+    cpu = _inputs()
+    gpu = {k: v.cuda() for k, v in cpu.items()}
+    for got, want in zip(_sums(gpu, form, "triton"), _sums(cpu, form), strict=True):
+        torch.testing.assert_close(got.cpu(), want, rtol=1e-9, atol=0.0)
