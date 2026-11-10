@@ -198,6 +198,16 @@ def test_mlflow_logger_noop_when_disabled():
 
 
 @pytest.mark.unit
-def test_mlflow_logger_noop_without_active_run():
-    """log() must silently absorb the MlflowException when no run is active."""
-    MLflowStepLogger(enabled=True).log(_timing(), global_step=0)
+def test_mlflow_logger_noop_without_active_run(tmp_path):
+    """Without an active run, log() must do nothing: mlflow.log_metrics would silently start a new run."""
+    import mlflow
+
+    mlflow.set_tracking_uri(f"file://{tmp_path}")
+    mlflow.set_experiment("diagnostics")
+    assert mlflow.active_run() is None
+    try:
+        MLflowStepLogger(enabled=True).log(_timing(), global_step=0)
+        assert mlflow.active_run() is None
+    finally:
+        while mlflow.active_run():
+            mlflow.end_run()

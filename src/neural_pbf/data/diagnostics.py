@@ -136,11 +136,17 @@ class MLflowStepLogger:
         self._enabled = enabled
 
     def log(self, timing: StepTiming, global_step: int) -> None:
-        """Log per-step metrics at *global_step*. Silently absorbs all exceptions."""
+        """Log per-step metrics at *global_step*. Silently absorbs all exceptions.
+
+        Without an active run this does nothing: ``mlflow.log_metrics`` would start a new run on its own.
+        """
         if not self._enabled:
             return
         try:
             import mlflow
+
+            if mlflow.active_run() is None:
+                return
 
             mlflow.log_metrics(
                 {
