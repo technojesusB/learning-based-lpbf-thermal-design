@@ -380,8 +380,10 @@ def test_stale_reasons_cover_config_run_and_upstream():
     assert pipeline.stale_reasons(old, new) == ["config gen.nx", "run chunk_size", "upstream S3 output"]
 
 
-@pytest.mark.integration
-def test_stale_reasons_name_the_changed_file_inside_a_directory(tmp_path, monkeypatch):
+def _stale_reasons_in_a_scratch_repo(tmp_path, monkeypatch) -> list[str]:
+    for key in [k for k in os.environ if k.startswith("GIT_")]:  # e.g. from git rebase --exec: never the real repo
+        monkeypatch.delenv(key)
+
     def git(*args: str) -> str:
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -400,7 +402,36 @@ def test_stale_reasons_name_the_changed_file_inside_a_directory(tmp_path, monkey
     new = {"pkg": git("rev-parse", "HEAD:pkg"), "top.txt": git("rev-parse", "HEAD:top.txt")}
     monkeypatch.chdir(tmp_path)
     empty = {"config": {}, "run": {}, "upstream": {}}
-    assert pipeline.stale_reasons({"code": old, **empty}, {"code": new, **empty}) == ["pkg/b.py", "top.txt"]
+    return pipeline.stale_reasons({"code": old, **empty}, {"code": new, **empty})
+
+
+@pytest.mark.integration
+def test_stale_reasons_name_the_changed_file_inside_a_directory(tmp_path, monkeypatch):
+    assert _stale_reasons_in_a_scratch_repo(tmp_path, monkeypatch) == ["pkg/b.py", "top.txt"]
+
+
+@pytest.mark.integration
+def test_the_scratch_repo_ignores_git_variables_of_the_caller(tmp_path, monkeypatch):
+    """git rebase --exec exports GIT_DIR and GIT_WORK_TREE: the scratch repo must not commit into that repo."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+    def outer_git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=outer, env=env, check=True, capture_output=True, text=True).stdout
+
+    outer_git("init", "-q")
+    (outer / "f").write_text("x")
+    outer_git("add", "f")
+    outer_git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "outer")
+    head, index = outer_git("rev-parse", "HEAD"), (outer / ".git" / "index").read_bytes()
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(outer))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(outer / ".git" / "index"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    assert _stale_reasons_in_a_scratch_repo(scratch, monkeypatch) == ["pkg/b.py", "top.txt"]
+    assert outer_git("rev-parse", "HEAD") == head and (outer / ".git" / "index").read_bytes() == index
 
 
 @pytest.mark.unit
