@@ -47,3 +47,29 @@ def resolve_data(args: argparse.Namespace) -> tuple[list[str], str | None]:
     if args.h5:
         paths = [p for p in paths if p in set(args.h5)]
     return paths, args.manifest
+
+
+def add_run_args(parser: argparse.ArgumentParser) -> None:
+    """The physics loss with its ReLoBRaLo weighting, and per-step logging."""
+    group = parser.add_argument_group("run")
+    group.add_argument(
+        "--physics_form",
+        choices=("none", "coupled", "tin"),
+        default="none",
+        help="Physics loss: none, coupled (diffusion at the prediction) or tin (diffusion at T_in).",
+    )
+    group.add_argument(
+        "--physics_backend",
+        choices=("reference", "triton"),
+        default=None,
+        help="Implementation of the physics loss: the PyTorch reference or the Triton kernels.",
+    )
+    group.add_argument("--relobralo_alpha", type=float, default=0.999, help="ReLoBRaLo decay rate alpha.")
+    group.add_argument("--relobralo_beta", type=float, default=0.9, help="ReLoBRaLo E[rho], the history probability.")
+    group.add_argument("--relobralo_temperature", type=float, default=0.1, help="ReLoBRaLo softmax temperature T.")
+    group.add_argument("--relobralo_epsilon", type=float, default=1e-8)
+    group.add_argument(
+        "--max_lambda", type=float, default=1.0, help="Cap on the physics weight; 1.0 is at most the data-loss weight."
+    )
+    group.add_argument("--log_every", type=int, default=50,
+                       help="Log per-step metrics every N optimizer steps.")  # fmt: skip

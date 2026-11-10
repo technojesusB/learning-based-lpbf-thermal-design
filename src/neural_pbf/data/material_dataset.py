@@ -11,10 +11,12 @@ S4 stays valid. It finds each item's ``(path, sample_key)`` through ``FMThermalD
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import h5py
 import numpy as np
+import torch
 from torch import Tensor
 from torch.utils.data import Dataset, Subset
 
@@ -56,25 +58,41 @@ def _read_run(path: str) -> Tensor:
         raise ValueError(f"{path}: {exc}") from exc
 
 
+def _material_name(path: str) -> str:
+    with h5py.File(path, "r") as f:
+        return str(next(iter(f["samples"].values())).attrs["mat_name"])  # type: ignore[union-attr]
+
+
 class MaterialDataset(Dataset):
     """Wraps a training dataset and adds ``material``: a (MATERIAL_DIM,) float64 vector, read once per run.
 
-    Refuses a dataset built on the post-step mask: the physics loss reads the batch mask as mask_in.
+    With ``t_boil`` (material name to boiling point [K]) every item also gets ``T_boil``, for the regime split of
+    the val metrics. Refuses a dataset built on the post-step mask: the physics loss reads the batch mask as mask_in.
     """
 
-    def __init__(self, base: Any) -> None:
+    def __init__(self, base: Any, t_boil: Mapping[str, float] | None = None) -> None:
         if len(base):
             fm, _ = _unwrap(base, 0)
             if fm.cfg.mask_source != "pre":
                 raise ValueError(f"the physics loss needs mask_source='pre' (mask_in), got {fm.cfg.mask_source!r}")
         self.base = base
-        self._cache: dict[str, Tensor] = {}
+        self.t_boil = t_boil
+        self._cache: dict[str, dict[str, Tensor]] = {}
 
     def __len__(self) -> int:
         return len(self.base)
 
+    def _run(self, path: str) -> dict[str, Tensor]:
+        if path not in self._cache:
+            extra = {"material": _read_run(path)}
+            if self.t_boil is not None:
+                name = _material_name(path)
+                if name not in self.t_boil:
+                    raise KeyError(f"{path}: no boiling point configured for material {name!r}")
+                extra["T_boil"] = torch.tensor(float(self.t_boil[name]), dtype=torch.float64)
+            self._cache[path] = extra
+        return self._cache[path]
+
     def __getitem__(self, idx: int) -> dict[str, Any]:
         path, _ = resolve_key(self.base, idx)
-        if path not in self._cache:
-            self._cache[path] = _read_run(path)
-        return {**self.base[idx], "material": self._cache[path]}
+        return {**self.base[idx], **self._run(path)}

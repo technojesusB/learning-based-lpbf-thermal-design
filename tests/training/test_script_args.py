@@ -59,3 +59,31 @@ def test_checkpoint_records_dataset_and_model_config(tmp_path):
                     fm_cfg={"in_channels": 4})  # fmt: skip
     ckpt = torch.load(tmp_path / "best.pt", weights_only=True)
     assert ckpt["dataset_cfg"] == {"mask_source": "pre"} and ckpt["fm_cfg"] == {"in_channels": 4}
+
+
+# --- run arguments: physics, ReLoBRaLo, tracking -------------------------------------------------------------
+
+
+def _parse_run(argv: list[str]) -> argparse.Namespace:
+    from neural_pbf.training.script_args import add_run_args
+
+    parser = argparse.ArgumentParser()
+    add_run_args(parser)
+    return parser.parse_args(argv)
+
+
+@pytest.mark.unit
+def test_run_defaults_physics_off_and_cap_one():
+    args = _parse_run([])
+    assert args.physics_form == "none" and args.physics_backend is None
+    assert args.max_lambda == 1.0 and args.relobralo_temperature == 0.1
+    assert (args.relobralo_alpha, args.relobralo_beta, args.relobralo_epsilon) == (0.999, 0.9, 1e-8)
+    assert args.log_every > 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flag", ["--physics_loss_weight", "--dt_s", "--unpinned", "--experiment"])
+def test_removed_flags_are_gone(flag: str):
+    """No ablation selection in a script: the ablation layer passes the pinned arguments itself."""
+    with pytest.raises(SystemExit):
+        _parse_run([flag, "1"])
