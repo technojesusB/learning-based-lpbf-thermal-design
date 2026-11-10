@@ -62,7 +62,8 @@ def test_tracker_survives_a_zombie_run_from_another_store(tmp_path: Path) -> Non
             mlflow.end_run()
 
 
-@pytest.mark.parametrize("script", ["train_fm_patches.py", "train_fm_dit.py"])
+# train_fm_dit.py no longer draws its snapshot itself: run_training logs it through log_val_image_rope (training/loops.py).
+@pytest.mark.parametrize("script", ["train_fm_patches.py"])
 def test_snapshot_plot_helper_is_imported(script: str) -> None:
     tree = ast.parse((REPO / "experiments" / script).read_text())
     imported = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}

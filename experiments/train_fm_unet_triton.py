@@ -1,370 +1,60 @@
-"""train_fm_unet_triton.py — 3D U-Net flow matching with the Triton PDE-residual loss.
+"""train_fm_unet_triton.py — 3D U-Net flow matching, bf16 under Accelerate, optionally with the physics loss.
 
-Extends train_fm_dit_accelerate.py with:
-  - Triton forward/backward kernels for the physics loss (neural_pbf.physics.triton_pde_loss).
-  - torch.profiler integration: Chrome trace logged to MLflow artifacts after epoch 0.
+The model is the U-Net VelocityNet; everything else is the shared training run (training/train_run.py). Run on its
+own, it trains with its defaults and logs to the MLflow experiment lpbf_experiments, unpinned.
 
 Run:
-    uv run accelerate launch experiments/train_fm_unet_triton.py                  # run-level split from artifacts/uq/manifest.json
-    uv run accelerate launch experiments/train_fm_unet_triton.py --in-channels 3   # ablation without T_in
+    uv run accelerate launch experiments/train_fm_unet_triton.py
+    uv run accelerate launch experiments/train_fm_unet_triton.py --physics_form tin --physics_backend triton
+
+In the ablation: experiments unet_none, unet_physics_coupled, unet_physics_tin (training/ablation.py).
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime
-import logging
-import os
-import tempfile
+from collections.abc import Mapping
 from typing import Any
 
-import mlflow
-import torch
-from accelerate import Accelerator
-from torch.profiler import ProfilerActivity
-from torch import Tensor
+from torch import nn
 
-from neural_pbf.models.generative.fm.inputs import net_inputs
-from neural_pbf.training.script_args import add_data_args, resolve_data
-from neural_pbf.data.patch_dataset import read_grid_attrs
 from neural_pbf.models.generative.fm.conditioning import ConditioningEncoder
-from neural_pbf.models.generative.fm.velocity_net import VelocityNet
 from neural_pbf.models.generative.fm.config import FMConfig
-from neural_pbf.models.generative.fm.flow import fm_loss, interpolate, sample_noise
-from neural_pbf.training import (
-    build_patch_data,
-    load_checkpoint,
-    log_val_image_rope,
-    run_test_phase,
-    run_train_epoch,
-    run_train_loop,
-    run_val_epoch,
-    save_checkpoint,
-    setup_run,
-)
-from neural_pbf.training.relobralo import ReLoBRaLoWeighter
-
-logger = logging.getLogger(__name__)
-
-_DEFAULT_EMBED_DIM = 128
-_MODEL_DEPTH = 4
-_MODEL_BASE_CHANNELS = 32
-_MODEL_PATCH_SIZE = 4
+from neural_pbf.models.generative.fm.velocity_net import VelocityNet
+from neural_pbf.training.script_args import add_data_args, add_run_args
+from neural_pbf.training.tracking import RunHooks
+from neural_pbf.training.train_run import ModelSpec, add_common_args, run_training
 
 
-# ---------------------------------------------------------------------------
-# Argument parser
-# ---------------------------------------------------------------------------
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Hero Experiment: Triton PDE-FM training")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="3D U-Net flow matching")
     add_data_args(parser)
-    parser.add_argument("--epochs", type=int, default=100)
+    add_run_args(parser)
+    add_common_args(parser, use_accelerate=True)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--mlflow_experiment", type=str, default="fm_unet_triton")
-    parser.add_argument("--mlflow_uri", type=str, default="sqlite:///mlflow.db")
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/unet_triton")
-    parser.add_argument("--val_every", type=int, default=1)
-    parser.add_argument("--test_n_steps", type=int, default=25)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--mixed_precision", type=str, default="bf16",
-                        choices=["no", "fp16", "bf16"])
-    parser.add_argument("--dt_s", type=float, default=5e-6,
-                        help="Physical time step for the PDE residual [s].")
-    parser.add_argument("--physics_loss_weight", type=float, default=0.0,
-                        help="Scales the physics term; must stay 0 until the residual matches the solver.")
-    parser.add_argument("--relobralo_alpha", type=float, default=0.999)
-    parser.add_argument("--relobralo_beta", type=float, default=0.9)
-    parser.add_argument("--relobralo_epsilon", type=float, default=1e-8)
-    return parser.parse_args()
+    parser.add_argument("--base_channels", type=int, default=32)
+    parser.add_argument("--depth", type=int, default=4)
+    parser.add_argument("--cond_embed_dim", type=int, default=128)
+    return parser
 
 
-# ---------------------------------------------------------------------------
-# Training batch (Triton PDE loss variant — script-specific)
-# ---------------------------------------------------------------------------
-
-
-def _make_train_batch_fn(
-    model: Any, cond_encoder: Any, optimizer: Any,
-    accelerator: Accelerator, args: argparse.Namespace,
-    grid_attrs: dict[str, float], ds_cfg: Any,
-    weighter: ReLoBRaLoWeighter, scheduler: Any,
-) -> Any:
-    """Return the Triton-specific _train_batch closure."""
-
-    def _train_batch_triton(batch: dict[str, Any]) -> float:
-        T_tgt = batch["T_target"].squeeze(1)
-        T_in = batch["T_in"].squeeze(1)
-        mask = batch["mask"].squeeze(1)
-        Q = batch["Q"].squeeze(1)
-        cond = batch["conditioning"]
-        B, _, D, H, W = T_tgt.shape
-
-        cond_emb = cond_encoder(cond)
-        noise = sample_noise(T_tgt)
-        tau = torch.rand(B, device=accelerator.device)
-        x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
-        loss_fm = fm_loss(v_pred, noise, T_tgt)
-        if args.physics_loss_weight > 0:  # the Triton residual kernel needs a GPU; skip it when unused
-            raise NotImplementedError("the corrected physics loss is wired in through --physics_form")
-        else:
-            phys = torch.zeros((), device=accelerator.device)
-        loss_fm_reduced = accelerator.gather(loss_fm.detach()).mean()
-        phys_reduced = accelerator.gather(phys.detach()).mean()
-        lambda_phys = weighter.step(loss_fm_reduced.item(), phys_reduced.item())
-        loss = loss_fm + args.physics_loss_weight * lambda_phys * phys
-        optimizer.zero_grad()
-        accelerator.backward(loss)
-        optimizer.step()
-        scheduler.step()
-        return loss.detach().cpu().item()
-
-    return _train_batch_triton
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
-def main() -> None:
-    args = _parse_args()
-
-    if args.physics_loss_weight > 0:
-        raise SystemExit(
-            "The PDE residual does not match the solver yet: it uses a fixed dt_s instead of each sample's "
-            "exposure_time and one scalar k instead of k(T) with powder. Train with --physics_loss_weight 0 "
-            "until that is fixed."
-        )
-    h5_paths, manifest_path = resolve_data(args)
-
-    logging.basicConfig(level=logging.INFO)
-    accelerator = Accelerator(mixed_precision=args.mixed_precision)
-    torch.manual_seed(args.seed)
-
-    if accelerator.is_main_process:
-        logger.info("Accelerate: %d process(es), mixed_precision=%s",
-                    accelerator.num_processes, args.mixed_precision)
-
-    grid_attrs = read_grid_attrs(h5_paths[0])
-    if accelerator.is_main_process:
-        logger.info("Grid: dx=%.3e m  dy=%.3e m  dz=%.3e m",
-                    grid_attrs["dx_m"], grid_attrs["dy_m"], grid_attrs["dz_m"])
-
-    split = build_patch_data(
-        h5_paths, manifest_path=manifest_path, allow_random_split=args.allow_random_split,
-        patch_size=64, batch_size=args.batch_size,
-        seed=args.seed, use_origins=True,
-    )
-    ds_cfg = split.ds_cfg
-
+def _build(args: argparse.Namespace, ds_cfg: Any, grid_attrs: Mapping[str, float]) -> tuple[nn.Module, nn.Module, dict]:
     cfg = FMConfig(
-        in_channels=args.in_channels, out_channels=1, base_channels=_MODEL_BASE_CHANNELS, depth=_MODEL_DEPTH,
-        cond_dim=len(ds_cfg.conditioning_keys), cond_embed_dim=_DEFAULT_EMBED_DIM, tau_embed_dim=_DEFAULT_EMBED_DIM,
+        in_channels=args.in_channels, out_channels=1, base_channels=args.base_channels, depth=args.depth,
+        cond_dim=len(ds_cfg.conditioning_keys), cond_embed_dim=args.cond_embed_dim, tau_embed_dim=args.cond_embed_dim,
         T_ref=ds_cfg.T_ref, T_ambient=ds_cfg.T_ambient,
-    )
-    model = VelocityNet(cfg)
-    cond_encoder = ConditioningEncoder(len(ds_cfg.conditioning_keys), 128)
-    optimizer = torch.optim.AdamW(
-        list(model.parameters()) + list(cond_encoder.parameters()), lr=args.lr
-    )
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=args.lr, epochs=args.epochs,
-        steps_per_epoch=len(split.train_loader), pct_start=0.1,
-    )
-    model, cond_encoder, optimizer, split.train_loader, split.val_loader, scheduler = (
-        accelerator.prepare(model, cond_encoder, optimizer,
-                            split.train_loader, split.val_loader, scheduler)
-    )
+    )  # fmt: skip
+    return VelocityNet(cfg), ConditioningEncoder(len(ds_cfg.conditioning_keys), args.cond_embed_dim), cfg.model_dump()
 
-    weighter = ReLoBRaLoWeighter(
-        alpha=args.relobralo_alpha, beta=args.relobralo_beta, eps=args.relobralo_epsilon
-    )
-    _train_batch_triton = _make_train_batch_fn(
-        model, cond_encoder, optimizer, accelerator, args, grid_attrs, ds_cfg, weighter, scheduler
-    )
 
-    # --- val step (shared with accelerate variant) ---
+def spec(args: argparse.Namespace) -> ModelSpec:
+    return ModelSpec(build=_build, schedule="onecycle_pct0.1", use_accelerate=True)
 
-    def _val_step(batch: dict[str, Any]) -> float:
-        T_tgt = batch["T_target"].squeeze(1)
-        mask = batch["mask"].squeeze(1)
-        Q = batch["Q"].squeeze(1)
-        T_in = batch["T_in"].squeeze(1)
-        cond = batch["conditioning"]
-        B, _, D, H, W = T_tgt.shape
 
-        cond_emb = cond_encoder(cond)
-        noise = sample_noise(T_tgt)
-        tau = torch.rand(B, device=accelerator.device)
-        x_tau = interpolate(noise, T_tgt, tau)
-        v_pred = model(net_inputs(x_tau, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb)
-        return fm_loss(v_pred, noise, T_tgt).detach().cpu().item()
-
-    # --- per-epoch callbacks with epoch-0 profiler ---
-
-    def _train_epoch_fn(epoch: int) -> float:
-        model.train()
-        cond_encoder.train()
-        is_main = accelerator.is_main_process
-        if epoch == 0 and is_main:
-            if len(split.train_loader) < 5:
-                logger.warning("Profiler schedule requires >=5 batches per epoch but has %d.",
-                               len(split.train_loader))
-            profiler = torch.profiler.profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-                with_stack=False,
-            )
-            profiler.start()
-            avg = run_train_epoch(_train_batch_triton, split.train_loader, epoch,
-                                  profiler=profiler, tqdm_disable=not is_main)
-            profiler.stop()
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-                trace_path = tmp.name
-            try:
-                profiler.export_chrome_trace(trace_path)
-                mlflow.log_artifact(trace_path, artifact_path="profiler")
-            finally:
-                os.remove(trace_path)
-        else:
-            avg = run_train_epoch(_train_batch_triton, split.train_loader, epoch,
-                                  tqdm_disable=not is_main)
-        if is_main:
-            mlflow.log_metric("train_loss", avg, step=epoch)
-            mlflow.log_metric("lambda_phys", weighter.lambda_phys, step=epoch)
-        return avg
-
-    def _val_epoch_fn(epoch: int) -> float:
-        model.eval()
-        cond_encoder.eval()
-        avg_val = run_val_epoch(_val_step, split.val_loader)
-        if accelerator.is_main_process:
-            mlflow.log_metric("val_loss", avg_val, step=epoch)
-        return avg_val
-
-    val_loader_for_snap = split.val_loader
-
-    def _inference_rollout(val_batch: dict[str, Any]) -> Tensor:
-        single: dict[str, Any] = {
-            k: v[:1] if isinstance(v, Tensor) else (v[:1] if isinstance(v, list) else v)
-            for k, v in val_batch.items()
-        }
-        T_in = single["T_in"].squeeze(1)
-        mask = single["mask"].squeeze(1)
-        Q = single["Q"].squeeze(1)
-        cond = single["conditioning"]
-        B, _, D, H, W = T_in.shape
-
-        cond_emb = cond_encoder(cond)
-        x = sample_noise(T_in)
-        dt = 1.0 / 25
-        with torch.no_grad():
-            for i in range(25):
-                tau = torch.full((B,), i * dt, device=accelerator.device)
-                x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
-        return x
-
-    # Worker processes: run training loop without tracker
-    if not accelerator.is_main_process:
-        from pathlib import Path
-        ckpt_dir_worker = Path(args.checkpoint_dir)
-        ckpt_dir_worker.mkdir(parents=True, exist_ok=True)
-
-        def _noop_checkpoint(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir_worker, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(), fm_cfg=cfg.model_dump(),
-                            accelerator=accelerator)
-
-        run_train_loop(
-            _train_epoch_fn, _val_epoch_fn, _noop_checkpoint,
-            snapshot_fn=lambda epoch: None,
-            epochs=args.epochs, val_every=args.val_every,
-            sync_fn=accelerator.wait_for_everyone,
-            is_main=False,
-            tqdm_disable=True,
-        )
-        return
-
-    tracker, ckpt_dir = setup_run(args, timestamped=False)
-
-    with tracker.start_run(
-        run_name=f"unet_triton_{datetime.datetime.now().strftime('%H%M%S')}",
-        config={},
-        tags={"architecture": "unet3d_fm", "mode": "triton_pde_loss"},
-    ) as run:
-        mlflow.log_params(vars(args))
-        mlflow.log_params({
-            "data_n_total": len(split.train_ds) + len(split.val_ds) + len(split.test_ds),
-            "data_n_train": len(split.train_ds),
-            "data_n_val": len(split.val_ds),
-            "data_n_test": len(split.test_ds),
-            "model_embed_dim": _DEFAULT_EMBED_DIM,
-            "model_depth": _MODEL_DEPTH,
-            "model_base_channels": _MODEL_BASE_CHANNELS,
-        })
-
-        def _checkpoint_fn(epoch: int, val_loss: float) -> None:
-            save_checkpoint(model, cond_encoder, ckpt_dir, epoch, val_loss, args, dataset_cfg=ds_cfg.model_dump(), fm_cfg=cfg.model_dump(),
-                            accelerator=accelerator)
-            mlflow.log_metric("best_val_loss", val_loss, step=epoch)
-
-        def _snapshot_fn(epoch: int) -> tuple[Tensor, Tensor] | None:
-            if epoch % 10 != 0:
-                return None
-            return log_val_image_rope(
-                model, cond_encoder, _inference_rollout,
-                next(iter(val_loader_for_snap)), epoch, run,
-                filename_prefix="val_rope_epoch",
-            )
-
-        run_train_loop(
-            _train_epoch_fn, _val_epoch_fn, _checkpoint_fn, _snapshot_fn,
-            epochs=args.epochs, val_every=args.val_every,
-            sync_fn=accelerator.wait_for_everyone,
-            is_main=True,
-            tqdm_disable=False,
-        )
-
-        best_ckpt = ckpt_dir / "best.pt"
-        if best_ckpt.exists():
-            load_checkpoint(model, cond_encoder, best_ckpt, accelerator.device,
-                            accelerator=accelerator)
-            model.eval()
-            cond_encoder.eval()
-
-            def _test_rollout(batch: dict[str, Any]) -> tuple[Tensor, Tensor]:
-                moved = {k: v.to(accelerator.device) if isinstance(v, Tensor) else v
-                         for k, v in batch.items()}
-                T_tgt = moved["T_target"].squeeze(1)
-                T_in = moved["T_in"].squeeze(1)
-                mask = moved["mask"].squeeze(1)
-                Q = moved["Q"].squeeze(1)
-                cond = moved["conditioning"]
-                B, _, D, H, W = T_tgt.shape
-
-                cond_emb = cond_encoder(cond)
-                x = sample_noise(T_in)
-                dt = 1.0 / args.test_n_steps
-                with torch.no_grad():
-                    for i in range(args.test_n_steps):
-                        tau = torch.full((B,), i * dt, device=accelerator.device)
-                        x = x + model(net_inputs(x, {"mask": mask, "Q": Q, "T_in": T_in}, args.in_channels), tau, cond_emb) * dt
-                return x.cpu(), T_tgt.cpu()
-
-            run_test_phase(
-                _test_rollout, split.test_loader, ckpt_dir, run,
-                args.seed, tracker=tracker,
-            )
-
-        torch.save(
-            {"model_state": accelerator.unwrap_model(model).state_dict(),
-             "cond_encoder_state": accelerator.unwrap_model(cond_encoder).state_dict(),
-             "ds_cfg": ds_cfg.model_dump(), "grid_attrs": grid_attrs},
-            ckpt_dir / "latest.pt",
-        )
+def main(argv: list[str] | None = None, *, hooks: RunHooks | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    run_training(args, __file__, spec(args), hooks)
 
 
 if __name__ == "__main__":
