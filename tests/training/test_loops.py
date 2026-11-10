@@ -415,3 +415,53 @@ class TestLogValImageRope:
                            filename_prefix="my_prefix")
         _args, _ = mock_log.call_args
         assert "my_prefix" in _args[2]
+
+
+class TestRunTrainLoopResume:
+    """Resume from a saved history, save after every epoch, pause at an epoch boundary."""
+
+    def test_continues_at_the_saved_epoch_with_the_saved_best(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, records = _std_callbacks([0.6, 0.4])
+        saved = TrainHistory(train_losses=[1.0], val_losses=[0.5], best_val_loss=0.5, next_epoch=1)
+        history = run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=3, history=saved, tqdm_disable=True)
+        assert records["train"] == [1, 2]
+        assert records["ckpt"] == [(2, pytest.approx(0.4))]  # 0.6 is no improvement on the saved 0.5
+        assert history.val_losses == [0.5, 0.6, 0.4] and history.best_val_loss == pytest.approx(0.4)
+        assert history.next_epoch == 3 and not history.paused
+
+    def test_epoch_end_runs_after_every_epoch_with_the_next_epoch(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, _ = _std_callbacks()
+        seen: list[tuple[int, int]] = []
+        run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=4, val_every=2, tqdm_disable=True,
+                       epoch_end_fn=lambda epoch, h: seen.append((epoch, h.next_epoch)))  # fmt: skip
+        assert seen == [(0, 1), (1, 2), (2, 3), (3, 4)]  # also after epochs without validation
+
+    def test_a_pause_request_stops_after_at_least_one_epoch(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, records = _std_callbacks()
+        history = run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=5, tqdm_disable=True,
+                                 should_pause=lambda: True)  # fmt: skip
+        assert records["train"] == [0] and history.paused and history.next_epoch == 1
+
+    def test_a_pause_request_is_asked_only_between_epochs(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, records = _std_callbacks()
+        asked: list[int] = []
+
+        def should_pause() -> bool:
+            asked.append(len(records["train"]))
+            return len(records["train"]) == 2
+
+        history = run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=5, tqdm_disable=True,
+                                 should_pause=should_pause)  # fmt: skip
+        assert records["train"] == [0, 1] and asked == [1, 2] and history.paused
+
+    def test_a_history_saved_at_a_pause_continues(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, records = _std_callbacks()
+        saved = TrainHistory(train_losses=[1.0], val_losses=[0.5], best_val_loss=0.5, next_epoch=1, paused=True)
+        history = run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=2, history=saved, tqdm_disable=True)
+        assert records["train"] == [1] and not history.paused
+
+    def test_a_finished_run_does_not_pause(self):
+        train_fn, val_fn, ckpt_fn, snap_fn, records = _std_callbacks()
+        history = run_train_loop(train_fn, val_fn, ckpt_fn, snap_fn, epochs=1, tqdm_disable=True,
+                                 should_pause=lambda: True)  # fmt: skip
+        assert records["train"] == [0] and not history.paused

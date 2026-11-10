@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,13 +32,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainHistory:
-    """Accumulated per-epoch scalars and snapshots for post-training visualisation."""
+    """Accumulated per-epoch scalars and snapshots for post-training visualisation, and where a resume continues."""
 
     train_losses: list[float] = field(default_factory=list)
     val_losses: list[float] = field(default_factory=list)
     pred_history: list[Tensor] = field(default_factory=list)
     epoch_labels: list[str] = field(default_factory=list)
     T_gt_fixed: Tensor | None = None
+    best_val_loss: float = math.inf
+    next_epoch: int = 0
+    paused: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +125,9 @@ def run_train_loop(
     sync_fn: Callable[[], None] | None = None,
     is_main: bool = True,
     tqdm_disable: bool = False,
+    history: TrainHistory | None = None,
+    epoch_end_fn: Callable[[int, TrainHistory], None] | None = None,
+    should_pause: Callable[[], bool] | None = None,
 ) -> TrainHistory:
     """Orchestrate the full training loop with val, checkpointing, and snapshots.
 
@@ -144,17 +151,28 @@ def run_train_loop(
         is_main:         When False (non-main Accelerate process) history accumulation
                          and checkpoint/snapshot callbacks are skipped.
         tqdm_disable:    Suppress the outer epoch tqdm bar.
+        history:         A saved history to continue from (``next_epoch``, ``best_val_loss``, the lists).
+        epoch_end_fn:    ``(epoch, history) -> None`` after every epoch, validated or not; saves the resumable state.
+        should_pause:    Asked before every epoch but the first of this call, so each call makes progress; True ends
+                         the loop with ``history.paused``. Must return the same on every process.
 
     Returns:
         :class:`TrainHistory` populated with losses and snapshot tensors.
     """
-    history = TrainHistory()
-    best_val_loss = float("inf")
+    history = history if history is not None else TrainHistory()
+    history.paused = False  # a history saved at a pause continues
+    first = history.next_epoch
 
-    for epoch in tqdm(range(epochs), desc="Epochs", disable=tqdm_disable):
+    for epoch in tqdm(range(first, epochs), desc="Epochs", disable=tqdm_disable, initial=first, total=epochs):
+        if epoch > first and should_pause is not None and should_pause():
+            history.paused = True
+            break
         avg_train = train_epoch_fn(epoch)
 
         if epoch % val_every != 0:
+            history.next_epoch = epoch + 1
+            if epoch_end_fn is not None:
+                epoch_end_fn(epoch, history)
             if sync_fn is not None:
                 sync_fn()
             continue
@@ -165,8 +183,8 @@ def run_train_loop(
             history.train_losses.append(avg_train)
             history.val_losses.append(avg_val)
 
-            if avg_val < best_val_loss:
-                best_val_loss = avg_val
+            if avg_val < history.best_val_loss:
+                history.best_val_loss = avg_val
                 checkpoint_fn(epoch, avg_val)
 
             snap = snapshot_fn(epoch)
@@ -177,6 +195,9 @@ def run_train_loop(
                 history.pred_history.append(T_pred.detach().cpu())
                 history.epoch_labels.append(f"Ep {epoch}")
 
+        history.next_epoch = epoch + 1
+        if epoch_end_fn is not None:
+            epoch_end_fn(epoch, history)
         if sync_fn is not None:
             sync_fn()
 
